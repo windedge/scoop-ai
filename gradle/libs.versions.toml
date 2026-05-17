@@ -1,0 +1,16 @@
+[versions]
+kotlin = "2.1.21"
+koog = "0.8.0"
+kotlinx-serialization = "1.8.1"
+kotlinx-coroutines = "1.10.2"
+logback = "1.5.18"
+shadow = "8.1.1"
+
+[libraries]
+koog-agents = { module = "ai.koog:koog-agents", version.ref = "koog" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
+logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+
+[plugins]
+shadow = { id = "com.github.johnrengelman.shadow", version.ref = "shadow" }

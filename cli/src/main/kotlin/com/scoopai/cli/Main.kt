@@ -80,9 +80,17 @@ fun main(args: Array<String>) {
     baseUrl = resolveBaseUrl(baseUrl)
     modelName = resolveModel(modelName)
 
-    require(url.isNotBlank()) { "Error: URL argument is required. Usage: scoop-ai <url>" }
-    require(provider != "openai-compatible" || baseUrl != null) {
-        "Error: --base-url or SCOOP_AI_BASE_URL is required for openai-compatible provider"
+    if (url.isBlank()) {
+        System.err.println("Missing required argument: <url>")
+        System.err.println()
+        System.err.println("Usage: scoop-ai <url> [options]")
+        System.err.println("Run 'scoop-ai --help' for more information.")
+        return
+    }
+
+    if (provider == "openai-compatible" && baseUrl == null) {
+        System.err.println("--base-url or SCOOP_AI_BASE_URL is required when using openai-compatible provider.")
+        return
     }
 
     val resolvedApiKey = resolveApiKey(provider, apiKey)
@@ -97,16 +105,21 @@ fun main(args: Array<String>) {
 
     val toolRegistry = DefaultToolRegistryFactory.create()
 
-    runBlocking {
-        val generator = ScoopManifestGenerator(
-            promptExecutor = config.createExecutor(),
-            model = config.model,
-            toolRegistry = toolRegistry,
-            maxIterations = config.maxIterations,
-        )
+    try {
+        runBlocking {
+            val generator = ScoopManifestGenerator(
+                promptExecutor = config.createExecutor(),
+                model = config.model,
+                toolRegistry = toolRegistry,
+                maxIterations = config.maxIterations,
+            )
 
-        val outputPath = output.ifBlank { null }
-        val result = generator.generate(url, outputPath)
-        println(result)
+            val outputPath = output.ifBlank { null }
+            val result = generator.generate(url, outputPath)
+            println(result)
+        }
+    } catch (e: Exception) {
+        System.err.println("Error: ${e.message ?: e.javaClass.simpleName}")
+        return
     }
 }

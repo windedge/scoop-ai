@@ -12,8 +12,8 @@ repositories {
 
 dependencies {
     implementation(project(":core"))
-    implementation("ai.koog:koog-agents:0.8.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
+    implementation(libs.koog.agents)
+    implementation(libs.kotlinx.serialization.json)
 }
 
 kotlin {
