@@ -1,19 +1,53 @@
 # Gradle
 .gradle/
 build/
+out/
 !gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
 
-# IDE
+# Kotlin
+*.kotlin_module
+
+# IDE - IntelliJ
 .idea/
 *.iml
 *.iws
 *.ipr
+
+# IDE - VS Code
 .vscode/
+
+# IDE - Eclipse
+.classpath
+.project
+.settings/
+bin/
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
 
-# Environment
+# Environment / secrets
 .env
 env.properties
+*.env
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Package files
+*.jar
+*.war
+*.ear
+!gradle/wrapper/gradle-wrapper.jar
+
+# Test / coverage
+test-results/
+test-reports/
+coverage/
