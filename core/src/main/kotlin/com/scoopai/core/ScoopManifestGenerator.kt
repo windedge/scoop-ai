@@ -16,6 +16,17 @@ import kotlinx.serialization.json.jsonPrimitive
 
 private val logger = KotlinLogging.logger {}
 
+/**
+ * Generates a Scoop manifest in three sequential phases, each with its own focused agent:
+ *
+ * 1. **Research** — Gather project info (repo, releases, Windows assets)
+ * 2. **Analyze** — Compute SHA-256 hashes, inspect ZIP archives
+ * 3. **Generate** — Create manifest JSON, validate, write
+ *
+ * Each phase runs a separate agent instance with a phase-specific system prompt.
+ * If a phase produces no usable output it is retried (up to [maxPhaseRetries] times).
+ * Finally the manifest is validated locally and fixed in a mini-loop.
+ */
 class ScoopManifestGenerator(
     private val promptExecutor: PromptExecutor,
     private val model: LLModel,
@@ -23,96 +34,92 @@ class ScoopManifestGenerator(
     private val manifestIo: ManifestIo,
     private val maxIterations: Int = 30,
     private val maxFixAttempts: Int = 2,
-    private val maxRetries: Int = 3,
+    private val maxPhaseRetries: Int = 2,
 ) {
-    @Volatile
-    private var lastToolResults = mutableListOf<Pair<String, String?>>()
-
-    @Volatile
-    private var lastLLMTextResponse = ""
-
-    @Volatile
-    private var manifestFromToolArgs = ""
+    /** Result collected from a single agent execution. */
+    data class PhaseResult(
+        val llmText: String,
+        val toolResults: List<Pair<String, String?>>,
+        val manifestJson: String,
+    )
 
     suspend fun generate(url: String, outputPath: String? = null): String {
-        val input = if (outputPath != null) "$url\nOutput file: $outputPath" else url
-
-        // Initial agent run
-        val rawResult = runAgent(input)
-        logger.info { "Agent returned ${rawResult.length} chars" }
-
-        var resultText = extractResult(rawResult)
-
-        // If empty, retry with a follow-up prompt that includes collected info
-        if (resultText.isBlank() && lastToolResults.isNotEmpty()) {
-            for (attempt in 1..maxRetries) {
-                logger.info { "Retry $attempt/${maxRetries}: sending follow-up prompt" }
-                val followUp = buildFollowUpPrompt()
-                val retryResult = runAgent(followUp)
-                resultText = extractResult(retryResult)
-                if (resultText.isNotBlank()) break
-            }
-        }
-
-        if (resultText.isBlank()) {
-            logger.warn { "Agent returned empty result after all retries" }
+        // ── Phase 1: Research ──────────────────────────────────────────
+        val p1 = runPhaseWithRetry(
+            phaseName = "research",
+            systemPrompt = SystemPrompts.RESEARCH,
+            userPrompt = buildResearchPrompt(url, outputPath),
+        )
+        val researchCtx = summarizePhase(p1)
+        if (researchCtx.isBlank()) {
+            logger.warn { "[research] Phase returned empty, aborting" }
             return ""
         }
+        logger.info { "[research] Completed: ${researchCtx.length} chars" }
 
-        val json = extractJson(resultText) ?: return resultText
+        // ── Phase 2: Analyze ───────────────────────────────────────────
+        val p2 = runPhaseWithRetry(
+            phaseName = "analyze",
+            systemPrompt = SystemPrompts.ANALYZE,
+            userPrompt = buildAnalyzePrompt(researchCtx),
+        )
+        val analyzeCtx = summarizePhase(p2)
+        logger.info { "[analyze] Completed: ${analyzeCtx.length} chars" }
 
-        val validation = manifestIo.validate(json)
-        val validationResult = kotlinx.serialization.json.Json.parseToJsonElement(validation).jsonObject
-        val isValid = validationResult["valid"]?.jsonPrimitive?.content == "true"
+        // ── Phase 3: Generate ──────────────────────────────────────────
+        val p3 = runPhaseWithRetry(
+            phaseName = "generate",
+            systemPrompt = SystemPrompts.GENERATE,
+            userPrompt = buildGeneratePrompt(researchCtx, analyzeCtx, outputPath),
+        )
+        var manifestJson = if (p3.manifestJson.isNotBlank()) p3.manifestJson
+        else extractJson(p3.llmText) ?: ""
 
-        if (isValid) return json
-
-        val errors = validationResult["errors"]?.jsonArray
-            ?.map { it.jsonPrimitive.content }
-            ?: emptyList()
-
-        if (errors.isEmpty()) return json
-
-        logger.info { "Validation found ${errors.size} error(s), asking LLM to fix..." }
-        errors.forEach { logger.info { "  - $it" } }
-
-        var fixedResult = json
-        for (attempt in 1..maxFixAttempts) {
-            val fixPrompt = buildFixPrompt(json, errors)
-            val fixResponse = runAgent(fixPrompt)
-            val fixText = fixResponse.ifBlank {
-                manifestFromToolArgs.ifBlank {
-                    lastLLMTextResponse.ifBlank { extractFromToolResults() }
-                }
-            }
-            val fixedJson = extractJson(fixText) ?: continue
-
-            val revalidation = manifestIo.validate(fixedJson)
-            val revalResult = kotlinx.serialization.json.Json.parseToJsonElement(revalidation).jsonObject
-            val revalValid = revalResult["valid"]?.jsonPrimitive?.content == "true"
-
-            if (revalValid) {
-                logger.info { "Fix attempt $attempt succeeded." }
-                fixedResult = fixedJson
-                break
-            }
-
-            logger.info { "Fix attempt $attempt did not resolve all errors." }
-            fixedResult = fixedJson
+        if (manifestJson.isBlank()) {
+            logger.warn { "[generate] Phase returned empty manifest" }
+            return ""
         }
+        logger.info { "[generate] Completed: ${manifestJson.length} chars" }
 
-        return fixedResult
+        // ── Validate & Fix ─────────────────────────────────────────────
+        return validateAndFix(manifestJson)
     }
 
-    private suspend fun runAgent(input: String): String {
-        lastToolResults.clear()
-        lastLLMTextResponse = ""
-        manifestFromToolArgs = ""
+    // ------------------------------------------------------------------
+    // Phase execution
+    // ------------------------------------------------------------------
+
+    private suspend fun runPhaseWithRetry(
+        phaseName: String,
+        systemPrompt: String,
+        userPrompt: String,
+    ): PhaseResult {
+        var result = executePhase(systemPrompt, userPrompt)
+
+        for (attempt in 1..maxPhaseRetries) {
+            val hasContent = when (phaseName) {
+                "generate" -> result.manifestJson.isNotBlank() || extractJson(result.llmText) != null
+                else -> result.llmText.isNotBlank() || result.toolResults.isNotEmpty()
+            }
+            if (hasContent) break
+
+            logger.info { "[$phaseName] Retry $attempt/$maxPhaseRetries — no usable output" }
+            val retryPrompt = buildPhaseRetryPrompt(phaseName, result.toolResults, userPrompt)
+            result = executePhase(systemPrompt, retryPrompt)
+        }
+
+        return result
+    }
+
+    private suspend fun executePhase(systemPrompt: String, userPrompt: String): PhaseResult {
+        val capturedToolResults = mutableListOf<Pair<String, String?>>()
+        var capturedLlmText = ""
+        var capturedManifestJson = ""
 
         val agent = AIAgent(
             promptExecutor = promptExecutor,
             llmModel = model,
-            systemPrompt = SystemPrompts.MANIFEST_GENERATOR,
+            systemPrompt = systemPrompt,
             toolRegistry = toolRegistry,
             maxIterations = maxIterations,
         ) {
@@ -124,13 +131,11 @@ class ScoopManifestGenerator(
                 onToolCallCompleted { ctx ->
                     val result = ctx.toolResult?.toString()?.take(200) ?: "null"
                     logger.info { "[tool] ${ctx.toolName} -> $result" }
-                    lastToolResults.add(ctx.toolName to ctx.toolResult?.toString())
-                    // Capture manifest JSON from tool arguments
+                    capturedToolResults.add(ctx.toolName to ctx.toolResult?.toString())
                     if (ctx.toolName in listOf("write", "validate", "writeManifestToFile", "validateManifestJson")) {
-                        val argsStr = ctx.toolArgs.toString()
-                        val json = extractJson(argsStr)
+                        val json = extractJson(ctx.toolArgs.toString())
                         if (json != null) {
-                            manifestFromToolArgs = json
+                            capturedManifestJson = json
                             logger.info { "[tool] Captured manifest from ${ctx.toolName} args (${json.length} chars)" }
                         }
                     }
@@ -138,101 +143,180 @@ class ScoopManifestGenerator(
                 onLLMCallCompleted { ctx ->
                     val response = ctx.responses.firstOrNull() as? Message.Assistant
                     if (response != null) {
-                        logger.info { "[llm] finishReason=${response.finishReason}" }
                         val text = response.parts.mapNotNull {
                             (it as? ContentPart.Text)?.text
                         }.joinToString("")
                         if (text.isNotBlank()) {
-                            lastLLMTextResponse = text
-                            logger.info { "[llm] Captured: ${text.take(100)}..." }
+                            capturedLlmText = text
+                            logger.info { "[phase] finishReason=${response.finishReason}, text=${text.take(100)}..." }
                         }
                     }
                 }
                 onAgentCompleted {
-                    logger.info { "[agent] Completed." }
+                    logger.info { "[phase] Agent completed." }
                 }
                 onAgentExecutionFailed { ctx ->
-                    logger.error { "[agent] Failed: ${ctx.throwable.message}" }
+                    logger.error { "[phase] Failed: ${ctx.throwable.message}" }
                 }
             }
         }
-        return agent.run(input)
+        agent.run(userPrompt)
+
+        return PhaseResult(
+            llmText = capturedLlmText,
+            toolResults = capturedToolResults.toList(),
+            manifestJson = capturedManifestJson,
+        )
     }
 
-    private fun extractResult(rawResult: String): String {
-        // Tool args (validate/write) take highest priority — contains the actual manifest JSON
-        if (manifestFromToolArgs.isNotBlank()) return manifestFromToolArgs
-        return rawResult.ifBlank {
-            lastLLMTextResponse.ifBlank { extractFromToolResults() }
-        }
+    // ------------------------------------------------------------------
+    // Prompt builders
+    // ------------------------------------------------------------------
+
+    private fun buildResearchPrompt(url: String, outputPath: String?): String {
+        return if (outputPath != null) "Research the project at: $url\nOutput file: $outputPath"
+        else "Research the project at: $url"
     }
 
-    private fun buildFollowUpPrompt(): String {
-        val toolSummary = lastToolResults.map { (name, result) ->
+    private fun buildAnalyzePrompt(researchContext: String): String {
+        return """Based on the following research, compute SHA-256 hashes and inspect the Windows assets:
+
+$researchContext
+
+Compute SHA-256 hashes for each Windows asset. For ZIP files, inspect archive contents to determine extract_dir, bin, and installer type."""
+    }
+
+    private fun buildGeneratePrompt(researchContext: String, analyzeContext: String, outputPath: String?): String {
+        val outputPart = if (outputPath != null) "\nOutput file: $outputPath" else ""
+        return """Based on the following research and analysis, generate a complete Scoop manifest.
+
+## Research
+$researchContext
+
+## Analysis
+$analyzeContext$outputPart
+
+Generate the manifest JSON, then call validateManifestJson and writeManifestToFile to save it."""
+    }
+
+    private fun buildPhaseRetryPrompt(phaseName: String, toolResults: List<Pair<String, String?>>, originalPrompt: String): String {
+        val toolSummary = toolResults.map { (name, result) ->
             "- $name: ${(result ?: "null").take(300)}"
         }.joinToString("\n")
-        return """
-You previously gathered the following information but failed to output a manifest:
+
+        val phaseGoal = when (phaseName) {
+            "research" -> "gather project information and identify Windows assets"
+            "analyze" -> "compute SHA-256 hashes and inspect archives"
+            "generate" -> "generate the manifest JSON, call validateManifestJson, then call writeManifestToFile"
+            else -> "complete your task"
+        }
+
+        return """Your previous attempt did not produce complete results. Here is what was collected:
 
 $toolSummary
 
-Now generate the Scoop manifest JSON. Call the `validate` tool with the manifest JSON, then call `write` to save it.
-        """.trimIndent()
+Please retry to $phaseGoal. Make sure you call the necessary tools and produce a proper result.
+
+Original request: $originalPrompt"""
     }
 
-    private fun extractFromToolResults(): String {
-        // Try to find manifest JSON from tool call results
-        for ((name, result) in lastToolResults.reversed()) {
-            if (name in listOf("validateManifestJson", "writeManifestToFile")) continue
-            if (result != null && result.contains("\"version\"") && result.contains("\"url\"")) {
-                val json = extractJson(result)
-                if (json != null) return json
+    // ------------------------------------------------------------------
+    // Context formatting
+    // ------------------------------------------------------------------
+
+    private fun summarizePhase(result: PhaseResult): String {
+        val sb = StringBuilder()
+        if (result.llmText.isNotBlank()) {
+            sb.append(result.llmText)
+        }
+        val nonManifestResults = result.toolResults.filter { (name, _) ->
+            name !in listOf("validateManifestJson", "writeManifestToFile", "readManifestFile")
+        }
+        if (nonManifestResults.isNotEmpty()) {
+            if (sb.isNotEmpty()) sb.append("\n\n---\n")
+            sb.append("Tool Results:\n")
+            nonManifestResults.forEach { (name, res) ->
+                sb.append("- $name: ${(res ?: "null").take(500)}\n")
             }
         }
-        return ""
+        return sb.toString()
+    }
+
+    // ------------------------------------------------------------------
+    // JSON extraction & validation
+    // ------------------------------------------------------------------
+
+    private suspend fun validateAndFix(manifestJson: String): String {
+        val validation = manifestIo.validate(manifestJson)
+        val validationResult = kotlinx.serialization.json.Json.parseToJsonElement(validation).jsonObject
+        val isValid = validationResult["valid"]?.jsonPrimitive?.content == "true"
+        if (isValid) {
+            logger.info { "[validate] Valid manifest" }
+            return manifestJson
+        }
+
+        val errors = validationResult["errors"]?.jsonArray
+            ?.map { it.jsonPrimitive.content }
+            ?: emptyList()
+        if (errors.isEmpty()) {
+            logger.info { "[validate] No errors reported" }
+            return manifestJson
+        }
+
+        logger.info { "[validate] ${errors.size} error(s), attempting fixes..." }
+        errors.forEach { logger.info { "  - $it" } }
+
+        var fixed = manifestJson
+        for (attempt in 1..maxFixAttempts) {
+            val fixPrompt = buildFixPrompt(manifestJson, errors)
+            val fixPhase = executePhase(SystemPrompts.GENERATE, fixPrompt)
+            val fixText = fixPhase.manifestJson.ifBlank { fixPhase.llmText }
+            val fixedJson = extractJson(fixText) ?: continue
+
+            val reval = kotlinx.serialization.json.Json.parseToJsonElement(manifestIo.validate(fixedJson)).jsonObject
+            if (reval["valid"]?.jsonPrimitive?.content == "true") {
+                logger.info { "[validate] Fix attempt $attempt succeeded." }
+                fixed = fixedJson
+                break
+            }
+            logger.info { "[validate] Fix attempt $attempt did not resolve all errors." }
+            fixed = fixedJson
+        }
+        return fixed
     }
 
     private fun extractJson(text: String): String? {
         val codeBlockRegex = Regex("```(?:json)?\\s*\\n?([\\s\\S]*?)```")
-        val codeBlockMatch = codeBlockRegex.find(text)
-        if (codeBlockMatch != null) {
-            val candidate = codeBlockMatch.groupValues[1].trim()
+        codeBlockRegex.find(text)?.let { match ->
+            val candidate = match.groupValues[1].trim()
             if (isValidJson(candidate)) return candidate
         }
-
         val candidate = text.trim()
         if (isValidJson(candidate)) return candidate
-
-        val braceStart = candidate.indexOf('{')
-        val braceEnd = candidate.lastIndexOf('}')
-        if (braceStart >= 0 && braceEnd > braceStart) {
-            val sub = candidate.substring(braceStart, braceEnd + 1)
+        val start = candidate.indexOf('{')
+        val end = candidate.lastIndexOf('}')
+        if (start >= 0 && end > start) {
+            val sub = candidate.substring(start, end + 1)
             if (isValidJson(sub)) return sub
         }
-
         return null
     }
 
-    private fun isValidJson(text: String): Boolean {
-        return try {
-            val element = kotlinx.serialization.json.Json.parseToJsonElement(text)
-            element is kotlinx.serialization.json.JsonObject
-        } catch (_: Exception) {
-            false
-        }
+    private fun isValidJson(text: String): Boolean = try {
+        kotlinx.serialization.json.Json.parseToJsonElement(text) is kotlinx.serialization.json.JsonObject
+    } catch (_: Exception) {
+        false
     }
 
     private fun buildFixPrompt(originalJson: String, errors: List<String>): String {
         val errorList = errors.joinToString("\n") { "- $it" }
-        return """
-The manifest you generated has validation errors:
+        return """The manifest you generated has validation errors:
 
 $errorList
 
 Here is the original manifest:
 $originalJson
 
-Please fix the errors and output the corrected Scoop manifest JSON.
-        """.trimIndent()
+Please fix the errors and output the corrected Scoop manifest JSON. Call validateManifestJson and writeManifestToFile."""
     }
 }

@@ -36,4 +36,29 @@ object DefaultToolRegistryFactory {
         tool(SafeAskUser)
         extraTools.forEach { tool(it) }
     }
+
+    /** Phase 1: Research tools — GitHub API, Web fetcher, AskUser */
+    val researchTools: List<Tool<*, *>> by lazy {
+        (KtorGitHubApi() as ToolSet).asTools() +
+            (KtorWebFetcher() as ToolSet).asTools() +
+            listOf(SafeAskUser)
+    }
+
+    /** Phase 2: Analysis tools — Hash computer, Archive inspector, AskUser */
+    val analyzeTools: List<Tool<*, *>> by lazy {
+        (StreamingHashComputer() as ToolSet).asTools() +
+            (ZipArchiveInspector() as ToolSet).asTools() +
+            listOf(SafeAskUser)
+    }
+
+    /** Phase 3: Generation tools — Manifest I/O, AskUser */
+    val generateTools: List<Tool<*, *>> by lazy {
+        (FileManifestIo() as ToolSet).asTools() +
+            listOf(SafeAskUser)
+    }
+
+    /** Verify tools — ScoopVerifier (optional) */
+    val verifyTools: List<Tool<*, *>> by lazy {
+        (ProcessScoopVerifier() as ToolSet).asTools()
+    }
 }
