@@ -11,7 +11,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardOpenOption
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 
 @LLMDescription("Hash computation tools")
@@ -33,7 +33,6 @@ class StreamingHashComputer : HashComputer, ToolSet {
     ): String {
         var tempFile: Path? = null
         return try {
-            // Download to temp file with size limit
             tempFile = Files.createTempFile("scoop-ai-hash-", ".tmp")
 
             val request = HttpRequest.newBuilder()
@@ -42,27 +41,26 @@ class StreamingHashComputer : HashComputer, ToolSet {
                 .GET()
                 .build()
 
-            val bodyHandler = HttpResponse.BodyHandlers.ofFile(
-                tempFile,
-                StandardOpenOption.TRUNCATE_EXISTING,
-                StandardOpenOption.CREATE
-            )
-
-            val response = httpClient.send(request, bodyHandler)
+            val response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream())
             if (response.statusCode() !in 200..299) {
+                Files.deleteIfExists(tempFile)
                 return buildJsonObject {
                     put("error", "HTTP ${response.statusCode()} for $url")
                 }.toString()
             }
 
+            response.body().use { input ->
+                Files.copy(input, tempFile, StandardCopyOption.REPLACE_EXISTING)
+            }
+
             val fileSize = Files.size(tempFile)
             if (fileSize > MAX_DOWNLOAD_BYTES) {
+                Files.deleteIfExists(tempFile)
                 return buildJsonObject {
                     put("error", "File too large: $fileSize bytes (max $MAX_DOWNLOAD_BYTES)")
                 }.toString()
             }
 
-            // Compute SHA-256
             val digest = MessageDigest.getInstance("SHA-256")
             Files.newInputStream(tempFile).use { input ->
                 val buffer = ByteArray(8192)
@@ -82,7 +80,7 @@ class StreamingHashComputer : HashComputer, ToolSet {
             }.toString()
         } catch (e: Exception) {
             buildJsonObject {
-                put("error", "Failed to compute SHA-256: ${e.message}")
+                put("error", "Failed to compute SHA-256: ${e.message ?: e.javaClass.name}")
             }.toString()
         } finally {
             tempFile?.let { Files.deleteIfExists(it) }

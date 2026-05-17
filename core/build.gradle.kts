@@ -14,6 +14,7 @@ dependencies {
     implementation(libs.koog.agents)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.logback.classic)
+    implementation(libs.kotlin.logging)
 }
 
 kotlin {

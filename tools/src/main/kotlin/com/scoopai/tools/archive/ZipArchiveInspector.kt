@@ -11,7 +11,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardOpenOption
+import java.nio.file.StandardCopyOption
 import java.util.zip.ZipInputStream
 
 @LLMDescription("Archive inspection tools for ZIP and installer analysis")
@@ -22,35 +22,39 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
         private const val MAX_DEPTH = 3
     }
 
-    private val httpClient: HttpClient = HttpClient.newBuilder()
-        .followRedirects(HttpClient.Redirect.NORMAL)
-        .build()
-
     // ---------------------------------------------------------------------------
     // Download helper
     // ---------------------------------------------------------------------------
 
-    private fun downloadToTempFile(url: String): Pair<Path, HttpResponse<Path>> {
+    private fun downloadToTempFile(url: String): Path {
         val tempFile = Files.createTempFile("scoop-ai-zip-", ".tmp")
-        val request = HttpRequest.newBuilder()
-            .uri(URI.create(url))
-            .header("User-Agent", "scoop-ai/0.1.0")
-            .GET()
-            .build()
-        val response = httpClient.send(
-            request,
-            HttpResponse.BodyHandlers.ofFile(tempFile, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.CREATE)
-        )
-        if (response.statusCode() !in 200..299) {
+        return try {
+            val client = HttpClient.newBuilder()
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .build()
+            val request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("User-Agent", "scoop-ai/0.1.0")
+                .GET()
+                .build()
+            val response = client.send(request, HttpResponse.BodyHandlers.ofInputStream())
+            if (response.statusCode() !in 200..299) {
+                Files.deleteIfExists(tempFile)
+                throw IllegalStateException("HTTP ${response.statusCode()} for $url")
+            }
+            response.body().use { input ->
+                Files.copy(input, tempFile, StandardCopyOption.REPLACE_EXISTING)
+            }
+            val fileSize = Files.size(tempFile)
+            if (fileSize > MAX_DOWNLOAD_BYTES) {
+                Files.deleteIfExists(tempFile)
+                throw IllegalStateException("File too large: $fileSize bytes (max $MAX_DOWNLOAD_BYTES)")
+            }
+            tempFile
+        } catch (e: Exception) {
             Files.deleteIfExists(tempFile)
-            throw IllegalStateException("HTTP ${response.statusCode()} for $url")
+            throw e
         }
-        val fileSize = Files.size(tempFile)
-        if (fileSize > MAX_DOWNLOAD_BYTES) {
-            Files.deleteIfExists(tempFile)
-            throw IllegalStateException("File too large: $fileSize bytes (max $MAX_DOWNLOAD_BYTES)")
-        }
-        return Pair(tempFile, response)
     }
 
     // ---------------------------------------------------------------------------
@@ -65,7 +69,7 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
     ): String {
         var tempFile: Path? = null
         return try {
-            val (file, _) = downloadToTempFile(url)
+            val file = downloadToTempFile(url)
             tempFile = file
 
             val entries = mutableListOf<String>()
@@ -90,7 +94,8 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
             }.toString()
         } catch (e: Exception) {
             buildJsonObject {
-                put("error", "Failed to list ZIP contents: ${e.message}")
+                put("error", "Failed to list ZIP contents: ${e.message ?: e.javaClass.name}")
+                put("stack", e.stackTraceToString().take(500))
             }.toString()
         } finally {
             tempFile?.let { Files.deleteIfExists(it) }
@@ -105,7 +110,7 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
     ): String {
         var tempFile: Path? = null
         return try {
-            val (file, _) = downloadToTempFile(url)
+            val file = downloadToTempFile(url)
             tempFile = file
 
             val executables = mutableListOf<String>()
@@ -128,7 +133,8 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
             }.toString()
         } catch (e: Exception) {
             buildJsonObject {
-                put("error", "Failed to find executables: ${e.message}")
+                put("error", "Failed to find executables: ${e.message ?: e.javaClass.name}")
+                put("stack", e.stackTraceToString().take(500))
             }.toString()
         } finally {
             tempFile?.let { Files.deleteIfExists(it) }
@@ -150,7 +156,10 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
                 .build()
 
             // Read up to 1MB of response body
-            val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
+            val client = HttpClient.newBuilder()
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .build()
+            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
             if (response.statusCode() !in 200..299) {
                 return buildJsonObject {
                     put("error", "HTTP ${response.statusCode()} for $url")

@@ -13,6 +13,7 @@ import ai.koog.prompt.executor.llms.all.simpleOpenRouterExecutor
 import ai.koog.prompt.executor.model.PromptExecutor
 import ai.koog.prompt.llm.LLMProvider
 import ai.koog.prompt.llm.LLModel
+import ai.koog.prompt.llm.LLMCapability
 
 @OptIn(kotlin.time.ExperimentalTime::class)
 object LlmProviderFactory {
@@ -32,20 +33,10 @@ object LlmProviderFactory {
     }
 
     fun defaultModel(provider: String, modelName: String? = null, baseUrl: String? = null): LLModel = when {
-        modelName != null && provider == "openai-compatible" -> LLModel(
-            provider = LLMProvider.OpenAI,
-            id = modelName,
-        )
         modelName != null -> LLModel(
-            provider = when (provider) {
-                "deepseek" -> LLMProvider.DeepSeek
-                "openai" -> LLMProvider.OpenAI
-                "anthropic" -> LLMProvider.Anthropic
-                "ollama" -> LLMProvider.Ollama
-                "openrouter" -> LLMProvider.OpenRouter
-                else -> LLMProvider.OpenAI
-            },
+            provider = providerToLLMProvider(provider),
             id = modelName,
+            capabilities = modelCapabilities(provider),
         )
         else -> when (provider) {
             "deepseek" -> DeepSeekModels.DeepSeekChat
@@ -53,8 +44,59 @@ object LlmProviderFactory {
             "anthropic" -> ai.koog.prompt.executor.clients.anthropic.AnthropicModels.Opus_4_1
             "ollama" -> ai.koog.prompt.executor.ollama.client.OllamaModels.Meta.LLAMA_3_2
             "openrouter" -> OpenAIModels.Chat.GPT4o
-            "openai-compatible" -> LLModel(provider = LLMProvider.OpenAI, id = "default")
+            "openai-compatible" -> LLModel(
+                provider = LLMProvider.OpenAI,
+                id = "default",
+                capabilities = openAICompatibleCapabilities(),
+            )
             else -> DeepSeekModels.DeepSeekChat
         }
     }
+
+    private fun providerToLLMProvider(provider: String): LLMProvider = when (provider) {
+        "deepseek" -> LLMProvider.DeepSeek
+        "openai" -> LLMProvider.OpenAI
+        "anthropic" -> LLMProvider.Anthropic
+        "ollama" -> LLMProvider.Ollama
+        "openrouter" -> LLMProvider.OpenRouter
+        else -> LLMProvider.OpenAI
+    }
+
+    private fun modelCapabilities(provider: String): List<LLMCapability> = when (provider) {
+        "openai", "openrouter", "openai-compatible" -> openAICompatibleCapabilities()
+        "deepseek" -> listOf(
+            LLMCapability.Temperature,
+            LLMCapability.ToolChoice,
+            LLMCapability.Schema.JSON.Basic,
+            LLMCapability.Schema.JSON.Standard,
+            LLMCapability.Tools,
+            LLMCapability.Completion,
+            LLMCapability.OpenAIEndpoint.Completions,
+        )
+        "anthropic" -> listOf(
+            LLMCapability.Temperature,
+            LLMCapability.ToolChoice,
+            LLMCapability.Schema.JSON.Basic,
+            LLMCapability.Schema.JSON.Standard,
+            LLMCapability.Tools,
+            LLMCapability.Completion,
+        )
+        "ollama" -> listOf(
+            LLMCapability.Temperature,
+            LLMCapability.Schema.JSON.Basic,
+            LLMCapability.Tools,
+            LLMCapability.Completion,
+        )
+        else -> listOf(LLMCapability.Completion, LLMCapability.Tools)
+    }
+
+    private fun openAICompatibleCapabilities(): List<LLMCapability> = listOf(
+        LLMCapability.Temperature,
+        LLMCapability.ToolChoice,
+        LLMCapability.Schema.JSON.Basic,
+        LLMCapability.Schema.JSON.Standard,
+        LLMCapability.Tools,
+        LLMCapability.Completion,
+        LLMCapability.OpenAIEndpoint.Completions,
+    )
 }

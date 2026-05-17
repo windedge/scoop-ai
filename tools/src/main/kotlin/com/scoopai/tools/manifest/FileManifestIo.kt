@@ -98,19 +98,24 @@ class FileManifestIo : ManifestIo, ToolSet {
     }
 
     @Tool
-    @LLMDescription("Write manifest JSON to a file. Creates parent directories if needed.")
+    @LLMDescription("Write manifest JSON to a file. Creates parent directories if needed. If path is not provided, auto-derives from the manifest content (bucket/<appname>.json).")
     override fun write(
         @LLMDescription("The manifest JSON content to write")
         json: String,
-        @LLMDescription("The file path to write the manifest to")
-        path: String
+        @LLMDescription("The file path to write the manifest to. If omitted, auto-derives as bucket/<appname>.json")
+        path: String?
     ): String {
         return try {
-            val filePath = Path.of(path)
-            Files.createDirectories(filePath.parent)
-            Files.writeString(filePath, json)
+            val resolvedPath = if (!path.isNullOrBlank()) {
+                Path.of(path)
+            } else {
+                val appName = extractAppName(json)
+                Path.of("bucket").resolve("$appName.json")
+            }
+            Files.createDirectories(resolvedPath.parent)
+            Files.writeString(resolvedPath, json)
             buildJsonObject {
-                put("path", filePath.toAbsolutePath().toString())
+                put("path", resolvedPath.toAbsolutePath().toString())
                 put("success", true)
             }.toString()
         } catch (e: Exception) {
@@ -139,6 +144,39 @@ class FileManifestIo : ManifestIo, ToolSet {
     // ---------------------------------------------------------------------------
     // Internal helpers
     // ---------------------------------------------------------------------------
+
+    private fun extractAppName(json: String): String {
+        return try {
+            val element = Json.parseToJsonElement(json)
+            if (element !is JsonObject) return "manifest"
+
+            // Try to get name from bin field
+            val bin = element.jsonObject["bin"]
+            val binName = when {
+                bin == null -> null
+                bin is JsonPrimitive -> bin.content.substringBeforeLast('.')
+                bin is JsonArray -> {
+                    val first = bin.firstOrNull()
+                    when (first) {
+                        is JsonArray -> first.firstOrNull()?.jsonPrimitive?.contentOrNull
+                        is JsonPrimitive -> first.contentOrNull
+                        else -> null
+                    }?.substringBeforeLast('.')
+                }
+                else -> null
+            }
+
+            when {
+                !binName.isNullOrBlank() -> binName
+                else -> {
+                    val homepage = element.jsonObject["homepage"]?.jsonPrimitive?.contentOrNull
+                    homepage?.substringAfterLast("/")?.substringBefore(".") ?: "manifest"
+                }
+            }
+        } catch (_: Exception) {
+            "manifest"
+        }
+    }
 
     private fun validateUrls(urlElement: JsonElement, errors: MutableList<String>, fieldPath: String) {
         when (urlElement) {

@@ -4,6 +4,7 @@ import com.scoopai.core.ScoopManifestConfig
 import com.scoopai.core.ScoopManifestGenerator
 import com.scoopai.core.llm.LlmProviderFactory
 import com.scoopai.tools.DefaultToolRegistryFactory
+import com.scoopai.tools.verify.ProcessScoopVerifier
 import kotlinx.coroutines.runBlocking
 
 private fun env(key: String): String? = System.getenv(key)
@@ -11,9 +12,12 @@ private fun env(key: String): String? = System.getenv(key)
 private fun resolveProvider(cliValue: String): String =
     cliValue.ifBlank { env("SCOOP_AI_PROVIDER") ?: "deepseek" }
 
-private fun resolveApiKey(provider: String, cliValue: String): String =
-    if (cliValue.isNotBlank()) cliValue
-    else ScoopManifestConfig.resolveApiKey(provider)
+private fun resolveApiKey(provider: String, cliValue: String): String {
+    if (cliValue.isNotBlank()) return cliValue
+    val scoopKey = env("SCOOP_AI_API_KEY")
+    if (!scoopKey.isNullOrBlank()) return scoopKey
+    return ScoopManifestConfig.resolveApiKey(provider)
+}
 
 private fun resolveBaseUrl(cliValue: String?): String? =
     cliValue ?: env("SCOOP_AI_BASE_URL")
@@ -31,6 +35,7 @@ fun main(args: Array<String>) {
     var apiKey = ""
     var baseUrl: String? = null
     var modelName: String? = null
+    var verify = false
 
     val i = args.iterator()
     while (i.hasNext()) {
@@ -40,6 +45,7 @@ fun main(args: Array<String>) {
             "--api-key" -> apiKey = i.next()
             "--base-url" -> baseUrl = i.next()
             "-m", "--model" -> modelName = i.next()
+            "-V", "--verify" -> verify = true
             "-h", "--help" -> {
                 println("""
                     Usage: scoop-ai <url> [options]
@@ -53,6 +59,7 @@ fun main(args: Array<String>) {
                       -m, --model <name>           LLM model name (overrides default for provider)
                           --base-url <url>         Custom API base URL (required for openai-compatible)
                           --api-key <key>          API key
+                      -V, --verify                 Verify manifest by running scoop install
                       -h, --help                   Show this help message
 
                     Environment Variables:
@@ -103,7 +110,33 @@ fun main(args: Array<String>) {
         baseUrl = baseUrl,
     )
 
-    val toolRegistry = DefaultToolRegistryFactory.create()
+    val manifestIo = com.scoopai.tools.manifest.FileManifestIo()
+    val envVerify = env("SCOOP_AI_VERIFY")?.lowercase() == "true"
+    val doVerify = verify || envVerify
+
+    val scoopVerifier = if (doVerify) {
+        try {
+            val check = ProcessBuilder("scoop", "--version")
+                .redirectErrorStream(true)
+                .start()
+            val out = check.inputStream.bufferedReader().readText()
+            check.waitFor()
+            if (check.exitValue() != 0) {
+                System.err.println("--verify requires scoop to be installed. Skipping installation verification.")
+                null
+            } else {
+                ProcessScoopVerifier()
+            }
+        } catch (_: Exception) {
+            System.err.println("--verify requires scoop to be installed. Skipping installation verification.")
+            null
+        }
+    } else null
+
+    val toolRegistry = DefaultToolRegistryFactory.create(
+        manifestIo = manifestIo,
+        scoopVerifier = scoopVerifier,
+    )
 
     try {
         runBlocking {
@@ -111,6 +144,7 @@ fun main(args: Array<String>) {
                 promptExecutor = config.createExecutor(),
                 model = config.model,
                 toolRegistry = toolRegistry,
+                manifestIo = manifestIo,
                 maxIterations = config.maxIterations,
             )
 

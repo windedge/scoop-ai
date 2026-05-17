@@ -1,0 +1,143 @@
+package com.scoopai.tools.verify
+
+import ai.koog.agents.core.tools.annotations.LLMDescription
+import ai.koog.agents.core.tools.annotations.Tool
+import ai.koog.agents.core.tools.reflect.ToolSet
+import com.scoopai.core.tools.api.ScoopVerifier
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.jsonObject
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.concurrent.TimeUnit
+
+@LLMDescription("Scoop installation verification tools. Use these to verify a generated manifest actually installs correctly, and to clean up after testing.")
+class ProcessScoopVerifier : ScoopVerifier, ToolSet {
+
+    companion object {
+        private const val INSTALL_TIMEOUT_MINUTES = 5L
+        private const val UNINSTALL_TIMEOUT_SECONDS = 30L
+    }
+
+    @Tool
+    @LLMDescription("""
+        Verify a Scoop manifest by installing it with scoop install.
+        Writes the manifest to a temp file, runs scoop install, captures the result, then uninstalls.
+        Returns JSON with success status, scoop output, and error details if it failed.
+        Common failures: URL 404, extract_dir wrong, bin path not found, installer type mismatch.
+    """)
+    override fun verifyInstall(
+        @LLMDescription("The complete Scoop manifest JSON string to verify")
+        manifestJson: String
+    ): String {
+        val appName = extractAppName(manifestJson)
+
+        val tempDir = Files.createTempDirectory("scoop-verify-")
+        val manifestFile = tempDir.resolve("$appName.json")
+
+        return try {
+            Files.writeString(manifestFile, manifestJson)
+
+            val installResult = runScoop("install", manifestFile.toAbsolutePath().toString(), "-s")
+            val success = installResult.exitCode == 0
+
+            if (success) {
+                // Clean up: uninstall after successful verification
+                runScoop("uninstall", appName)
+            }
+
+            buildString {
+                appendLine("{")
+                appendLine("  \"success\": $success,")
+                appendLine("  \"app_name\": \"$appName\",")
+                appendLine("  \"exit_code\": ${installResult.exitCode},")
+                appendLine("  \"output\": ${escapeJson(installResult.output)}")
+                appendLine("}")
+            }
+        } catch (e: Exception) {
+            buildString {
+                appendLine("{")
+                appendLine("  \"success\": false,")
+                appendLine("  \"app_name\": \"$appName\",")
+                appendLine("  \"error\": ${escapeJson(e.message ?: "Unknown error")}")
+                appendLine("}")
+            }
+        } finally {
+            try { Files.deleteIfExists(manifestFile) } catch (_: Exception) {}
+            try { Files.delete(tempDir) } catch (_: Exception) {}
+        }
+    }
+
+    @Tool
+    @LLMDescription("Uninstall a scoop app by name. Use this to clean up after a failed verification.")
+    override fun uninstall(
+        @LLMDescription("The app name to uninstall")
+        appName: String
+    ): String {
+        val result = runScoop("uninstall", appName)
+        return buildString {
+            appendLine("{")
+            appendLine("  \"success\": ${result.exitCode == 0},")
+            appendLine("  \"output\": ${escapeJson(result.output)}")
+            appendLine("}")
+        }
+    }
+
+    private fun extractAppName(json: String): String {
+        return try {
+            val obj = kotlinx.serialization.json.Json.parseToJsonElement(json).jsonObject
+            // Try to get name from bin field
+            val bin = obj["bin"]
+            when {
+                bin == null -> "scoop-app"
+                bin is kotlinx.serialization.json.JsonPrimitive -> {
+                    val name = bin.content.substringBeforeLast('.')
+                    name.ifBlank { "scoop-app" }
+                }
+                bin is kotlinx.serialization.json.JsonArray -> {
+                    val first = bin.firstOrNull()?.let {
+                        if (it is kotlinx.serialization.json.JsonArray) it.firstOrNull()?.jsonPrimitive?.content
+                        else it.jsonPrimitive?.content
+                    } ?: "scoop-app"
+                    first.substringBeforeLast('.').ifBlank { "scoop-app" }
+                }
+                else -> "scoop-app"
+            }
+        } catch (_: Exception) {
+            "scoop-app"
+        }
+    }
+
+    private fun runScoop(vararg args: String): ProcessResult {
+        val command = listOf("scoop", *args)
+        val proc = ProcessBuilder(command)
+            .redirectErrorStream(true)
+            .start()
+
+        val output = proc.inputStream.bufferedReader().readText()
+        val finished = if (args.firstOrNull() == "install") {
+            proc.waitFor(INSTALL_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+        } else {
+            proc.waitFor(UNINSTALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        }
+
+        if (!finished) {
+            proc.destroyForcibly()
+            return ProcessResult(-1, "Process timed out")
+        }
+
+        return ProcessResult(proc.exitValue(), output.trim())
+    }
+
+    private fun escapeJson(value: String): String {
+        val escaped = value
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+        return "\"$escaped\""
+    }
+
+    private data class ProcessResult(val exitCode: Int, val output: String)
+}
