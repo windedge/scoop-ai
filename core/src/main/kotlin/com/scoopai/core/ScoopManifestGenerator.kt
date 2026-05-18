@@ -13,6 +13,9 @@ import ai.koog.prompt.message.Message
 import ai.koog.prompt.params.LLMParams
 import ai.koog.serialization.JSONObject
 import ai.koog.serialization.JSONPrimitive
+import com.scoopai.core.agent.AnalyzeOutput
+import com.scoopai.core.agent.PhaseSchemas
+import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.agent.SystemPrompts
 import com.scoopai.core.tools.api.ManifestIo
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -52,6 +55,13 @@ class ScoopManifestGenerator(
         val manifestJson: String,
     )
 
+    /** Lenient JSON instance for parsing phase outputs. */
+    private val phaseJson = kotlinx.serialization.json.Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+        coerceInputValues = true
+    }
+
     suspend fun generate(url: String, outputPath: String? = null): String {
         // ── Phase 1: Research ──────────────────────────────────────────
         val p1 = runPhaseWithRetry(
@@ -59,33 +69,70 @@ class ScoopManifestGenerator(
             systemPrompt = SystemPrompts.RESEARCH,
             userPrompt = buildResearchPrompt(url, outputPath),
         )
-        val noWindowsAssetsMessage = extractNoWindowsAssetsMessage(p1)
-        if (noWindowsAssetsMessage != null) {
-            logger.info { "[research] No Windows assets found, skipping analyze/generate" }
-            return noWindowsAssetsMessage
+
+        // Try structured parse; fallback to legacy free-text on failure
+        val researchOutput = parseResearchOutput(p1)
+        if (researchOutput != null) {
+            if (researchOutput.status == "no_windows_assets") {
+                logger.info { "[research] No Windows assets found (structured), skipping analyze/generate" }
+                val msg = researchOutput.alternatives.ifBlank {
+                    "This project does not provide Windows binaries."
+                }
+                return msg
+            }
+            if (researchOutput.windows_assets.isEmpty()) {
+                logger.warn { "[research] Structured output has empty windows_assets, aborting" }
+                return ""
+            }
+            logger.info { "[research] Completed (structured): project=${researchOutput.project}, version=${researchOutput.version}, assets=${researchOutput.windows_assets.size}" }
+        } else {
+            // Legacy fallback
+            val legacyMsg = extractNoWindowsAssetsMessage(p1)
+            if (legacyMsg != null) {
+                logger.info { "[research] No Windows assets found (legacy), skipping analyze/generate" }
+                return legacyMsg
+            }
+            val researchCtx = summarizePhase(p1)
+            if (researchCtx.isBlank()) {
+                logger.warn { "[research] Phase returned empty, aborting" }
+                return ""
+            }
+            logger.info { "[research] Completed (legacy fallback): ${researchCtx.length} chars" }
         }
 
-        val researchCtx = summarizePhase(p1)
-        if (researchCtx.isBlank()) {
-            logger.warn { "[research] Phase returned empty, aborting" }
-            return ""
+        // Build the research context string to pass to phase 2
+        val researchJsonString = if (researchOutput != null) {
+            phaseJson.encodeToString(ResearchOutput.serializer(), researchOutput)
+        } else {
+            summarizePhase(p1)
         }
-        logger.info { "[research] Completed: ${researchCtx.length} chars" }
 
         // ── Phase 2: Analyze ───────────────────────────────────────────
         val p2 = runPhaseWithRetry(
             phaseName = "analyze",
             systemPrompt = SystemPrompts.ANALYZE,
-            userPrompt = buildAnalyzePrompt(researchCtx),
+            userPrompt = buildAnalyzePrompt(researchJsonString),
         )
-        val analyzeCtx = summarizePhase(p2)
-        logger.info { "[analyze] Completed: ${analyzeCtx.length} chars" }
+
+        val analyzeOutput = parseAnalyzeOutput(p2)
+        if (analyzeOutput != null) {
+            logger.info { "[analyze] Completed (structured): strategy=${analyzeOutput.strategy}, entries=${analyzeOutput.entries.size}" }
+        } else {
+            logger.info { "[analyze] Completed (legacy fallback): ${summarizePhase(p2).length} chars" }
+        }
+
+        // Build the analyze context string to pass to phase 3
+        val analyzeJsonString = if (analyzeOutput != null) {
+            phaseJson.encodeToString(AnalyzeOutput.serializer(), analyzeOutput)
+        } else {
+            summarizePhase(p2)
+        }
 
         // ── Phase 3: Generate ──────────────────────────────────────────
         val p3 = runPhaseWithRetry(
             phaseName = "generate",
             systemPrompt = SystemPrompts.GENERATE,
-            userPrompt = buildGeneratePrompt(researchCtx, analyzeCtx, outputPath),
+            userPrompt = buildGeneratePrompt(researchJsonString, analyzeJsonString, outputPath),
         )
         var manifestJson = if (p3.manifestJson.isNotBlank()) p3.manifestJson
         else extractJson(p3.llmText) ?: ""
@@ -220,23 +267,30 @@ class ScoopManifestGenerator(
         return "$task\n\nResearch stopping rule: as soon as you have enough trustworthy Windows asset URLs for the analyze phase to compute hashes, stop researching and report the findings. If GitHub releases have no assets, prefer the official download page and stop once version variables, filename patterns, or direct download links are sufficient to derive the real Windows asset URLs."
     }
 
-    private fun buildAnalyzePrompt(researchContext: String): String {
-        return """Based on the following research, analyze only the most likely Scoop manifest assets first.
+    private fun buildAnalyzePrompt(researchJson: String): String {
+        return """Based on the following research JSON, analyze only the most likely Scoop manifest assets first.
 
-$researchContext
+```json
+$researchJson
+```
 
 Prefer portable ZIP assets when suitable. Choose one installation strategy first, avoid exhaustive analysis of every candidate, and stop as soon as you have enough data to generate the manifest. Compute SHA-256 hashes only for selected assets. For chosen ZIP files, inspect archive contents to determine extract_dir and bin. Only detect installer type if you are actually using an installer-based strategy or ZIP analysis is insufficient."""
     }
 
-    private fun buildGeneratePrompt(researchContext: String, analyzeContext: String, outputPath: String?): String {
+    private fun buildGeneratePrompt(researchJson: String, analyzeJson: String, outputPath: String?): String {
         val outputPart = if (outputPath != null) "\nOutput file: $outputPath" else ""
-        return """Based on the following research and analysis, generate a complete Scoop manifest.
+        return """Based on the following structured research and analysis JSON, generate a complete Scoop manifest.
 
-## Research
-$researchContext
+## Research JSON
+```json
+$researchJson
+```
 
-## Analysis
-$analyzeContext$outputPart
+## Analysis JSON
+```json
+$analyzeJson
+```
+$outputPart
 
 Generate the manifest JSON, then call validateManifestJson and writeManifestToFile to save it."""
     }
@@ -263,7 +317,31 @@ Original request: $originalPrompt"""
     }
 
     // ------------------------------------------------------------------
-    // Context formatting
+    // Structured JSON parsing
+    // ------------------------------------------------------------------
+
+    private fun parseResearchOutput(result: PhaseResult): ResearchOutput? {
+        val jsonText = extractJson(result.llmText) ?: return null
+        return try {
+            phaseJson.decodeFromString<ResearchOutput>(jsonText)
+        } catch (e: Exception) {
+            logger.warn { "[research] Failed to parse structured JSON: ${e.message?.take(200)}" }
+            null
+        }
+    }
+
+    private fun parseAnalyzeOutput(result: PhaseResult): AnalyzeOutput? {
+        val jsonText = extractJson(result.llmText) ?: return null
+        return try {
+            phaseJson.decodeFromString<AnalyzeOutput>(jsonText)
+        } catch (e: Exception) {
+            logger.warn { "[analyze] Failed to parse structured JSON: ${e.message?.take(200)}" }
+            null
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Legacy context formatting (fallback)
     // ------------------------------------------------------------------
 
     private fun summarizePhase(result: PhaseResult): String {

@@ -49,11 +49,11 @@ You are researching a software project to gather information for creating a Scoo
 
 7. **Report your findings**: Summarize the project info (description, homepage, license), the version, and list all Windows assets with their download URLs and detected architecture. If URLs were derived from official page variables, explicitly say which variables/patterns were used.
 
-8. **No Windows assets**: If after all research you find that the project has **no Windows assets at all** (no .zip, .exe, .msi for Windows in releases or official download pages), output a single line at the very start of your report:
-   ```
-   NO_WINDOWS_ASSETS: This project does not provide Windows binaries.
-   ```
-   Then explain briefly what platforms are supported and suggest alternatives (for example `cargo install`, `npm install`, building from source). Do NOT proceed to list fake or non-Windows assets.
+8. **No Windows assets**: If after all research you find that the project has **no Windows assets at all** (no .zip, .exe, .msi for Windows in releases or official download pages), set `"status": "no_windows_assets"` in your output JSON and fill the `alternatives` field with suggested alternatives. Do NOT proceed to list fake or non-Windows assets.
+
+## Output Format
+
+${PhaseSchemas.RESEARCH_SCHEMA}
 
 ## Important Rules
 
@@ -61,7 +61,7 @@ You are researching a software project to gather information for creating a Scoo
 - If information is ambiguous, use `__ask_user__` to ask for clarification.
 - Do NOT compute hashes or generate manifests — that is done in later steps.
 - Research is complete once analyze can start. Do not spend steps chasing extra confirmation after the stop conditions are met.
-- If there are no Windows assets, say so clearly with the `NO_WINDOWS_ASSETS` marker. Do NOT try to work around this by downloading source archives or inventing compilation steps.
+- If there are no Windows assets, set status to "no_windows_assets" in the JSON. Do NOT try to work around this by downloading source archives or inventing compilation steps.
 """
 
     /** Phase 2: Analyze — compute hashes, inspect archives */
@@ -133,12 +133,16 @@ You are analyzing Windows release assets to prepare data for a Scoop manifest.
 - NSIS → Needs `#/dl.7z` + `pre_install`, mark as requiring manual config
 - Portable EXE → `url` with `#/app.exe` fragment to rename
 
+## Output Format
+
+${PhaseSchemas.ANALYZE_SCHEMA}
+
 ## Important Rules
 
 - NEVER fabricate hashes. Always compute them using computeSha256FromUrl.
 - Do NOT generate the manifest JSON — that is done in the next step.
 - Prefer the smallest sufficient analysis. Do not perform exhaustive analysis of every candidate.
-- Report the chosen asset strategy, then report the hash values, extract_dir, bin values, and installer type only for the assets relevant to that strategy.
+- All findings must go into the JSON output block. Do NOT rely on free-text outside the JSON.
 """
 
     /** Phase 3: Generate — create manifest, validate, write */
@@ -149,9 +153,17 @@ You are generating a complete Scoop manifest for a Windows package.
 
 ${ReferenceManifests.ALL}
 
+## Input Format
+
+You will receive two structured JSON blocks as input:
+1. **Research JSON** — contains project info, license, version, and discovered Windows assets.
+2. **Analyze JSON** — contains strategy, entries with hashes, bin, persist, shortcuts, pre_install, and installer_type.
+
+Read these JSON blocks carefully and use them as the authoritative data source for generating the manifest.
+
 ## Your Task
 
-Given the project information and analysis results, generate the Scoop manifest:
+Given the structured research and analysis JSON, generate the Scoop manifest:
 
 1. **Build the manifest JSON** with these fields:
    - `"version"`: Version string, strip leading "v" (use "1.2.3" not "v1.2.3").
