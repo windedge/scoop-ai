@@ -5,12 +5,10 @@ import ai.koog.agents.core.agent.config.AIAgentConfig
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.features.eventHandler.feature.handleEvents
 import ai.koog.prompt.dsl.prompt
-import ai.koog.prompt.executor.clients.deepseek.DeepSeekParams
 import ai.koog.prompt.executor.model.PromptExecutor
 import ai.koog.prompt.llm.LLModel
-import ai.koog.prompt.message.ContentPart
 import ai.koog.prompt.message.Message
-import ai.koog.prompt.params.LLMParams
+import ai.koog.prompt.message.MessagePart
 import ai.koog.serialization.JSONObject
 import ai.koog.serialization.JSONPrimitive
 import com.scoopai.core.agent.AnalyzeOutput
@@ -212,10 +210,10 @@ class ScoopManifestGenerator(
                     }
                 }
                 onLLMCallCompleted { ctx ->
-                    val response = ctx.responses.firstOrNull() as? Message.Assistant
+                    val response = ctx.response as? Message.Assistant
                     if (response != null) {
                         val text = response.parts.mapNotNull {
-                            (it as? ContentPart.Text)?.text
+                            (it as? MessagePart.Text)?.text
                         }.joinToString("")
                         if (text.isNotBlank()) {
                             capturedLlmText = text
@@ -227,7 +225,7 @@ class ScoopManifestGenerator(
                     logger.info { "[phase] Agent completed." }
                 }
                 onAgentExecutionFailed { ctx ->
-                    logger.error { "[phase] Failed: ${ctx.throwable.message}" }
+                    logger.error { "[phase] Failed: ${ctx.error.message}" }
                 }
             }
         }
@@ -240,18 +238,18 @@ class ScoopManifestGenerator(
         )
     }
 
-    private fun phasePromptParams(): LLMParams {
-        return if (model.id.contains("deepseek", ignoreCase = true)) {
-            DeepSeekParams(
-                additionalProperties = mapOf(
-                    "thinking" to buildJsonObject {
-                        put("type", "disabled")
-                    }
-                )
+    private fun phasePromptParams(): ai.koog.prompt.params.LLMParams {
+        // DeepSeek V4 models support thinking, but the openai-compatible proxy may not
+        // properly handle reasoning output in the Koog agent graph, causing stuck nodes.
+        // Until the proxy/agent interaction is verified, keep thinking disabled by default.
+        // TODO: allow enabling thinking via config when proxy compatibility is confirmed.
+        return ai.koog.prompt.params.LLMParams(
+            additionalProperties = mapOf(
+                "thinking" to kotlinx.serialization.json.buildJsonObject {
+                    put("type", "disabled")
+                }
             )
-        } else {
-            LLMParams()
-        }
+        )
     }
 
     // ------------------------------------------------------------------

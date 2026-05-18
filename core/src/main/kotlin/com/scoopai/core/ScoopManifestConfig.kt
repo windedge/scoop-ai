@@ -8,7 +8,7 @@ import com.scoopai.core.llm.LlmProviderFactory
 data class ScoopManifestConfig(
     val provider: String = "deepseek",
     val apiKey: String = "",
-    val model: LLModel = DeepSeekModels.DeepSeekChat,
+    val model: LLModel = DeepSeekModels.DeepSeekV4Flash,
     val maxIterations: Int = 50,
     val baseUrl: String? = null,
 ) {

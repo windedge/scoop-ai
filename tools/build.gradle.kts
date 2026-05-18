@@ -13,6 +13,7 @@ repositories {
 dependencies {
     implementation(project(":core"))
     implementation(libs.koog.agents)
+    implementation(libs.koog.deepseek.client)
     implementation(libs.kotlinx.serialization.json)
 }
 
