@@ -1,18 +1,26 @@
 package com.scoopai.core
 
 import ai.koog.agents.core.agent.AIAgent
+import ai.koog.agents.core.agent.config.AIAgentConfig
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.features.eventHandler.feature.handleEvents
+import ai.koog.prompt.dsl.prompt
+import ai.koog.prompt.executor.clients.deepseek.DeepSeekParams
 import ai.koog.prompt.executor.model.PromptExecutor
 import ai.koog.prompt.llm.LLModel
 import ai.koog.prompt.message.ContentPart
 import ai.koog.prompt.message.Message
+import ai.koog.prompt.params.LLMParams
+import ai.koog.serialization.JSONObject
+import ai.koog.serialization.JSONPrimitive
 import com.scoopai.core.agent.SystemPrompts
 import com.scoopai.core.tools.api.ManifestIo
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 
 private val logger = KotlinLogging.logger {}
 
@@ -27,12 +35,13 @@ private val logger = KotlinLogging.logger {}
  * If a phase produces no usable output it is retried (up to [maxPhaseRetries] times).
  * Finally the manifest is validated locally and fixed in a mini-loop.
  */
+@OptIn(kotlin.time.ExperimentalTime::class)
 class ScoopManifestGenerator(
     private val promptExecutor: PromptExecutor,
     private val model: LLModel,
     private val toolRegistry: ToolRegistry,
     private val manifestIo: ManifestIo,
-    private val maxIterations: Int = 30,
+    private val maxIterations: Int = 50,
     private val maxFixAttempts: Int = 2,
     private val maxPhaseRetries: Int = 2,
 ) {
@@ -50,6 +59,12 @@ class ScoopManifestGenerator(
             systemPrompt = SystemPrompts.RESEARCH,
             userPrompt = buildResearchPrompt(url, outputPath),
         )
+        val noWindowsAssetsMessage = extractNoWindowsAssetsMessage(p1)
+        if (noWindowsAssetsMessage != null) {
+            logger.info { "[research] No Windows assets found, skipping analyze/generate" }
+            return noWindowsAssetsMessage
+        }
+
         val researchCtx = summarizePhase(p1)
         if (researchCtx.isBlank()) {
             logger.warn { "[research] Phase returned empty, aborting" }
@@ -116,12 +131,21 @@ class ScoopManifestGenerator(
         var capturedLlmText = ""
         var capturedManifestJson = ""
 
+        val agentConfig = AIAgentConfig(
+            prompt = prompt(
+                id = "chat",
+                params = phasePromptParams(),
+            ) {
+                system(systemPrompt)
+            },
+            model = model,
+            maxAgentIterations = maxIterations,
+        )
+
         val agent = AIAgent(
             promptExecutor = promptExecutor,
-            llmModel = model,
-            systemPrompt = systemPrompt,
+            agentConfig = agentConfig,
             toolRegistry = toolRegistry,
-            maxIterations = maxIterations,
         ) {
             handleEvents {
                 onToolCallStarting { ctx ->
@@ -133,7 +157,7 @@ class ScoopManifestGenerator(
                     logger.info { "[tool] ${ctx.toolName} -> $result" }
                     capturedToolResults.add(ctx.toolName to ctx.toolResult?.toString())
                     if (ctx.toolName in listOf("write", "validate", "writeManifestToFile", "validateManifestJson")) {
-                        val json = extractJson(ctx.toolArgs.toString())
+                        val json = extractManifestJsonFromToolArgs(ctx.toolArgs)
                         if (json != null) {
                             capturedManifestJson = json
                             logger.info { "[tool] Captured manifest from ${ctx.toolName} args (${json.length} chars)" }
@@ -169,21 +193,39 @@ class ScoopManifestGenerator(
         )
     }
 
+    private fun phasePromptParams(): LLMParams {
+        return if (model.id.contains("deepseek", ignoreCase = true)) {
+            DeepSeekParams(
+                additionalProperties = mapOf(
+                    "thinking" to buildJsonObject {
+                        put("type", "disabled")
+                    }
+                )
+            )
+        } else {
+            LLMParams()
+        }
+    }
+
     // ------------------------------------------------------------------
     // Prompt builders
     // ------------------------------------------------------------------
 
     private fun buildResearchPrompt(url: String, outputPath: String?): String {
-        return if (outputPath != null) "Research the project at: $url\nOutput file: $outputPath"
-        else "Research the project at: $url"
+        val task = if (outputPath != null) {
+            "Research the project at: $url\nOutput file: $outputPath"
+        } else {
+            "Research the project at: $url"
+        }
+        return "$task\n\nResearch stopping rule: as soon as you have enough trustworthy Windows asset URLs for the analyze phase to compute hashes, stop researching and report the findings. If GitHub releases have no assets, prefer the official download page and stop once version variables, filename patterns, or direct download links are sufficient to derive the real Windows asset URLs."
     }
 
     private fun buildAnalyzePrompt(researchContext: String): String {
-        return """Based on the following research, compute SHA-256 hashes and inspect the Windows assets:
+        return """Based on the following research, analyze only the most likely Scoop manifest assets first.
 
 $researchContext
 
-Compute SHA-256 hashes for each Windows asset. For ZIP files, inspect archive contents to determine extract_dir, bin, and installer type."""
+Prefer portable ZIP assets when suitable. Choose one installation strategy first, avoid exhaustive analysis of every candidate, and stop as soon as you have enough data to generate the manifest. Compute SHA-256 hashes only for selected assets. For chosen ZIP files, inspect archive contents to determine extract_dir and bin. Only detect installer type if you are actually using an installer-based strategy or ZIP analysis is insufficient."""
     }
 
     private fun buildGeneratePrompt(researchContext: String, analyzeContext: String, outputPath: String?): String {
@@ -242,6 +284,22 @@ Original request: $originalPrompt"""
         return sb.toString()
     }
 
+    private fun extractNoWindowsAssetsMessage(result: PhaseResult): String? {
+        val text = result.llmText.trim()
+        if (text.isBlank()) return null
+
+        val firstNonBlankLine = text.lineSequence()
+            .map { it.trim() }
+            .firstOrNull { it.isNotEmpty() }
+            ?: return null
+
+        return if (firstNonBlankLine.startsWith("NO_WINDOWS_ASSETS:")) {
+            text
+        } else {
+            null
+        }
+    }
+
     // ------------------------------------------------------------------
     // JSON extraction & validation
     // ------------------------------------------------------------------
@@ -283,6 +341,15 @@ Original request: $originalPrompt"""
             fixed = fixedJson
         }
         return fixed
+    }
+
+    private fun extractManifestJsonFromToolArgs(args: JSONObject): String? {
+        val fromJsonField = (args.entries["json"] as? JSONPrimitive)?.contentOrNull
+        return if (fromJsonField != null && isValidJson(fromJsonField)) {
+            fromJsonField
+        } else {
+            extractJson(args.toString())
+        }
     }
 
     private fun extractJson(text: String): String? {

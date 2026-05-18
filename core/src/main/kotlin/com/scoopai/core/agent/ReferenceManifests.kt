@@ -77,9 +77,102 @@ object ReferenceManifests {
     }
 }"""
 
+    val WINMERGE = """{
+    "version": "2.16.56",
+    "description": "Differencing and merging tool, that compares both folders and files, presenting differences in a visual text format that is easy to understand and handle.",
+    "homepage": "https://winmerge.org",
+    "license": "GPL-2.0-only",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/WinMerge/winmerge/releases/download/v2.16.56/winmerge-2.16.56-x64-exe.zip",
+            "hash": "f32de18a5d50f78ff1fc884b1dc6488809a8fcc8f3dcf197fc265a142d5e35c5"
+        },
+        "32bit": {
+            "url": "https://github.com/WinMerge/winmerge/releases/download/v2.16.56/winmerge-2.16.56-exe.zip",
+            "hash": "8a4b927f1a07ba59acd736c6f4d4d5a1ab36541d6d22db83c8c7a7c08db4adef"
+        },
+        "arm64": {
+            "url": "https://github.com/WinMerge/winmerge/releases/download/v2.16.56/winmerge-2.16.56-ARM64-exe.zip",
+            "hash": "03cb6cf7ae4592f33fe99ee034f583ee02bceaf4b38f5b589561f44c2439417e"
+        }
+    },
+    "extract_dir": "WinMerge",
+    "bin": "WinMergeU.exe",
+    "shortcuts": [["WinMergeU.exe", "WinMerge"]],
+    "checkver": "WinMerge ([\\d.]+) - latest stable version",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/WinMerge/winmerge/releases/download/v${'$'}version/winmerge-${'$'}version-x64-exe.zip"
+            },
+            "32bit": {
+                "url": "https://github.com/WinMerge/winmerge/releases/download/v${'$'}version/winmerge-${'$'}version-exe.zip"
+            },
+            "arm64": {
+                "url": "https://github.com/WinMerge/winmerge/releases/download/v${'$'}version/winmerge-${'$'}version-ARM64-exe.zip"
+            }
+        },
+        "hash": {
+            "url": "https://winmerge.org/downloads",
+            "regex": "(?sm)<dt>${'$'}basename</dt>.*?<dd><code>${'$'}sha256</code></dd>"
+        }
+    }
+}"""
+
+    val SUMATRAPDF = """{
+    "version": "3.6.1",
+    "description": "PDF and eBook reader",
+    "homepage": "https://www.sumatrapdfreader.org/free-pdf-reader",
+    "license": "GPL-3.0-only,BSD-2-Clause",
+    "architecture": {
+        "64bit": {
+            "url": "https://www.sumatrapdfreader.org/dl/rel/3.6.1/SumatraPDF-3.6.1-64.zip",
+            "hash": "98b33a518d42986856d225064b0cd2d3643ecf78cbf84ab873d26cc51877a544"
+        },
+        "32bit": {
+            "url": "https://www.sumatrapdfreader.org/dl/rel/3.6.1/SumatraPDF-3.6.1.zip",
+            "hash": "670e694a5c91633d28ab0df689b4dbf92021183cfe82270ae552cb617a0a07ed"
+        },
+        "arm64": {
+            "url": "https://www.sumatrapdfreader.org/dl/rel/3.6.1/SumatraPDF-3.6.1-arm64.zip",
+            "hash": "f21091ca6741e4049b0ca375121708a7959803d39336f0468084808943667ffe"
+        }
+    },
+    "pre_install": [
+        "${'$'}file = 'SumatraPDF-settings.txt'",
+        "if (!(Test-Path \"${'$'}persist_dir\\${'$'}file\")) {",
+        "    Write-Host 'File' ${'$'}file 'does not exists. Creating.' -f Yellow",
+        "    Set-Content \"${'$'}dir\\${'$'}file\" 'CheckForUpdates = false' -Encoding Ascii",
+        "}",
+        "Get-ChildItem \"${'$'}dir\\SumatraPDF-*.exe\" | Rename-Item -NewName 'SumatraPDF.exe'"
+    ],
+    "bin": "SumatraPDF.exe",
+    "shortcuts": [["SumatraPDF.exe", "SumatraPDF"]],
+    "persist": ["SumatraPDF-settings.txt", "sumatrapdfcache"],
+    "checkver": {
+        "url": "https://www.sumatrapdfreader.org/docs/Version-history",
+        "regex": "([\\d.]+)\\s+\\(\\d+"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://www.sumatrapdfreader.org/dl/rel/${'$'}version/SumatraPDF-${'$'}version-64.zip"
+            },
+            "32bit": {
+                "url": "https://www.sumatrapdfreader.org/dl/rel/${'$'}version/SumatraPDF-${'$'}version.zip"
+            },
+            "arm64": {
+                "url": "https://www.sumatrapdfreader.org/dl/rel/${'$'}version/SumatraPDF-${'$'}version-arm64.zip"
+            }
+        }
+    }
+}"""
+
     val ALL = listOf(
         "### Simple GitHub autoupdate (no checksum)\n$RIPGREP",
         "### GitHub autoupdate + checksums.txt (bundle hash)\n$LAZYGIT",
-        "### MSI direct extract + persist\n$SEVEN_ZIP"
+        "### MSI direct extract + persist\n$SEVEN_ZIP",
+        "### GUI zip with single primary executable\n$WINMERGE",
+        "### GUI zip with pre_install rename + persist\n$SUMATRAPDF"
     ).joinToString("\n\n---\n\n")
 }

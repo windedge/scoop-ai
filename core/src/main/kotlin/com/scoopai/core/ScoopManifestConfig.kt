@@ -9,10 +9,10 @@ data class ScoopManifestConfig(
     val provider: String = "deepseek",
     val apiKey: String = "",
     val model: LLModel = DeepSeekModels.DeepSeekChat,
-    val maxIterations: Int = 30,
+    val maxIterations: Int = 50,
     val baseUrl: String? = null,
 ) {
-    fun createExecutor(): PromptExecutor = LlmProviderFactory.create(provider, apiKey, baseUrl)
+    fun createExecutor(): PromptExecutor = LlmProviderFactory.create(provider, apiKey, baseUrl, model.id)
 
     companion object {
         fun resolveApiKey(provider: String, explicitKey: String = ""): String {

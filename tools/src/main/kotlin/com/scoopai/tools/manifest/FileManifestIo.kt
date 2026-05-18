@@ -112,7 +112,7 @@ class FileManifestIo : ManifestIo, ToolSet {
                 val appName = extractAppName(json)
                 Path.of("bucket").resolve("$appName.json")
             }
-            Files.createDirectories(resolvedPath.parent)
+            resolvedPath.parent?.let { Files.createDirectories(it) }
             Files.writeString(resolvedPath, json)
             buildJsonObject {
                 put("path", resolvedPath.toAbsolutePath().toString())
