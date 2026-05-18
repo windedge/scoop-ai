@@ -3,6 +3,7 @@ package com.scoopai.tools.hash
 import ai.koog.agents.core.tools.annotations.LLMDescription
 import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
+import ai.koog.agents.core.tools.validateNotNull
 import com.scoopai.core.tools.api.HashComputer
 import kotlinx.serialization.json.*
 import java.net.URI
@@ -29,14 +30,15 @@ class StreamingHashComputer : HashComputer, ToolSet {
     @LLMDescription("Download a file from URL and compute its SHA-256 hash. Returns the hex-encoded hash.")
     override suspend fun computeSha256FromUrl(
         @LLMDescription("The URL of the file to download and hash")
-        url: String
+        url: String?
     ): String {
+        val urlNotNull = validateNotNull(url) { "Parameter 'url' is required. Provide the URL of the file to hash." }
         var tempFile: Path? = null
         return try {
             tempFile = Files.createTempFile("scoop-ai-hash-", ".tmp")
 
             val request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
+                .uri(URI.create(urlNotNull))
                 .header("User-Agent", "scoop-ai/0.1.0")
                 .GET()
                 .build()
@@ -45,7 +47,7 @@ class StreamingHashComputer : HashComputer, ToolSet {
             if (response.statusCode() !in 200..299) {
                 Files.deleteIfExists(tempFile)
                 return buildJsonObject {
-                    put("error", "HTTP ${response.statusCode()} for $url")
+                    put("error", "HTTP ${response.statusCode()} for $urlNotNull")
                 }.toString()
             }
 
@@ -74,7 +76,7 @@ class StreamingHashComputer : HashComputer, ToolSet {
             val hexHash = hashBytes.joinToString("") { "%02x".format(it) }
 
             buildJsonObject {
-                put("url", url)
+                put("url", urlNotNull)
                 put("sha256", hexHash)
                 put("size", fileSize)
             }.toString()

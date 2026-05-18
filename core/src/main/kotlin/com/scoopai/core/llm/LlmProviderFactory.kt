@@ -56,6 +56,15 @@ object LlmProviderFactory {
     }
 
     fun defaultModel(provider: String, modelName: String? = null, baseUrl: String? = null): LLModel = when {
+        // openai-compatible + DeepSeek model name → use DeepSeek provider identity
+        // but keep the user-provided model id (e.g. "opencode/deepseek-v4-flash")
+        modelName != null && provider == "openai-compatible" && modelName.isDeepSeekModelName() -> LLModel(
+            provider = LLMProvider.DeepSeek,
+            id = modelName,
+            capabilities = deepSeekCapabilities(),
+            contextLength = DeepSeekModels.DeepSeekV4Flash.contextLength,
+            maxOutputTokens = DeepSeekModels.DeepSeekV4Flash.maxOutputTokens,
+        )
         modelName != null -> LLModel(
             provider = providerToLLMProvider(provider),
             id = modelName,

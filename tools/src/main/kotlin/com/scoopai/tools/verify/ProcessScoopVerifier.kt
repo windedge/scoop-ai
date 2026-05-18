@@ -3,6 +3,7 @@ package com.scoopai.tools.verify
 import ai.koog.agents.core.tools.annotations.LLMDescription
 import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
+import ai.koog.agents.core.tools.validateNotNull
 import com.scoopai.core.tools.api.ScoopVerifier
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -28,15 +29,16 @@ class ProcessScoopVerifier : ScoopVerifier, ToolSet {
     """)
     override fun verifyInstall(
         @LLMDescription("The complete Scoop manifest JSON string to verify")
-        manifestJson: String
+        manifestJson: String?
     ): String {
-        val appName = extractAppName(manifestJson)
+        val manifestJsonNotNull = validateNotNull(manifestJson) { "Parameter 'manifestJson' is required. Provide the complete Scoop manifest JSON string." }
+        val appName = extractAppName(manifestJsonNotNull)
 
         val tempDir = Files.createTempDirectory("scoop-verify-")
         val manifestFile = tempDir.resolve("$appName.json")
 
         return try {
-            Files.writeString(manifestFile, manifestJson)
+            Files.writeString(manifestFile, manifestJsonNotNull)
 
             val installResult = runScoop("install", manifestFile.toAbsolutePath().toString(), "-s")
             val success = installResult.exitCode == 0
@@ -72,9 +74,10 @@ class ProcessScoopVerifier : ScoopVerifier, ToolSet {
     @LLMDescription("Uninstall a scoop app by name. Use this to clean up after a failed verification.")
     override fun uninstall(
         @LLMDescription("The app name to uninstall")
-        appName: String
+        appName: String?
     ): String {
-        val result = runScoop("uninstall", appName)
+        val appNameNotNull = validateNotNull(appName) { "Parameter 'appName' is required. Provide the app name to uninstall." }
+        val result = runScoop("uninstall", appNameNotNull)
         return buildString {
             appendLine("{")
             appendLine("  \"success\": ${result.exitCode == 0},")

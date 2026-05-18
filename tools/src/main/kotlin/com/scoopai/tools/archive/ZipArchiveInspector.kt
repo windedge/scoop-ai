@@ -1,8 +1,10 @@
 package com.scoopai.tools.archive
 
+import ai.koog.agents.core.tools.ToolException
 import ai.koog.agents.core.tools.annotations.LLMDescription
 import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
+import ai.koog.agents.core.tools.validateNotNull
 import com.scoopai.core.tools.api.ArchiveInspector
 import kotlinx.serialization.json.*
 import java.net.URI
@@ -65,11 +67,12 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
     @LLMDescription("Download a ZIP file and list its directory structure. Returns JSON array of file paths.")
     override suspend fun listZipContents(
         @LLMDescription("URL of the ZIP file to inspect")
-        url: String
+        url: String?
     ): String {
+        val urlNotNull = validateNotNull(url) { "Parameter 'url' is required. Provide the URL of the ZIP file to inspect." }
         var tempFile: Path? = null
         return try {
-            val file = downloadToTempFile(url)
+            val file = downloadToTempFile(urlNotNull)
             tempFile = file
 
             val entries = mutableListOf<String>()
@@ -106,11 +109,12 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
     @LLMDescription("Download a ZIP file and find all .exe files. Returns JSON array of executable paths.")
     override suspend fun findExecutables(
         @LLMDescription("URL of the ZIP file to inspect")
-        url: String
+        url: String?
     ): String {
+        val urlNotNull = validateNotNull(url) { "Parameter 'url' is required. Provide the URL of the ZIP file to find executables in." }
         var tempFile: Path? = null
         return try {
-            val file = downloadToTempFile(url)
+            val file = downloadToTempFile(urlNotNull)
             tempFile = file
 
             val executables = mutableListOf<String>()
@@ -145,12 +149,13 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
     @LLMDescription("Download file header and detect installer type (innosetup/nsis/unknown)")
     override suspend fun detectInstallerType(
         @LLMDescription("URL of the file to check")
-        url: String
+        url: String?
     ): String {
+        val urlNotNull = validateNotNull(url) { "Parameter 'url' is required. Provide the URL of the file to check installer type." }
         return try {
             // Download first 1MB only via streaming
             val request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
+                .uri(URI.create(urlNotNull))
                 .header("User-Agent", "scoop-ai/0.1.0")
                 .GET()
                 .build()
@@ -181,7 +186,7 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
             }
 
             buildJsonObject {
-                put("url", url)
+                put("url", urlNotNull)
                 put("installer_type", installerType)
             }.toString()
         } catch (e: Exception) {

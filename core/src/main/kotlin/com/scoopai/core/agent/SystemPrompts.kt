@@ -62,6 +62,13 @@ ${PhaseSchemas.RESEARCH_SCHEMA}
 - Do NOT compute hashes or generate manifests — that is done in later steps.
 - Research is complete once analyze can start. Do not spend steps chasing extra confirmation after the stop conditions are met.
 - If there are no Windows assets, set status to "no_windows_assets" in the JSON. Do NOT try to work around this by downloading source archives or inventing compilation steps.
+
+## Tool Call Rules
+
+- ALWAYS provide ALL required parameters when calling a tool. Never call a tool with empty `{}` arguments.
+- If you are unsure what parameters a tool needs, refer to the tool descriptions provided.
+- If a tool returns a validation error saying a parameter is required, retry the call WITH that parameter — do NOT retry with empty arguments again.
+- Plan the tool call parameters BEFORE making the call, not after.
 """
 
     /** Phase 2: Analyze — compute hashes, inspect archives */
@@ -143,6 +150,12 @@ ${PhaseSchemas.ANALYZE_SCHEMA}
 - Do NOT generate the manifest JSON — that is done in the next step.
 - Prefer the smallest sufficient analysis. Do not perform exhaustive analysis of every candidate.
 - All findings must go into the JSON output block. Do NOT rely on free-text outside the JSON.
+
+## Tool Call Rules
+
+- ALWAYS provide ALL required parameters when calling a tool. Never call a tool with empty `{}` arguments.
+- If a tool returns a validation error saying a parameter is required, retry the call WITH that parameter — do NOT retry with empty arguments again.
+- Plan the tool call parameters BEFORE making the call, not after.
 """
 
     /** Phase 3: Generate — create manifest, validate, write */
@@ -178,6 +191,7 @@ Given the structured research and analysis JSON, generate the Scoop manifest:
    - `"pre_install"`: add when filename stabilization or initial config creation is needed.
    - `"checkver"`: Use `"github"` for standard semver tags, or `{ "github": "url" }` for special tags. Do NOT generate complex regex.
    - `"autoupdate"`: URL templates using `'$'version` substitution. Only generate when version replacement in URL is safe.
+   - **CRITICAL autoupdate URL rule**: `'$'version` replaces the version NUMBER only (e.g. `10.4.2`). If the original download URL contains a `v` prefix before the version (e.g. `fd-v10.4.2-x86_64.zip`), the autoupdate template MUST include that `v` prefix: `fd-v${'$'}version-x86_64.zip`. Do NOT strip the `v` prefix from URLs during version substitution. The `version` field value never has a leading `v`, but the URL template may need one.
 
 2. **Validate and save**: You MUST call `validateManifestJson` with the complete manifest JSON, then call `writeManifestToFile` to save it. The manifest JSON is ONLY captured when passed as a tool argument. **Do NOT skip this step — it is the only way your output is captured. If you only output text without calling these tools, your manifest will be lost.**
 
@@ -234,5 +248,12 @@ Given the structured research and analysis JSON, generate the Scoop manifest:
 - If you are unsure about anything, use the `__ask_user__` tool to ask the user instead of guessing.
 - Always include checkver and autoupdate when possible.
 - When autoupdate conditions are not met, do NOT generate autoupdate.
+
+## Tool Call Rules
+
+- ALWAYS provide ALL required parameters when calling a tool. Never call a tool with empty `{}` arguments.
+- If a tool returns a validation error saying a parameter is required, retry the call WITH that parameter — do NOT retry with empty arguments again.
+- Plan the tool call parameters BEFORE making the call, not after.
+- When calling `validateManifestJson` or `writeManifestToFile`, the `json` parameter MUST contain the complete manifest JSON string.
 """
 }

@@ -12,6 +12,7 @@ import ai.koog.prompt.message.MessagePart
 import ai.koog.serialization.JSONObject
 import ai.koog.serialization.JSONPrimitive
 import com.scoopai.core.agent.AnalyzeOutput
+import com.scoopai.core.agent.thinkingCompatibleSingleRunStrategy
 import com.scoopai.core.agent.PhaseSchemas
 import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.agent.SystemPrompts
@@ -42,9 +43,26 @@ class ScoopManifestGenerator(
     private val model: LLModel,
     private val toolRegistry: ToolRegistry,
     private val manifestIo: ManifestIo,
-    private val maxIterations: Int = 50,
+    private val maxIterations: Int = 80,
     private val maxFixAttempts: Int = 2,
     private val maxPhaseRetries: Int = 2,
+    /**
+     * Thinking level for models that support reasoning (e.g. DeepSeek V4).
+     *
+     * Maps to DeepSeek API parameters:
+     * - `thinking.type` = `"enabled"` / `"disabled"`
+     * - `reasoning_effort` = `"minimal"` / `"low"` / `"medium"` / `"high"` / `"xhigh"`
+     *
+     * Accepted values:
+     * - `null` (default): use the model's default thinking configuration.
+     * - `"disabled"`: explicitly disable thinking.
+     * - `"enabled"`: enable thinking, let the model decide the effort level.
+     * - `"minimal"` / `"low"` / `"medium"` / `"high"` / `"xhigh"`:
+     *   enable thinking and set the corresponding `reasoning_effort` level.
+     *
+     * Only applied when the model declares [LLMCapability.Thinking].
+     */
+    private val thinkingLevel: String? = null,
 ) {
     /** Result collected from a single agent execution. */
     data class PhaseResult(
@@ -190,6 +208,7 @@ class ScoopManifestGenerator(
         val agent = AIAgent(
             promptExecutor = promptExecutor,
             agentConfig = agentConfig,
+            strategy = thinkingCompatibleSingleRunStrategy(),
             toolRegistry = toolRegistry,
         ) {
             handleEvents {
@@ -212,6 +231,10 @@ class ScoopManifestGenerator(
                 onLLMCallCompleted { ctx ->
                     val response = ctx.response as? Message.Assistant
                     if (response != null) {
+                        val reasoningParts = response.parts.filterIsInstance<MessagePart.Reasoning>()
+                        if (reasoningParts.isNotEmpty()) {
+                            logger.debug { "[phase] reasoning: ${reasoningParts.flatMap { it.content }.joinToString(" ").take(200)}..." }
+                        }
                         val text = response.parts.mapNotNull {
                             (it as? MessagePart.Text)?.text
                         }.joinToString("")
@@ -229,7 +252,19 @@ class ScoopManifestGenerator(
                 }
             }
         }
-        agent.run(userPrompt)
+        try {
+            agent.run(userPrompt)
+        } catch (e: ai.koog.agents.core.agent.exception.AIAgentMaxNumberOfIterationsReachedException) {
+            // Agent exhausted its iterations (common with DeepSeek thinking mode due to
+            // empty-arg tool call loops). If we already captured useful results,
+            // continue instead of aborting.
+            if (capturedManifestJson.isNotBlank() || capturedLlmText.isNotBlank() || capturedToolResults.isNotEmpty()) {
+                logger.warn { "[phase] Agent hit max iterations (${maxIterations}) but captured results exist — continuing with partial results" }
+            } else {
+                logger.error { "[phase] Agent hit max iterations (${maxIterations}) with no captured results" }
+                throw e
+            }
+        }
 
         return PhaseResult(
             llmText = capturedLlmText,
@@ -239,17 +274,32 @@ class ScoopManifestGenerator(
     }
 
     private fun phasePromptParams(): ai.koog.prompt.params.LLMParams {
-        // DeepSeek V4 models support thinking, but the openai-compatible proxy may not
-        // properly handle reasoning output in the Koog agent graph, causing stuck nodes.
-        // Until the proxy/agent interaction is verified, keep thinking disabled by default.
-        // TODO: allow enabling thinking via config when proxy compatibility is confirmed.
-        return ai.koog.prompt.params.LLMParams(
-            additionalProperties = mapOf(
-                "thinking" to kotlinx.serialization.json.buildJsonObject {
-                    put("type", "disabled")
-                }
-            )
-        )
+        if (!model.supports(ai.koog.prompt.llm.LLMCapability.Thinking)) {
+            return ai.koog.prompt.params.LLMParams()
+        }
+
+        val additionalProps = mutableMapOf<String, kotlinx.serialization.json.JsonElement>()
+
+        when (thinkingLevel) {
+            null -> { /* use model default: thinking enabled, default effort */ }
+            "disabled" -> additionalProps["thinking"] =
+                kotlinx.serialization.json.buildJsonObject { put("type", "disabled") }
+            "enabled" -> additionalProps["thinking"] =
+                kotlinx.serialization.json.buildJsonObject { put("type", "enabled") }
+            // reasoning_effort levels: enable thinking + set effort
+            "minimal", "low", "medium", "high", "xhigh" -> {
+                additionalProps["thinking"] =
+                    kotlinx.serialization.json.buildJsonObject { put("type", "enabled") }
+                additionalProps["reasoning_effort"] =
+                    kotlinx.serialization.json.JsonPrimitive(thinkingLevel)
+            }
+        }
+
+        return if (additionalProps.isEmpty()) {
+            ai.koog.prompt.params.LLMParams()
+        } else {
+            ai.koog.prompt.params.LLMParams(additionalProperties = additionalProps)
+        }
     }
 
     // ------------------------------------------------------------------

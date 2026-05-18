@@ -3,6 +3,7 @@ package com.scoopai.tools.web
 import ai.koog.agents.core.tools.annotations.LLMDescription
 import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
+import ai.koog.agents.core.tools.validateNotNull
 import com.scoopai.core.tools.api.WebFetcher
 import kotlinx.serialization.json.*
 import java.net.URI
@@ -42,10 +43,11 @@ class KtorWebFetcher : WebFetcher, ToolSet {
     @LLMDescription("Fetch a web page and return its text content (HTML stripped)")
     override suspend fun fetchWebPage(
         @LLMDescription("The URL of the web page to fetch")
-        url: String
+        url: String?
     ): String {
+        val urlNotNull = validateNotNull(url) { "Parameter 'url' is required. Provide the URL of the web page to fetch." }
         return try {
-            val body = httpGetString(url)
+            val body = httpGetString(urlNotNull)
             // Strip HTML tags: replace <...> with a space, collapse whitespace
             val text = body.replace(Regex("<[^>]+>"), " ")
                 .replace(Regex("\\s+"), " ")
@@ -62,10 +64,11 @@ class KtorWebFetcher : WebFetcher, ToolSet {
     @LLMDescription("Fetch a URL and return the raw JSON response")
     override suspend fun fetchJson(
         @LLMDescription("The URL to fetch JSON from")
-        url: String
+        url: String?
     ): String {
+        val urlNotNull = validateNotNull(url) { "Parameter 'url' is required. Provide the URL to fetch JSON from." }
         return try {
-            val body = httpGetString(url)
+            val body = httpGetString(urlNotNull)
             if (body.length > 10000) body.substring(0, 10000) else body
         } catch (e: Exception) {
             buildJsonObject {
@@ -78,21 +81,22 @@ class KtorWebFetcher : WebFetcher, ToolSet {
     @LLMDescription("Follow HTTP redirects and return the final resolved URL")
     override suspend fun resolveRedirect(
         @LLMDescription("The URL that may redirect")
-        url: String
+        url: String?
     ): String {
+        val urlNotNull = validateNotNull(url) { "Parameter 'url' is required. Provide the URL that may redirect." }
         return try {
             val client = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build()
             val request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
+                .uri(URI.create(urlNotNull))
                 .header("User-Agent", "scoop-ai/0.1.0")
                 .method("HEAD", HttpRequest.BodyPublishers.noBody())
                 .build()
             val response = client.send(request, HttpResponse.BodyHandlers.ofString())
             val finalUri = response.uri().toString()
             buildJsonObject {
-                put("original_url", url)
+                put("original_url", urlNotNull)
                 put("final_url", finalUri)
                 put("status", response.statusCode())
             }.toString()

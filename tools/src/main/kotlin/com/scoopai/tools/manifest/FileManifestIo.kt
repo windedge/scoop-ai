@@ -1,8 +1,10 @@
 package com.scoopai.tools.manifest
 
+import ai.koog.agents.core.tools.ToolException
 import ai.koog.agents.core.tools.annotations.LLMDescription
 import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
+import ai.koog.agents.core.tools.validateNotNull
 import com.scoopai.core.tools.api.ManifestIo
 import kotlinx.serialization.json.*
 import java.nio.file.Files
@@ -19,13 +21,14 @@ class FileManifestIo : ManifestIo, ToolSet {
     @LLMDescription("Validate a Scoop manifest JSON string. Checks required fields, hash format, URL format.")
     override fun validate(
         @LLMDescription("The Scoop manifest JSON string to validate")
-        json: String
+        json: String?
     ): String {
+        val jsonNotNull = validateNotNull(json) { "Parameter 'json' is required. Provide the complete Scoop manifest JSON string." }
         val errors = mutableListOf<String>()
         val warnings = mutableListOf<String>()
 
         try {
-            val element = Json.parseToJsonElement(json)
+            val element = Json.parseToJsonElement(jsonNotNull)
             if (element !is JsonObject) {
                 errors.add("Root element must be a JSON object")
                 return validationResult(false, errors, warnings)
@@ -101,19 +104,20 @@ class FileManifestIo : ManifestIo, ToolSet {
     @LLMDescription("Write manifest JSON to a file. Creates parent directories if needed. If path is not provided, auto-derives from the manifest content (bucket/<appname>.json).")
     override fun write(
         @LLMDescription("The manifest JSON content to write")
-        json: String,
+        json: String?,
         @LLMDescription("The file path to write the manifest to. If omitted, auto-derives as bucket/<appname>.json")
         path: String?
     ): String {
+        val jsonNotNull = validateNotNull(json) { "Parameter 'json' is required. Provide the complete Scoop manifest JSON string." }
         return try {
             val resolvedPath = if (!path.isNullOrBlank()) {
                 Path.of(path)
             } else {
-                val appName = extractAppName(json)
+                val appName = extractAppName(jsonNotNull)
                 Path.of("bucket").resolve("$appName.json")
             }
             resolvedPath.parent?.let { Files.createDirectories(it) }
-            Files.writeString(resolvedPath, json)
+            Files.writeString(resolvedPath, jsonNotNull)
             buildJsonObject {
                 put("path", resolvedPath.toAbsolutePath().toString())
                 put("success", true)
@@ -130,10 +134,11 @@ class FileManifestIo : ManifestIo, ToolSet {
     @LLMDescription("Read a manifest file and return its content")
     override fun read(
         @LLMDescription("The file path of the manifest to read")
-        path: String
+        path: String?
     ): String {
+        val pathNotNull = validateNotNull(path) { "Parameter 'path' is required. Provide the file path of the manifest to read." }
         return try {
-            Files.readString(Path.of(path))
+            Files.readString(Path.of(pathNotNull))
         } catch (e: Exception) {
             buildJsonObject {
                 put("error", "Failed to read manifest: ${e.message}")
