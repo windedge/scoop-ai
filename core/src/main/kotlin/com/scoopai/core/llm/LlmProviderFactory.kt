@@ -1,12 +1,13 @@
 package com.scoopai.core.llm
 
+import ai.koog.http.client.KoogHttpClient
 import ai.koog.prompt.executor.clients.anthropic.AnthropicLLMClient
 import ai.koog.prompt.executor.clients.deepseek.DeepSeekClientSettings
 import ai.koog.prompt.executor.clients.deepseek.DeepSeekLLMClient
 import ai.koog.prompt.executor.clients.deepseek.DeepSeekModels
-import ai.koog.prompt.executor.clients.openai.OpenAIClientSettings
 import ai.koog.prompt.executor.clients.openai.OpenAILLMClient
 import ai.koog.prompt.executor.clients.openai.OpenAIModels
+import ai.koog.prompt.executor.clients.openai.base.AbstractOpenAILLMClient
 import ai.koog.prompt.executor.clients.openrouter.OpenRouterLLMClient
 import ai.koog.prompt.executor.llms.SingleLLMPromptExecutor
 import ai.koog.prompt.executor.model.PromptExecutor
@@ -33,24 +34,27 @@ object LlmProviderFactory {
         "openrouter" -> SingleLLMPromptExecutor(OpenRouterLLMClient(apiKey = apiKey))
         "openai-compatible" -> {
             val resolvedBaseUrl = baseUrl ?: error("--base-url is required for openai-compatible provider")
-            if (modelName.isDeepSeekModelName()) {
-                SingleLLMPromptExecutor(
-                    DeepSeekLLMClient(
-                        apiKey = apiKey,
-                        settings = DeepSeekClientSettings(
-                            baseUrl = resolvedBaseUrl,
-                            chatCompletionsPath = "v1/chat/completions",
-                        ),
-                    )
+            val settings = DeepSeekClientSettings(
+                baseUrl = resolvedBaseUrl,
+                chatCompletionsPath = "v1/chat/completions",
+            )
+            // Build the HTTP client via the standard factory, then optionally
+            // wrap with LoggingKoogHttpClient when SCOOP_AI_DEBUG_HTTP is set.
+            val baseHttpClient: KoogHttpClient = AbstractOpenAILLMClient.createConfiguredHttpClient(
+                apiKey = apiKey,
+                settings = settings,
+                httpClientFactory = ai.koog.http.client.ktor.KtorKoogHttpClient.Factory(),
+                clientName = "DeepSeekLLMClient",
+            )
+            val httpClient = DoubleEncodingFixHttpClient(
+                LoggingKoogHttpClient.wrapIfDebug(baseHttpClient)
+            )
+            SingleLLMPromptExecutor(
+                DeepSeekLLMClient(
+                    settings = settings,
+                    httpClient = httpClient,
                 )
-            } else {
-                SingleLLMPromptExecutor(
-                    OpenAILLMClient(
-                        apiKey = apiKey,
-                        settings = OpenAIClientSettings(baseUrl = resolvedBaseUrl),
-                    )
-                )
-            }
+            )
         }
         else -> error("Unsupported provider: $provider. Supported: deepseek, openai, anthropic, ollama, openrouter, openai-compatible")
     }
