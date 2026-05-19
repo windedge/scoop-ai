@@ -26,8 +26,11 @@ class ScoopManifestGeneratorMockTest {
         val manifestJson = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip","hash":"abc123","extract_dir":"fd-v10.2.0-x86_64-pc-windows-msvc"}},"bin":["fd.exe"]}"""
 
         val promptExecutor = getMockExecutor {
-            mockLLMAnswer(researchJson) onRequestContains "Research the project"
+            // Research: prompt builder creates "Research the project at: https://github.com/sharkdp/fd"
+            mockLLMAnswer(researchJson) onRequestContains "Research the project at"
+            // Analyze: prompt builder creates "Based on the following research JSON..."
             mockLLMAnswer(analyzeJson) onRequestContains "Based on the following research"
+            // Generate: prompt builder creates "generate a complete Scoop manifest"
             mockLLMAnswer("Here is the manifest:\n```json\n$manifestJson\n```") onRequestContains "generate a complete Scoop manifest"
             mockLLMAnswer("").asDefaultResponse
         }
@@ -39,8 +42,7 @@ class ScoopManifestGeneratorMockTest {
             model = model,
             toolRegistry = ToolRegistry {},
             manifestIo = mockManifestIo(),
-            maxIterations = 5,
-            maxPhaseRetries = 0,
+            maxIterations = 50,
         )
 
         val result = generator.generate("https://github.com/sharkdp/fd")
@@ -51,8 +53,10 @@ class ScoopManifestGeneratorMockTest {
 
     @Test
     fun `research phase detects no Windows assets`() = runBlocking {
+        val researchJson = """{"status":"no_windows_assets","project":"linux-only-tool","alternatives":"Consider using WSL or a Linux VM."}"""
+
         val promptExecutor = getMockExecutor {
-            mockLLMAnswer("""{"status":"no_windows_assets","project":"linux-only-tool","alternatives":"Consider using WSL or a Linux VM."}""") onRequestContains "Research"
+            mockLLMAnswer(researchJson) onRequestContains "Research the project at"
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -63,8 +67,7 @@ class ScoopManifestGeneratorMockTest {
             model = model,
             toolRegistry = ToolRegistry {},
             manifestIo = mockManifestIo(),
-            maxIterations = 3,
-            maxPhaseRetries = 0,
+            maxIterations = 30,
         )
 
         val result = generator.generate("https://github.com/linux-only/tool")
@@ -94,8 +97,7 @@ class ScoopManifestGeneratorMockTest {
             model = model,
             toolRegistry = ToolRegistry {},
             manifestIo = mockManifestIo(),
-            maxIterations = 1,
-            maxPhaseRetries = 0,
+            maxIterations = 10,
         )
     }
 }

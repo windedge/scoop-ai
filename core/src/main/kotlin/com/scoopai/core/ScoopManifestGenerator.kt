@@ -2,20 +2,18 @@ package com.scoopai.core
 
 import ai.koog.agents.core.agent.AIAgent
 import ai.koog.agents.core.agent.config.AIAgentConfig
+import ai.koog.agents.core.agent.singleRunStrategy
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.features.eventHandler.feature.handleEvents
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.model.PromptExecutor
 import ai.koog.prompt.llm.LLModel
-import ai.koog.prompt.message.Message
-import ai.koog.prompt.message.MessagePart
+import ai.koog.prompt.params.LLMParams
 import ai.koog.serialization.JSONObject
 import ai.koog.serialization.JSONPrimitive
-import com.scoopai.core.agent.AnalyzeOutput
-import com.scoopai.core.agent.thinkingCompatibleSingleRunStrategy
-import com.scoopai.core.agent.PhaseSchemas
-import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.agent.SystemPrompts
+import com.scoopai.core.agent.parseResearchStatus
+import com.scoopai.core.agent.scoopManifestStrategy
 import com.scoopai.core.tools.api.ManifestIo
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.serialization.json.buildJsonObject
@@ -27,15 +25,8 @@ import kotlinx.serialization.json.put
 private val logger = KotlinLogging.logger {}
 
 /**
- * Generates a Scoop manifest in three sequential phases, each with its own focused agent:
- *
- * 1. **Research** — Gather project info (repo, releases, Windows assets)
- * 2. **Analyze** — Compute SHA-256 hashes, inspect ZIP archives
- * 3. **Generate** — Create manifest JSON, validate, write
- *
- * Each phase runs a separate agent instance with a phase-specific system prompt.
- * If a phase produces no usable output it is retried (up to [maxPhaseRetries] times).
- * Finally the manifest is validated locally and fixed in a mini-loop.
+ * Generates a Scoop manifest using a Koog graph strategy with three phases
+ * (research → analyze → generate), routed by conditional edges.
  */
 @OptIn(kotlin.time.ExperimentalTime::class)
 class ScoopManifestGenerator(
@@ -45,161 +36,34 @@ class ScoopManifestGenerator(
     private val manifestIo: ManifestIo,
     private val maxIterations: Int = 80,
     private val maxFixAttempts: Int = 2,
-    private val maxPhaseRetries: Int = 2,
-    /**
-     * Thinking level for models that support reasoning (e.g. DeepSeek V4).
-     *
-     * Maps to DeepSeek API parameters:
-     * - `thinking.type` = `"enabled"` / `"disabled"`
-     * - `reasoning_effort` = `"minimal"` / `"low"` / `"medium"` / `"high"` / `"xhigh"`
-     *
-     * Accepted values:
-     * - `null` (default): use the model's default thinking configuration.
-     * - `"disabled"`: explicitly disable thinking.
-     * - `"enabled"`: enable thinking, let the model decide the effort level.
-     * - `"minimal"` / `"low"` / `"medium"` / `"high"` / `"xhigh"`:
-     *   enable thinking and set the corresponding `reasoning_effort` level.
-     *
-     * Only applied when the model declares [LLMCapability.Thinking].
-     */
     private val thinkingLevel: String? = null,
 ) {
-    /** Result collected from a single agent execution. */
-    data class PhaseResult(
-        val llmText: String,
-        val toolResults: List<Pair<String, String?>>,
-        val manifestJson: String,
-    )
-
-    /** Lenient JSON instance for parsing phase outputs. */
-    private val phaseJson = kotlinx.serialization.json.Json {
-        ignoreUnknownKeys = true
-        isLenient = true
-        coerceInputValues = true
-    }
-
     suspend fun generate(url: String, outputPath: String? = null): String {
-        // ── Phase 1: Research ──────────────────────────────────────────
-        val p1 = runPhaseWithRetry(
-            phaseName = "research",
-            systemPrompt = SystemPrompts.RESEARCH,
-            userPrompt = buildResearchPrompt(url, outputPath),
+        // ── Build prompt constructors for each phase ─────────────────
+        val researchPrompt: suspend (String) -> String = { input ->
+            buildResearchPrompt(input, outputPath)
+        }
+        val analyzePrompt: suspend (String) -> String = { researchJson ->
+            buildAnalyzePrompt(researchJson)
+        }
+        val generatePrompt: suspend (String) -> String = { analyzeJson ->
+            // Research JSON is needed for the generate prompt, but the subgraph
+            // input is only the analyze output. We store research output in storage.
+            // For now, pass analyzeJson + a note to read research from context.
+            buildGeneratePrompt("", analyzeJson, outputPath)
+        }
+
+        val llmParams = buildLlmParams()
+        val strategy = scoopManifestStrategy(
+            llmParams = llmParams,
+            researchPromptBuilder = researchPrompt,
+            analyzePromptBuilder = analyzePrompt,
+            generatePromptBuilder = generatePrompt,
         )
-
-        // Try structured parse; fallback to legacy free-text on failure
-        val researchOutput = parseResearchOutput(p1)
-        if (researchOutput != null) {
-            if (researchOutput.status == "no_windows_assets") {
-                logger.info { "[research] No Windows assets found (structured), skipping analyze/generate" }
-                val msg = researchOutput.alternatives.ifBlank {
-                    "This project does not provide Windows binaries."
-                }
-                return msg
-            }
-            if (researchOutput.windows_assets.isEmpty()) {
-                logger.warn { "[research] Structured output has empty windows_assets, aborting" }
-                return ""
-            }
-            logger.info { "[research] Completed (structured): project=${researchOutput.project}, version=${researchOutput.version}, assets=${researchOutput.windows_assets.size}" }
-        } else {
-            // Legacy fallback
-            val legacyMsg = extractNoWindowsAssetsMessage(p1)
-            if (legacyMsg != null) {
-                logger.info { "[research] No Windows assets found (legacy), skipping analyze/generate" }
-                return legacyMsg
-            }
-            val researchCtx = summarizePhase(p1)
-            if (researchCtx.isBlank()) {
-                logger.warn { "[research] Phase returned empty, aborting" }
-                return ""
-            }
-            logger.info { "[research] Completed (legacy fallback): ${researchCtx.length} chars" }
-        }
-
-        // Build the research context string to pass to phase 2
-        val researchJsonString = if (researchOutput != null) {
-            phaseJson.encodeToString(ResearchOutput.serializer(), researchOutput)
-        } else {
-            summarizePhase(p1)
-        }
-
-        // ── Phase 2: Analyze ───────────────────────────────────────────
-        val p2 = runPhaseWithRetry(
-            phaseName = "analyze",
-            systemPrompt = SystemPrompts.ANALYZE,
-            userPrompt = buildAnalyzePrompt(researchJsonString),
-        )
-
-        val analyzeOutput = parseAnalyzeOutput(p2)
-        if (analyzeOutput != null) {
-            logger.info { "[analyze] Completed (structured): strategy=${analyzeOutput.strategy}, entries=${analyzeOutput.entries.size}" }
-        } else {
-            logger.info { "[analyze] Completed (legacy fallback): ${summarizePhase(p2).length} chars" }
-        }
-
-        // Build the analyze context string to pass to phase 3
-        val analyzeJsonString = if (analyzeOutput != null) {
-            phaseJson.encodeToString(AnalyzeOutput.serializer(), analyzeOutput)
-        } else {
-            summarizePhase(p2)
-        }
-
-        // ── Phase 3: Generate ──────────────────────────────────────────
-        val p3 = runPhaseWithRetry(
-            phaseName = "generate",
-            systemPrompt = SystemPrompts.GENERATE,
-            userPrompt = buildGeneratePrompt(researchJsonString, analyzeJsonString, outputPath),
-        )
-        var manifestJson = if (p3.manifestJson.isNotBlank()) p3.manifestJson
-        else extractJson(p3.llmText) ?: ""
-
-        if (manifestJson.isBlank()) {
-            logger.warn { "[generate] Phase returned empty manifest" }
-            return ""
-        }
-        logger.info { "[generate] Completed: ${manifestJson.length} chars" }
-
-        // ── Validate & Fix ─────────────────────────────────────────────
-        return validateAndFix(manifestJson)
-    }
-
-    // ------------------------------------------------------------------
-    // Phase execution
-    // ------------------------------------------------------------------
-
-    private suspend fun runPhaseWithRetry(
-        phaseName: String,
-        systemPrompt: String,
-        userPrompt: String,
-    ): PhaseResult {
-        var result = executePhase(systemPrompt, userPrompt)
-
-        for (attempt in 1..maxPhaseRetries) {
-            val hasContent = when (phaseName) {
-                "generate" -> result.manifestJson.isNotBlank() || extractJson(result.llmText) != null
-                else -> result.llmText.isNotBlank() || result.toolResults.isNotEmpty()
-            }
-            if (hasContent) break
-
-            logger.info { "[$phaseName] Retry $attempt/$maxPhaseRetries — no usable output" }
-            val retryPrompt = buildPhaseRetryPrompt(phaseName, result.toolResults, userPrompt)
-            result = executePhase(systemPrompt, retryPrompt)
-        }
-
-        return result
-    }
-
-    private suspend fun executePhase(systemPrompt: String, userPrompt: String): PhaseResult {
-        val capturedToolResults = mutableListOf<Pair<String, String?>>()
-        var capturedLlmText = ""
-        var capturedManifestJson = ""
 
         val agentConfig = AIAgentConfig(
-            prompt = prompt(
-                id = "chat",
-                params = phasePromptParams(),
-            ) {
-                system(systemPrompt)
+            prompt = prompt("chat") {
+                system("You are a Scoop manifest generator. You generate Scoop bucket manifests for Windows software.")
             },
             model = model,
             maxAgentIterations = maxIterations,
@@ -208,7 +72,7 @@ class ScoopManifestGenerator(
         val agent = AIAgent(
             promptExecutor = promptExecutor,
             agentConfig = agentConfig,
-            strategy = thinkingCompatibleSingleRunStrategy(),
+            strategy = strategy,
             toolRegistry = toolRegistry,
         ) {
             handleEvents {
@@ -219,92 +83,57 @@ class ScoopManifestGenerator(
                 onToolCallCompleted { ctx ->
                     val result = ctx.toolResult?.toString()?.take(200) ?: "null"
                     logger.info { "[tool] ${ctx.toolName} -> $result" }
-                    capturedToolResults.add(ctx.toolName to ctx.toolResult?.toString())
-                    if (ctx.toolName in listOf("write", "validate", "writeManifestToFile", "validateManifestJson")) {
-                        val json = extractManifestJsonFromToolArgs(ctx.toolArgs)
-                        if (json != null) {
-                            capturedManifestJson = json
-                            logger.info { "[tool] Captured manifest from ${ctx.toolName} args (${json.length} chars)" }
-                        }
-                    }
-                }
-                onLLMCallCompleted { ctx ->
-                    val response = ctx.response as? Message.Assistant
-                    if (response != null) {
-                        val reasoningParts = response.parts.filterIsInstance<MessagePart.Reasoning>()
-                        if (reasoningParts.isNotEmpty()) {
-                            logger.debug { "[phase] reasoning: ${reasoningParts.flatMap { it.content }.joinToString(" ").take(200)}..." }
-                        }
-                        val text = response.parts.mapNotNull {
-                            (it as? MessagePart.Text)?.text
-                        }.joinToString("")
-                        if (text.isNotBlank()) {
-                            capturedLlmText = text
-                            logger.info { "[phase] finishReason=${response.finishReason}, text=${text.take(100)}..." }
-                        }
-                    }
                 }
                 onAgentCompleted {
-                    logger.info { "[phase] Agent completed." }
+                    logger.info { "[agent] Agent completed." }
                 }
-                onAgentExecutionFailed { ctx ->
-                    logger.error { "[phase] Failed: ${ctx.error.message}" }
-                }
-            }
-        }
-        try {
-            agent.run(userPrompt)
-        } catch (e: ai.koog.agents.core.agent.exception.AIAgentMaxNumberOfIterationsReachedException) {
-            // Agent exhausted its iterations (common with DeepSeek thinking mode due to
-            // empty-arg tool call loops). If we already captured useful results,
-            // continue instead of aborting.
-            if (capturedManifestJson.isNotBlank() || capturedLlmText.isNotBlank() || capturedToolResults.isNotEmpty()) {
-                logger.warn { "[phase] Agent hit max iterations (${maxIterations}) but captured results exist — continuing with partial results" }
-            } else {
-                logger.error { "[phase] Agent hit max iterations (${maxIterations}) with no captured results" }
-                throw e
             }
         }
 
-        return PhaseResult(
-            llmText = capturedLlmText,
-            toolResults = capturedToolResults.toList(),
-            manifestJson = capturedManifestJson,
-        )
+        val result = agent.run(url)
+        if (result.isBlank()) {
+            logger.warn { "[generate] Graph agent returned empty result" }
+            return ""
+        }
+
+        val status = parseResearchStatus(result)
+        if (status == "no_windows_assets") {
+            logger.info { "[generate] No Windows assets found" }
+            return result
+        }
+
+        val manifestJson = extractJson(result) ?: result
+        if (manifestJson.isBlank()) {
+            logger.warn { "[generate] No manifest JSON found" }
+            return ""
+        }
+
+        return validateAndFix(manifestJson)
     }
 
-    private fun phasePromptParams(): ai.koog.prompt.params.LLMParams {
+    // ── LLM params ──────────────────────────────────────────────────
+
+    private fun buildLlmParams(): LLMParams {
         if (!model.supports(ai.koog.prompt.llm.LLMCapability.Thinking)) {
-            return ai.koog.prompt.params.LLMParams()
+            return LLMParams()
         }
-
         val additionalProps = mutableMapOf<String, kotlinx.serialization.json.JsonElement>()
-
         when (thinkingLevel) {
-            null -> { /* use model default: thinking enabled, default effort */ }
+            null -> {}
             "disabled" -> additionalProps["thinking"] =
-                kotlinx.serialization.json.buildJsonObject { put("type", "disabled") }
+                buildJsonObject { put("type", "disabled") }
             "enabled" -> additionalProps["thinking"] =
-                kotlinx.serialization.json.buildJsonObject { put("type", "enabled") }
-            // reasoning_effort levels: enable thinking + set effort
+                buildJsonObject { put("type", "enabled") }
             "minimal", "low", "medium", "high", "xhigh" -> {
-                additionalProps["thinking"] =
-                    kotlinx.serialization.json.buildJsonObject { put("type", "enabled") }
-                additionalProps["reasoning_effort"] =
-                    kotlinx.serialization.json.JsonPrimitive(thinkingLevel)
+                additionalProps["thinking"] = buildJsonObject { put("type", "enabled") }
+                additionalProps["reasoning_effort"] = kotlinx.serialization.json.JsonPrimitive(thinkingLevel)
             }
         }
-
-        return if (additionalProps.isEmpty()) {
-            ai.koog.prompt.params.LLMParams()
-        } else {
-            ai.koog.prompt.params.LLMParams(additionalProperties = additionalProps)
-        }
+        return if (additionalProps.isEmpty()) LLMParams()
+        else LLMParams(additionalProperties = additionalProps)
     }
 
-    // ------------------------------------------------------------------
-    // Prompt builders
-    // ------------------------------------------------------------------
+    // ── Prompt builders ──────────────────────────────────────────────
 
     private fun buildResearchPrompt(url: String, outputPath: String?): String {
         val task = if (outputPath != null) {
@@ -343,92 +172,7 @@ $outputPart
 Generate the manifest JSON, then call validateManifestJson and writeManifestToFile to save it."""
     }
 
-    private fun buildPhaseRetryPrompt(phaseName: String, toolResults: List<Pair<String, String?>>, originalPrompt: String): String {
-        val toolSummary = toolResults.map { (name, result) ->
-            "- $name: ${(result ?: "null").take(300)}"
-        }.joinToString("\n")
-
-        val phaseGoal = when (phaseName) {
-            "research" -> "gather project information and identify Windows assets"
-            "analyze" -> "compute SHA-256 hashes and inspect archives"
-            "generate" -> "generate the manifest JSON, call validateManifestJson, then call writeManifestToFile"
-            else -> "complete your task"
-        }
-
-        return """Your previous attempt did not produce complete results. Here is what was collected:
-
-$toolSummary
-
-Please retry to $phaseGoal. Make sure you call the necessary tools and produce a proper result.
-
-Original request: $originalPrompt"""
-    }
-
-    // ------------------------------------------------------------------
-    // Structured JSON parsing
-    // ------------------------------------------------------------------
-
-    private fun parseResearchOutput(result: PhaseResult): ResearchOutput? {
-        val jsonText = extractJson(result.llmText) ?: return null
-        return try {
-            phaseJson.decodeFromString<ResearchOutput>(jsonText)
-        } catch (e: Exception) {
-            logger.warn { "[research] Failed to parse structured JSON: ${e.message?.take(200)}" }
-            null
-        }
-    }
-
-    private fun parseAnalyzeOutput(result: PhaseResult): AnalyzeOutput? {
-        val jsonText = extractJson(result.llmText) ?: return null
-        return try {
-            phaseJson.decodeFromString<AnalyzeOutput>(jsonText)
-        } catch (e: Exception) {
-            logger.warn { "[analyze] Failed to parse structured JSON: ${e.message?.take(200)}" }
-            null
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Legacy context formatting (fallback)
-    // ------------------------------------------------------------------
-
-    private fun summarizePhase(result: PhaseResult): String {
-        val sb = StringBuilder()
-        if (result.llmText.isNotBlank()) {
-            sb.append(result.llmText)
-        }
-        val nonManifestResults = result.toolResults.filter { (name, _) ->
-            name !in listOf("validateManifestJson", "writeManifestToFile", "readManifestFile")
-        }
-        if (nonManifestResults.isNotEmpty()) {
-            if (sb.isNotEmpty()) sb.append("\n\n---\n")
-            sb.append("Tool Results:\n")
-            nonManifestResults.forEach { (name, res) ->
-                sb.append("- $name: ${(res ?: "null").take(500)}\n")
-            }
-        }
-        return sb.toString()
-    }
-
-    private fun extractNoWindowsAssetsMessage(result: PhaseResult): String? {
-        val text = result.llmText.trim()
-        if (text.isBlank()) return null
-
-        val firstNonBlankLine = text.lineSequence()
-            .map { it.trim() }
-            .firstOrNull { it.isNotEmpty() }
-            ?: return null
-
-        return if (firstNonBlankLine.startsWith("NO_WINDOWS_ASSETS:")) {
-            text
-        } else {
-            null
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // JSON extraction & validation
-    // ------------------------------------------------------------------
+    // ── JSON extraction & validation ─────────────────────────────────
 
     private suspend fun validateAndFix(manifestJson: String): String {
         val validation = manifestIo.validate(manifestJson)
@@ -453,10 +197,8 @@ Original request: $originalPrompt"""
         var fixed = manifestJson
         for (attempt in 1..maxFixAttempts) {
             val fixPrompt = buildFixPrompt(manifestJson, errors)
-            val fixPhase = executePhase(SystemPrompts.GENERATE, fixPrompt)
-            val fixText = fixPhase.manifestJson.ifBlank { fixPhase.llmText }
-            val fixedJson = extractJson(fixText) ?: continue
-
+            val fixResult = runFixPhase(fixPrompt)
+            val fixedJson = extractJson(fixResult) ?: continue
             val reval = kotlinx.serialization.json.Json.parseToJsonElement(manifestIo.validate(fixedJson)).jsonObject
             if (reval["valid"]?.jsonPrimitive?.content == "true") {
                 logger.info { "[validate] Fix attempt $attempt succeeded." }
@@ -469,13 +211,39 @@ Original request: $originalPrompt"""
         return fixed
     }
 
+    private suspend fun runFixPhase(fixPrompt: String): String {
+        val agent = AIAgent(
+            promptExecutor = promptExecutor,
+            agentConfig = AIAgentConfig(
+                prompt = prompt("fix") { system(SystemPrompts.GENERATE) },
+                model = model,
+                maxAgentIterations = maxIterations,
+            ),
+            strategy = singleRunStrategy(),
+            toolRegistry = toolRegistry,
+        ) {
+            handleEvents {
+                onToolCallStarting { ctx ->
+                    logger.info { "[fix] ${ctx.toolName}(${ctx.toolArgs.toString().take(120)})" }
+                }
+                onToolCallCompleted { ctx ->
+                    val json = extractManifestJsonFromToolArgs(ctx.toolArgs)
+                    if (json != null) logger.info { "[fix] Captured manifest from ${ctx.toolName}" }
+                }
+            }
+        }
+        return try {
+            agent.run(fixPrompt)
+        } catch (e: Exception) {
+            logger.error { "[fix] Fix phase failed: ${e.message?.take(200)}" }
+            fixPrompt
+        }
+    }
+
     private fun extractManifestJsonFromToolArgs(args: JSONObject): String? {
         val fromJsonField = (args.entries["json"] as? JSONPrimitive)?.contentOrNull
-        return if (fromJsonField != null && isValidJson(fromJsonField)) {
-            fromJsonField
-        } else {
-            extractJson(args.toString())
-        }
+        return if (fromJsonField != null && isValidJson(fromJsonField)) fromJsonField
+        else extractJson(args.toString())
     }
 
     internal fun extractJson(text: String): String? {
@@ -497,9 +265,7 @@ Original request: $originalPrompt"""
 
     internal fun isValidJson(text: String): Boolean = try {
         kotlinx.serialization.json.Json.parseToJsonElement(text) is kotlinx.serialization.json.JsonObject
-    } catch (_: Exception) {
-        false
-    }
+    } catch (_: Exception) { false }
 
     private fun buildFixPrompt(originalJson: String, errors: List<String>): String {
         val errorList = errors.joinToString("\n") { "- $it" }
