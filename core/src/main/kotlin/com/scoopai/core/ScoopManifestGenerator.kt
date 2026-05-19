@@ -478,7 +478,7 @@ Original request: $originalPrompt"""
         }
     }
 
-    private fun extractJson(text: String): String? {
+    internal fun extractJson(text: String): String? {
         val codeBlockRegex = Regex("```(?:json)?\\s*\\n?([\\s\\S]*?)```")
         codeBlockRegex.find(text)?.let { match ->
             val candidate = match.groupValues[1].trim()
@@ -495,7 +495,7 @@ Original request: $originalPrompt"""
         return null
     }
 
-    private fun isValidJson(text: String): Boolean = try {
+    internal fun isValidJson(text: String): Boolean = try {
         kotlinx.serialization.json.Json.parseToJsonElement(text) is kotlinx.serialization.json.JsonObject
     } catch (_: Exception) {
         false

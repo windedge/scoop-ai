@@ -87,7 +87,7 @@ public class DoubleEncodingFixHttpClient(
     /**
      * Parse the JSON request body and fix double-encoded fields.
      */
-    private fun fixRequestBody(rawJson: String): String {
+    internal fun fixRequestBody(rawJson: String): String {
         val root = try {
             fixJson.parseToJsonElement(rawJson).jsonObject
         } catch (e: Exception) {

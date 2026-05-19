@@ -6,6 +6,7 @@ kotlinx-coroutines = "1.10.2"
 logback = "1.5.18"
 shadow = "8.1.1"
 kotlin-logging = "7.0.7"
+junit = "5.10.2"
 
 [libraries]
 koog-agents = { module = "ai.koog:koog-agents", version.ref = "koog" }
@@ -17,6 +18,8 @@ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
 kotlin-logging = { module = "io.github.oshai:kotlin-logging-jvm", version.ref = "kotlin-logging" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+koog-agents-test = { module = "ai.koog:agents-test", version.ref = "koog" }
 
 [plugins]
 shadow = { id = "com.github.johnrengelman.shadow", version.ref = "shadow" }

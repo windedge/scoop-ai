@@ -149,7 +149,7 @@ private suspend fun ai.koog.agents.core.agent.context.AIAgentGraphContextBase.re
  * Returns true if the exception is caused by a JSON parsing error in tool call arguments,
  * as opposed to a real API/network/auth error.
  */
-private fun isToolCallJsonParseError(e: Exception): Boolean {
+internal fun isToolCallJsonParseError(e: Exception): Boolean {
     val msg = e.message ?: return false
     return msg.contains("JSON token") ||
         msg.contains("Expected end of the object") ||

@@ -19,8 +19,17 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.logback.classic)
     implementation(libs.kotlin.logging)
+
+    testImplementation(kotlin("test"))
+    testImplementation(libs.junit.jupiter)
+    testImplementation(libs.koog.agents.test)
+    testRuntimeOnly(libs.logback.classic)
 }
 
 kotlin {
     jvmToolchain(17)
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
