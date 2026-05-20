@@ -5,6 +5,7 @@ import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
 import ai.koog.agents.core.tools.validateNotNull
 import com.scoopai.core.tools.api.WebFetcher
+import com.scoopai.tools.http.RetryingHttpClient
 import kotlinx.serialization.json.*
 import java.net.URI
 import java.net.http.HttpClient
@@ -12,26 +13,18 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 
 @LLMDescription("Web fetching tools for reading web pages and APIs")
-class KtorWebFetcher : WebFetcher, ToolSet {
+class JdkHttpWebFetcher : WebFetcher, ToolSet {
 
-    private val httpClient: HttpClient = HttpClient.newBuilder()
-        .followRedirects(HttpClient.Redirect.NORMAL)
-        .build()
+    private val httpClient = RetryingHttpClient()
 
     // ---------------------------------------------------------------------------
     // HTTP helpers
     // ---------------------------------------------------------------------------
 
     private fun httpGetString(url: String): String {
-        val request = HttpRequest.newBuilder()
-            .uri(URI.create(url))
-            .header("User-Agent", "scoop-ai/0.1.0")
-            .GET()
-            .build()
-        val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
-        if (response.statusCode() !in 200..299) {
-            throw IllegalStateException("HTTP ${response.statusCode()} for $url")
-        }
+        val response = httpClient.get(url, mapOf(
+            "User-Agent" to "scoop-ai/0.1.0",
+        ))
         return response.body()
     }
 

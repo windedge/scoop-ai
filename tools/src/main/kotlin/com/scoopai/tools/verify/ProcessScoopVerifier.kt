@@ -5,9 +5,13 @@ import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
 import ai.koog.agents.core.tools.validateNotNull
 import com.scoopai.core.tools.api.ScoopVerifier
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
@@ -48,22 +52,18 @@ class ProcessScoopVerifier : ScoopVerifier, ToolSet {
                 runScoop("uninstall", appName)
             }
 
-            buildString {
-                appendLine("{")
-                appendLine("  \"success\": $success,")
-                appendLine("  \"app_name\": \"$appName\",")
-                appendLine("  \"exit_code\": ${installResult.exitCode},")
-                appendLine("  \"output\": ${escapeJson(installResult.output)}")
-                appendLine("}")
-            }
+            buildJsonObject {
+                put("success", success)
+                put("app_name", appName)
+                put("exit_code", installResult.exitCode)
+                put("output", installResult.output)
+            }.toString()
         } catch (e: Exception) {
-            buildString {
-                appendLine("{")
-                appendLine("  \"success\": false,")
-                appendLine("  \"app_name\": \"$appName\",")
-                appendLine("  \"error\": ${escapeJson(e.message ?: "Unknown error")}")
-                appendLine("}")
-            }
+            buildJsonObject {
+                put("success", false)
+                put("app_name", appName)
+                put("error", e.message ?: "Unknown error")
+            }.toString()
         } finally {
             try { Files.deleteIfExists(manifestFile) } catch (_: Exception) {}
             try { Files.delete(tempDir) } catch (_: Exception) {}
@@ -78,12 +78,10 @@ class ProcessScoopVerifier : ScoopVerifier, ToolSet {
     ): String {
         val appNameNotNull = validateNotNull(appName) { "Parameter 'appName' is required. Provide the app name to uninstall." }
         val result = runScoop("uninstall", appNameNotNull)
-        return buildString {
-            appendLine("{")
-            appendLine("  \"success\": ${result.exitCode == 0},")
-            appendLine("  \"output\": ${escapeJson(result.output)}")
-            appendLine("}")
-        }
+        return buildJsonObject {
+            put("success", result.exitCode == 0)
+            put("output", result.output)
+        }.toString()
     }
 
     private fun extractAppName(json: String): String {
@@ -93,13 +91,13 @@ class ProcessScoopVerifier : ScoopVerifier, ToolSet {
             val bin = obj["bin"]
             when {
                 bin == null -> "scoop-app"
-                bin is kotlinx.serialization.json.JsonPrimitive -> {
+                bin is JsonPrimitive -> {
                     val name = bin.content.substringBeforeLast('.')
                     name.ifBlank { "scoop-app" }
                 }
-                bin is kotlinx.serialization.json.JsonArray -> {
+                bin is JsonArray -> {
                     val first = bin.firstOrNull()?.let {
-                        if (it is kotlinx.serialization.json.JsonArray) it.firstOrNull()?.jsonPrimitive?.content
+                        if (it is JsonArray) it.firstOrNull()?.jsonPrimitive?.content
                         else it.jsonPrimitive?.content
                     } ?: "scoop-app"
                     first.substringBeforeLast('.').ifBlank { "scoop-app" }
@@ -130,16 +128,6 @@ class ProcessScoopVerifier : ScoopVerifier, ToolSet {
         }
 
         return ProcessResult(proc.exitValue(), output.trim())
-    }
-
-    private fun escapeJson(value: String): String {
-        val escaped = value
-            .replace("\\", "\\\\")
-            .replace("\"", "\\\"")
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\t", "\\t")
-        return "\"$escaped\""
     }
 
     private data class ProcessResult(val exitCode: Int, val output: String)

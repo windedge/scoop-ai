@@ -6,6 +6,7 @@ import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
 import ai.koog.agents.core.tools.validateNotNull
 import com.scoopai.core.tools.api.GitHubApi
+import com.scoopai.tools.http.RetryingHttpClient
 import kotlinx.serialization.json.*
 import java.net.URI
 import java.net.http.HttpClient
@@ -14,27 +15,19 @@ import java.net.http.HttpResponse
 import java.util.Base64
 
 @LLMDescription("GitHub API tools for gathering project information")
-class KtorGitHubApi : GitHubApi, ToolSet {
+class JdkHttpGitHubApi : GitHubApi, ToolSet {
 
-    private val httpClient: HttpClient = HttpClient.newBuilder()
-        .followRedirects(HttpClient.Redirect.NORMAL)
-        .build()
+    private val httpClient = RetryingHttpClient()
 
     // ---------------------------------------------------------------------------
     // HTTP helper
     // ---------------------------------------------------------------------------
 
     private fun httpGet(url: String): String {
-        val request = HttpRequest.newBuilder()
-            .uri(URI.create(url))
-            .header("User-Agent", "scoop-ai/0.1.0")
-            .header("Accept", "application/vnd.github+json")
-            .GET()
-            .build()
-        val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
-        if (response.statusCode() !in 200..299) {
-            throw IllegalStateException("GitHub API returned ${response.statusCode()} for $url")
-        }
+        val response = httpClient.get(url, mapOf(
+            "User-Agent" to "scoop-ai/0.1.0",
+            "Accept" to "application/vnd.github+json",
+        ))
         return response.body()
     }
 

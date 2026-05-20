@@ -91,7 +91,16 @@ class FileManifestIo : ManifestIo, ToolSet {
                 arch["32bit"]?.jsonObject?.let { bit32 ->
                     bit32["hash"]?.let { validateHashes(it, errors, "architecture.32bit.hash") }
                 }
+                arch["arm64"]?.jsonObject?.let { bitarm ->
+                    bitarm["hash"]?.let { validateHashes(it, errors, "architecture.arm64.hash") }
+                }
             }
+
+            // ── Semantic validation ───────────────────────────────
+            validateBin(obj, errors, warnings)
+            validateArchitectureBlock(obj, errors, warnings)
+            validateExtractDir(obj, warnings)
+            validateVersion(obj, errors)
 
         } catch (e: Exception) {
             errors.add("Invalid JSON: ${e.message}")
@@ -224,6 +233,92 @@ class FileManifestIo : ManifestIo, ToolSet {
                 }
             }
             else -> errors.add("Field '$fieldPath' has unexpected type")
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Semantic validation
+    // ---------------------------------------------------------------------------
+
+    /** Validates `bin` field structure. */
+    private fun validateBin(obj: JsonObject, errors: MutableList<String>, warnings: MutableList<String>) {
+        val bin = obj["bin"] ?: return // bin is optional
+        when (bin) {
+            is JsonPrimitive -> {
+                if (!bin.isString) {
+                    errors.add("Field 'bin' must be a string or array")
+                } else {
+                    val value = bin.content
+                    if (value.isBlank()) errors.add("Field 'bin' must not be empty")
+                    if (!value.endsWith(".exe") && !value.endsWith(".ps1") && !value.contains(".")) {
+                        warnings.add("Field 'bin' value '$value' does not look like an executable path")
+                    }
+                }
+            }
+            is JsonArray -> {
+                bin.forEachIndexed { index, element ->
+                    when (element) {
+                        is JsonPrimitive -> {
+                            val value = element.contentOrNull ?: return@forEachIndexed
+                            if (value.isBlank()) errors.add("Field 'bin[$index]' must not be empty")
+                        }
+                        is JsonArray -> {
+                            if (element.isEmpty()) {
+                                errors.add("Field 'bin[$index]' must not be an empty array")
+                            } else if (element.size > 3) {
+                                warnings.add("Field 'bin[$index]' has more than 3 elements (expected: [exe, alias, args?])")
+                            }
+                        }
+                        else -> errors.add("Field 'bin[$index]' has unexpected type")
+                    }
+                }
+            }
+            else -> errors.add("Field 'bin' must be a string or array")
+        }
+    }
+
+    /** Validates that each architecture block has both `url` and `hash`. */
+    private fun validateArchitectureBlock(obj: JsonObject, errors: MutableList<String>, warnings: MutableList<String>) {
+        val arch = obj["architecture"]?.jsonObject ?: return
+        for ((archName, archElement) in arch) {
+            if (archElement !is JsonObject) continue
+            val hasUrl = archElement.containsKey("url")
+            val hasHash = archElement.containsKey("hash")
+            if (hasUrl && !hasHash) {
+                warnings.add("architecture.$archName has 'url' but no 'hash'")
+            }
+            if (hasHash && !hasUrl) {
+                errors.add("architecture.$archName has 'hash' but no 'url'")
+            }
+            // Validate url and hash inside each arch block
+            archElement["url"]?.let { validateUrls(it, errors, "architecture.$archName.url") }
+            archElement["hash"]?.let { validateHashes(it, errors, "architecture.$archName.hash") }
+        }
+    }
+
+    /** Warns if `extract_dir` uses "." or empty string (should be omitted instead). */
+    private fun validateExtractDir(obj: JsonObject, warnings: MutableList<String>) {
+        val extractDir = obj["extract_dir"]?.jsonPrimitive?.contentOrNull
+        if (extractDir == "." || extractDir == "") {
+            warnings.add("Field 'extract_dir' should be omitted when the exe is at the archive root, not set to '$extractDir'")
+        }
+        // Check extract_dir in architecture blocks too
+        obj["architecture"]?.jsonObject?.let { arch ->
+            for ((archName, archElement) in arch) {
+                if (archElement !is JsonObject) continue
+                val archExtractDir = archElement["extract_dir"]?.jsonPrimitive?.contentOrNull
+                if (archExtractDir == "." || archExtractDir == "") {
+                    warnings.add("architecture.$archName.extract_dir should be omitted when the exe is at the archive root")
+                }
+            }
+        }
+    }
+
+    /** Validates version format (no leading 'v'). */
+    private fun validateVersion(obj: JsonObject, errors: MutableList<String>) {
+        val version = obj["version"]?.jsonPrimitive?.contentOrNull ?: return
+        if (version.startsWith("v")) {
+            errors.add("Field 'version' must not have a leading 'v': $version")
         }
     }
 
