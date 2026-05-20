@@ -1,9 +1,6 @@
 package com.scoopai.core.agent
 
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -17,30 +14,12 @@ class PhaseOutputTest {
     // ---------------------------------------------------------------
 
     @Test
-    fun `bin as single string is wrapped in array`() {
-        val input = """{"status":"ok","strategy":"portable_zip","entries":[],"bin":"app.exe"}"""
-        val output = json.decodeFromString<AnalyzeOutput>(input)
-        assertEquals(1, output.bin.size)
-        assertEquals("app.exe", (output.bin[0] as JsonPrimitive).content)
-    }
-
-    @Test
     fun `bin as string array is unchanged`() {
         val input = """{"status":"ok","strategy":"portable_zip","entries":[],"bin":["app.exe","alias"]}"""
         val output = json.decodeFromString<AnalyzeOutput>(input)
         assertEquals(2, output.bin.size)
-        assertEquals("app.exe", (output.bin[0] as JsonPrimitive).content)
-        assertEquals("alias", (output.bin[1] as JsonPrimitive).content)
-    }
-
-    @Test
-    fun `bin as nested array is unchanged`() {
-        val input = """{"status":"ok","strategy":"portable_zip","entries":[],"bin":[["app.exe","App Name"]]}"""
-        val output = json.decodeFromString<AnalyzeOutput>(input)
-        assertEquals(1, output.bin.size)
-        val nested = output.bin[0] as JsonArray
-        assertEquals("app.exe", nested[0].jsonPrimitive.content)
-        assertEquals("App Name", nested[1].jsonPrimitive.content)
+        assertEquals("app.exe", output.bin[0])
+        assertEquals("alias", output.bin[1])
     }
 
     @Test
@@ -125,10 +104,7 @@ class PhaseOutputTest {
                     extract_dir = "fd-v10.2.0-x86_64-pc-windows-msvc"
                 )
             ),
-            bin = listOf(
-                JsonPrimitive("fd.exe"),
-                JsonArray(listOf(JsonPrimitive("fd.exe"), JsonPrimitive("fd")))
-            ),
+            bin = listOf("fd.exe"),
             persist = listOf(".fd"),
             shortcuts = listOf(listOf("fd.exe", "FD")),
             installer_type = "zip"

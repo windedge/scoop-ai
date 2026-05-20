@@ -1,11 +1,6 @@
 package com.scoopai.core.agent
 
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.JsonTransformingSerializer
-import kotlinx.serialization.serializer
 
 /**
  * Structured output for the Research phase.
@@ -67,8 +62,7 @@ data class AnalyzeOutput(
     /** Per-architecture asset entries with hash */
     val entries: List<AssetEntry> = emptyList(),
     /** Executable(s) to add to PATH. Each item is either a string ("app.exe") or an array (["app.exe", "alias"]). */
-    @Serializable(with = FlexibleBinSerializer::class)
-    val bin: List<JsonElement> = emptyList(),
+    val bin: List<String> = emptyList(),
     /** Directories/files to persist */
     val persist: List<String> = emptyList(),
     /** Shortcut definitions: [target, name] or [target, name, args...] */
@@ -97,26 +91,11 @@ data class AssetEntry(
 // JSON schema descriptions embedded into prompts
 // ---------------------------------------------------------------------------
 
-/**
- * Handles both `"bin": "app.exe"` and `"bin": ["app.exe"]` and `"bin": [["app.exe", "alias"]]`.
- * Always normalizes to List<JsonElement>.
- */
-object FlexibleBinSerializer : JsonTransformingSerializer<List<JsonElement>>(serializer()) {
-    override fun transformDeserialize(element: JsonElement): JsonElement {
-        return when (element) {
-            is JsonPrimitive -> JsonArray(listOf(element))
-            is JsonArray -> element
-            else -> JsonArray(emptyList())
-        }
-    }
-}
-
 object PhaseSchemas {
 
     val RESEARCH_SCHEMA: String = """
-You MUST output your findings as a single JSON code block at the end of your response. The JSON must conform to this schema:
+When you have finished researching, call the `finalize_task_result` tool with your findings as the `result` parameter. The result must be a JSON object conforming to this schema:
 
-```json
 {
   "status": "ok" or "no_windows_assets",
   "project": "owner/repo or project name",
@@ -139,22 +118,18 @@ You MUST output your findings as a single JSON code block at the end of your res
   "notes": "Any additional context for the analyze phase",
   "alternatives": "Only when status=no_windows_assets: suggested alternatives"
 }
-```
 
 Rules:
 - If no Windows assets exist, set status to "no_windows_assets" and fill "alternatives" with suggestions.
 - The license.value MUST be the most precise SPDX identifier. Use -only or -or-later suffix when the license text indicates it.
 - The version MUST NOT have a leading "v".
 - All fields except status, project, version are optional (omit or use empty string/list).
-- Output ONLY the JSON code block as your final message. You may write brief reasoning before it, but the JSON block is what gets parsed.
-- CRITICAL: Your response MUST end with a ```json code block. Do NOT end with plain text, explanations, or tool calls after the JSON block.
-- NEVER output the JSON as plain text without ```json ... ``` markers.
+- ONLY CALL TOOLS. Do NOT output text responses. When done, call finalize_task_result.
 """.trimIndent()
 
     val ANALYZE_SCHEMA: String = """
-You MUST output your findings as a single JSON code block at the end of your response. The JSON must conform to this schema:
+When you have finished analyzing, call the `finalize_task_result` tool with your findings as the `result` parameter. The result must be a JSON object conforming to this schema:
 
-```json
 {
   "status": "ok" or "needs_clarification",
   "strategy": "portable_zip or installer or portable_exe",
@@ -174,7 +149,6 @@ You MUST output your findings as a single JSON code block at the end of your res
   "installer_type": "zip or msi or innosetup or nsis",
   "notes": "Any additional context for the generate phase"
 }
-```
 
 Rules:
 - entries[].hash MUST be computed via computeSha256FromUrl, NEVER fabricated.
@@ -182,8 +156,6 @@ Rules:
 - persist should only contain paths that actually exist in the archive.
 - shortcuts format: [executable, shortcut_name] or [executable, shortcut_name, start_dir].
 - pre_install lines are PowerShell statements.
-- Output ONLY the JSON code block as your final message. You may write brief reasoning before it, but the JSON block is what gets parsed.
-- CRITICAL: Your response MUST end with a ```json code block. Do NOT end with plain text, explanations, or tool calls after the JSON block.
-- NEVER output the JSON as plain text without ```json ... ``` markers.
+- ONLY CALL TOOLS. Do NOT output text responses. When done, call finalize_task_result.
 """.trimIndent()
 }

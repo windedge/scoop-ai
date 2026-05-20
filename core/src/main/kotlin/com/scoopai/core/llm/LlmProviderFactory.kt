@@ -38,34 +38,34 @@ object LlmProviderFactory {
                 baseUrl = resolvedBaseUrl,
                 chatCompletionsPath = "v1/chat/completions",
             )
-            // Build the HTTP client via the standard factory, then optionally
-            // wrap with LoggingKoogHttpClient when SCOOP_AI_DEBUG_HTTP is set.
             val baseHttpClient: KoogHttpClient = AbstractOpenAILLMClient.createConfiguredHttpClient(
                 apiKey = apiKey,
                 settings = deepSeekSettings,
                 httpClientFactory = ai.koog.http.client.ktor.KtorKoogHttpClient.Factory(),
                 clientName = "OpenAICompatibleLLMClient",
             )
-            val httpClient = DoubleEncodingFixHttpClient(
-                LoggingKoogHttpClient.wrapIfDebug(baseHttpClient)
-            )
+            // Compose interceptors based on model requirements:
+            // - fixDoubleEncoding: all models (Koog serialization bug)
+            // - downgradeToolChoice: DeepSeek only (API gateway rejects tool_choice: required)
+            // - logRequestBody: debug only (SCOOP_AI_DEBUG_HTTP env var)
+            val isDeepSeekModel = modelName.isDeepSeekModelName()
+            val interceptors = buildList {
+                add(::fixDoubleEncoding)
+                if (isDeepSeekModel) add(::downgradeToolChoice)
+                if (isDebugHttpEnabled()) add(::logRequestBody)
+            }
+            val httpClient = InterceptingHttpClient(baseHttpClient, interceptors)
             // Use OpenAILLMClient for non-DeepSeek models (e.g. GLM, Qwen, etc.) to avoid
             // DeepSeek's strict response schema (required systemFingerprint field).
-            // DeepSeekLLMClient is used only when the model name contains "deepseek".
-            val isDeepSeekModel = modelName.isDeepSeekModelName()
             val client = if (isDeepSeekModel) {
                 DeepSeekLLMClient(settings = deepSeekSettings, httpClient = httpClient)
             } else {
-                // OpenAILLMClient constructors:
-                //   (settings: OpenAIClientSettings, httpClient: KoogHttpClient, ...)
-                //   (apiKey: String, settings: OpenAIClientSettings, httpClientFactory, ...)
                 OpenAILLMClient(
-                    apiKey = apiKey,
                     settings = ai.koog.prompt.executor.clients.openai.OpenAIClientSettings(
                         baseUrl = resolvedBaseUrl,
                         chatCompletionsPath = "v1/chat/completions",
                     ),
-                    httpClientFactory = ai.koog.http.client.ktor.KtorKoogHttpClient.Factory(),
+                    httpClient = httpClient,
                 )
             }
             SingleLLMPromptExecutor(client)

@@ -1,8 +1,16 @@
 package com.scoopai.core
 
 import ai.koog.agents.core.tools.ToolRegistry
+import ai.koog.agents.core.tools.annotations.InternalAgentToolsApi
+import ai.koog.agents.ext.agent.FinishTool
 import ai.koog.agents.testing.tools.getMockExecutor
+import com.scoopai.core.agent.AnalyzeOutput
+import com.scoopai.core.agent.AssetEntry
+import com.scoopai.core.agent.PhaseSchemas
+import com.scoopai.core.agent.ResearchOutput
+import com.scoopai.core.agent.WindowsAsset
 import com.scoopai.core.tools.api.ManifestIo
+import ai.koog.serialization.typeToken
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
@@ -13,6 +21,15 @@ class ScoopManifestGeneratorMockTest {
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    @OptIn(InternalAgentToolsApi::class)
+    private val researchFinishTool = FinishTool<ResearchOutput>(typeToken<ResearchOutput>())
+
+    @OptIn(InternalAgentToolsApi::class)
+    private val analyzeFinishTool = FinishTool<AnalyzeOutput>(typeToken<AnalyzeOutput>())
+
+    @OptIn(InternalAgentToolsApi::class)
+    private val generateFinishTool = FinishTool<String>(typeToken<String>())
+
     private fun mockManifestIo(): ManifestIo = object : ManifestIo {
         override fun validate(json: String?): String = """{"valid":true,"errors":[]}"""
         override fun write(json: String?, path: String?): String = "written"
@@ -20,18 +37,42 @@ class ScoopManifestGeneratorMockTest {
     }
 
     @Test
-    fun `full 3-phase flow with mock LLM text responses`() = runBlocking {
-        val researchJson = """{"status":"ok","project":"sharkdp/fd","version":"10.2.0","windows_assets":[{"url":"https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip","architecture":"64bit","asset_type":"zip","source":"release_api"}]}"""
-        val analyzeJson = """{"status":"ok","strategy":"portable_zip","entries":[{"architecture":"64bit","url":"https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip","hash":"abc123","extract_dir":"fd-v10.2.0-x86_64-pc-windows-msvc"}]}"""
+    fun `full 3-phase flow with mock tool calls`() = runBlocking {
+        val researchResult = ResearchOutput(
+            status = "ok",
+            project = "sharkdp/fd",
+            version = "10.2.0",
+            windows_assets = listOf(
+                WindowsAsset(
+                    url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                    architecture = "64bit",
+                    asset_type = "zip",
+                    source = "release_api"
+                )
+            )
+        )
+        val analyzeResult = AnalyzeOutput(
+            status = "ok",
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                    hash = "abc123",
+                    extract_dir = "fd-v10.2.0-x86_64-pc-windows-msvc"
+                )
+            ),
+            bin = emptyList()
+        )
         val manifestJson = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip","hash":"abc123","extract_dir":"fd-v10.2.0-x86_64-pc-windows-msvc"}},"bin":["fd.exe"]}"""
 
         val promptExecutor = getMockExecutor {
-            // Research: prompt builder creates "Research the project at: https://github.com/sharkdp/fd"
-            mockLLMAnswer(researchJson) onRequestContains "Research the project at"
-            // Analyze: prompt builder creates "Based on the following research JSON..."
-            mockLLMAnswer(analyzeJson) onRequestContains "Based on the following research"
-            // Generate: prompt builder creates "generate a complete Scoop manifest"
-            mockLLMAnswer("Here is the manifest:\n```json\n$manifestJson\n```") onRequestContains "generate a complete Scoop manifest"
+            // Research phase: prompt contains "Research the project at"
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "Research the project at"
+            // Analyze phase: prompt contains "Based on the following research"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "Based on the following research"
+            // Generate phase: prompt contains "generate a complete Scoop manifest"
+            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "generate a complete Scoop manifest"
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -53,14 +94,18 @@ class ScoopManifestGeneratorMockTest {
 
     @Test
     fun `no Windows assets flows through all phases`() = runBlocking {
-        val noAssetResearch = """{"status":"no_windows_assets","project":"linux-only/tool","alternatives":"Consider using WSL or a Linux VM."}"""
-        val noAssetAnalyze = """{"status":"ok","strategy":"portable_zip","entries":[],"bin":[]}"""
-        val noAssetGenerate = """{"version":"0.0.0","note":"No Windows assets found."}"""
+        val researchResult = ResearchOutput(
+            status = "no_windows_assets",
+            project = "linux-only/tool",
+            alternatives = "Consider using WSL or a Linux VM."
+        )
+        val analyzeResult = AnalyzeOutput(status = "ok", strategy = "portable_zip")
+        val generateResult = """{"version":"0.0.0","note":"No Windows assets found."}"""
 
         val promptExecutor = getMockExecutor {
-            mockLLMAnswer(noAssetResearch) onRequestContains "Research the project at"
-            mockLLMAnswer(noAssetAnalyze) onRequestContains "Based on the following research"
-            mockLLMAnswer(noAssetGenerate) onRequestContains "generate a complete Scoop manifest"
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "Research the project at"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "Based on the following research"
+            mockLLMToolCall(generateFinishTool, generateResult) onRequestContains "generate a complete Scoop manifest"
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -76,7 +121,6 @@ class ScoopManifestGeneratorMockTest {
 
         val result = generator.generate("https://github.com/linux-only/tool")
 
-        // Linear flow: all 3 phases run, generate returns extracted JSON
         assertTrue(result.isNotBlank(), "Should return some text, got: $result")
         assertTrue(result.contains("0.0.0"), "Should contain version from generate phase, got: $result")
     }

@@ -214,7 +214,14 @@ $analyzeJson
 ```
 $outputPart
 
-You MUST call the tools: first call validate with the manifest JSON to check it, then call write to save it. Do not just output text — you must use the validate and write tools."""
+You MUST call the tools: first call validate with the manifest JSON to check it, then call write to save it.
+After writing the manifest, call `finalize_task_result` with the final manifest JSON as the `result` parameter.
+Do NOT output the manifest as plain text — only use tools.
+
+Scoop manifest rules:
+- `extract_dir`: ONLY include this field when the executable is inside a NAMED subdirectory (e.g. "fd-v10.2.0-x86_64-pc-windows-msvc"). If the exe is at the archive root, OMIT `extract_dir` entirely — do NOT use `"."` or `""`.
+- Do NOT add fields not recognized by Scoop (e.g. `innosetup`, `installer.script`). Only use standard Scoop manifest fields.
+- `bin` should be a string or list of strings/arrays matching actual exe paths inside the archive."""
     }
 
     // ── JSON extraction & validation ─────────────────────────────────
