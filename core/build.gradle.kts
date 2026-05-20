@@ -1,6 +1,7 @@
 plugins {
-    kotlin("jvm")
+    kotlin("multiplatform")
     kotlin("plugin.serialization")
+    `maven-publish`
 }
 
 group = "com.scoopai"
@@ -10,26 +11,35 @@ repositories {
     mavenCentral()
 }
 
-dependencies {
-    implementation(libs.koog.agents)
-    implementation(libs.koog.deepseek.client)
-    implementation(libs.koog.openrouter.client)
-    implementation(libs.koog.anthropic.client)
-    implementation(libs.koog.ollama.client)
-    implementation(libs.kotlinx.serialization.json)
-    implementation(libs.logback.classic)
-    implementation(libs.kotlin.logging)
-
-    testImplementation(kotlin("test"))
-    testImplementation(libs.junit.jupiter)
-    testImplementation(libs.koog.agents.test)
-    testRuntimeOnly(libs.logback.classic)
-}
-
 kotlin {
-    jvmToolchain(17)
+    jvm {
+        testRuns["test"].executionTask.configure {
+            useJUnitPlatform()
+        }
+    }
+
+    sourceSets {
+        commonMain.dependencies {
+            implementation(libs.koog.agents)
+            implementation(libs.koog.deepseek.client)
+            implementation(libs.kotlinx.serialization.json)
+            implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.kotlin.logging)
+        }
+
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+            implementation(libs.koog.agents.test)
+        }
+    }
 }
 
-tasks.test {
-    useJUnitPlatform()
+publishing {
+    publications {
+        withType<MavenPublication>().matching { it.name == "kotlinMultiplatform" }.configureEach {
+            groupId = project.group as String
+            version = project.version as String
+            artifactId = "scoop-ai-core"
+        }
+    }
 }

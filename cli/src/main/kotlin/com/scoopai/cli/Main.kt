@@ -1,7 +1,7 @@
 package com.scoopai.cli
 
 import com.scoopai.core.ScoopManifestGenerator
-import com.scoopai.core.config.ProviderConfigResolver
+import com.scoopai.tools.config.ProviderConfigResolver
 import com.scoopai.tools.DefaultToolRegistryFactory
 import com.scoopai.tools.manifest.FileManifestIo
 import com.scoopai.tools.verify.ProcessScoopVerifier
@@ -103,6 +103,8 @@ fun main(args: Array<String>) {
         }
     } catch (e: Exception) {
         System.err.println("Error: ${e.message ?: e.javaClass.simpleName}")
+    } finally {
+        DefaultToolRegistryFactory.cleanup()
     }
 }
 
