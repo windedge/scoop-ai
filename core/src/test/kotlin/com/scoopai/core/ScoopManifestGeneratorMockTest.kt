@@ -52,11 +52,15 @@ class ScoopManifestGeneratorMockTest {
     }
 
     @Test
-    fun `research phase detects no Windows assets`() = runBlocking {
-        val researchJson = """{"status":"no_windows_assets","project":"linux-only-tool","alternatives":"Consider using WSL or a Linux VM."}"""
+    fun `no Windows assets flows through all phases`() = runBlocking {
+        val noAssetResearch = """{"status":"no_windows_assets","project":"linux-only/tool","alternatives":"Consider using WSL or a Linux VM."}"""
+        val noAssetAnalyze = """{"status":"ok","strategy":"portable_zip","entries":[],"bin":[]}"""
+        val noAssetGenerate = """{"version":"0.0.0","note":"No Windows assets found."}"""
 
         val promptExecutor = getMockExecutor {
-            mockLLMAnswer(researchJson) onRequestContains "Research the project at"
+            mockLLMAnswer(noAssetResearch) onRequestContains "Research the project at"
+            mockLLMAnswer(noAssetAnalyze) onRequestContains "Based on the following research"
+            mockLLMAnswer(noAssetGenerate) onRequestContains "generate a complete Scoop manifest"
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -72,8 +76,9 @@ class ScoopManifestGeneratorMockTest {
 
         val result = generator.generate("https://github.com/linux-only/tool")
 
-        assertTrue(result.contains("WSL") || result.contains("Windows"),
-            "Should return alternatives message, got: $result")
+        // Linear flow: all 3 phases run, generate returns extracted JSON
+        assertTrue(result.isNotBlank(), "Should return some text, got: $result")
+        assertTrue(result.contains("0.0.0"), "Should contain version from generate phase, got: $result")
     }
 
     @Test

@@ -133,7 +133,7 @@ public class DoubleEncodingFixHttpClient(
             val fixedArgs = unwrapIfDoubleEncoded(args)
             if (fixedArgs != args) {
                 toolCallsModified = true
-                logger.info { "[DoubleEncodingFix] Fixed double-encoded tool call args for '${tc["function"]?.jsonObject?.get("name")?.jsonPrimitive?.content}'" }
+                logger.debug { "[DoubleEncodingFix] Fixed double-encoded tool call args for '${tc["function"]?.jsonObject?.get("name")?.jsonPrimitive?.content}'" }
                 JsonObject(tc + ("function" to JsonObject(
                     func + ("arguments" to JsonPrimitive(fixedArgs))
                 )))

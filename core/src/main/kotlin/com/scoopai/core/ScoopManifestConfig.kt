@@ -9,7 +9,7 @@ data class ScoopManifestConfig(
     val provider: String = "deepseek",
     val apiKey: String = "",
     val model: LLModel = DeepSeekModels.DeepSeekV4Flash,
-    val maxIterations: Int = 50,
+    val maxIterations: Int = 500,
     val baseUrl: String? = null,
 ) {
     fun createExecutor(): PromptExecutor = LlmProviderFactory.create(provider, apiKey, baseUrl, model.id)

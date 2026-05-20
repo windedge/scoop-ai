@@ -65,4 +65,37 @@ class LlmProviderFactoryTest {
         }
         assertTrue(e.message?.contains("--base-url") == true)
     }
+
+    @Test
+    fun `create for openai-compatible with DeepSeek model name succeeds`() {
+        // DeepSeek model → DeepSeekLLMClient (expects systemFingerprint in response)
+        LlmProviderFactory.create(
+            provider = "openai-compatible",
+            apiKey = "sk-test",
+            baseUrl = "http://localhost:8080",
+            modelName = "opencode/deepseek-v4-flash",
+        )
+        // Client construction only — no network call, should not throw
+    }
+
+    @Test
+    fun `create for openai-compatible with non-DeepSeek model name succeeds`() {
+        // Non-DeepSeek model (GLM, Qwen etc.) → OpenAILLMClient (no systemFingerprint required)
+        LlmProviderFactory.create(
+            provider = "openai-compatible",
+            apiKey = "sk-test",
+            baseUrl = "http://localhost:8080",
+            modelName = "zai/glm-4.7",
+        )
+    }
+
+    @Test
+    fun `create for openai-compatible with Qwen model name succeeds`() {
+        LlmProviderFactory.create(
+            provider = "openai-compatible",
+            apiKey = "sk-test",
+            baseUrl = "http://localhost:8080",
+            modelName = "qwen2.5:72b",
+        )
+    }
 }

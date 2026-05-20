@@ -11,8 +11,13 @@ import ai.koog.prompt.llm.LLModel
 import ai.koog.prompt.params.LLMParams
 import ai.koog.serialization.JSONObject
 import ai.koog.serialization.JSONPrimitive
+import com.scoopai.core.agent.AnalyzeOutput
+import com.scoopai.core.agent.PhaseSchemas
+import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.agent.SystemPrompts
-import com.scoopai.core.agent.parseResearchStatus
+import com.scoopai.core.agent.extractJsonBlock
+import com.scoopai.core.agent.isValidJson
+import com.scoopai.core.agent.phaseJson
 import com.scoopai.core.agent.scoopManifestStrategy
 import com.scoopai.core.tools.api.ManifestIo
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -34,27 +39,45 @@ class ScoopManifestGenerator(
     private val model: LLModel,
     private val toolRegistry: ToolRegistry,
     private val manifestIo: ManifestIo,
-    private val maxIterations: Int = 80,
+    private val maxIterations: Int,
     private val maxFixAttempts: Int = 2,
     private val thinkingLevel: String? = null,
 ) {
     suspend fun generate(url: String, outputPath: String? = null): String {
+        // ── Phase-specific tool subsets ────────────────────────────────
+        val allTools = toolRegistry.tools
+        val researchToolNames = setOf(
+            "parseGitHubUrl", "fetchRepoInfo", "fetchLatestRelease", "fetchAllReleases",
+            "listReleaseAssets", "fetchFileContent", "fetchWebPage", "resolveRedirect",
+            "fetchJson", "__ask_user__"
+        )
+        val analyzeToolNames = setOf(
+            "computeSha256FromUrl", "listZipContents", "findExecutables",
+            "detectInstallerType", "__ask_user__"
+        )
+        val generateToolNames = setOf(
+            "validate", "write", "read", "__ask_user__"
+        )
+
+        val researchTools = allTools.filter { it.name in researchToolNames }
+        val analyzeTools = allTools.filter { it.name in analyzeToolNames }
+        val generateTools = allTools.filter { it.name in generateToolNames }
+
+        logger.info { "[tools] Total: ${allTools.size}, Research: ${researchTools.map { it.name }}, Analyze: ${analyzeTools.map { it.name }}, Generate: ${generateTools.map { it.name}}" }
+
         // ── Build prompt constructors for each phase ─────────────────
-        val researchPrompt: suspend (String) -> String = { input ->
-            buildResearchPrompt(input, outputPath)
-        }
-        val analyzePrompt: suspend (String) -> String = { researchJson ->
-            buildAnalyzePrompt(researchJson)
-        }
-        val generatePrompt: suspend (String) -> String = { analyzeJson ->
-            // Research JSON is needed for the generate prompt, but the subgraph
-            // input is only the analyze output. We store research output in storage.
-            // For now, pass analyzeJson + a note to read research from context.
-            buildGeneratePrompt("", analyzeJson, outputPath)
-        }
+        val researchPrompt: suspend (String) -> String =
+            { buildResearchPrompt(it, outputPath) }
+        val analyzePrompt: suspend (ResearchOutput) -> String =
+            { buildAnalyzePrompt(it) }
+        val generatePrompt: suspend (AnalyzeOutput) -> String =
+            { buildGeneratePrompt(it, outputPath) }
 
         val llmParams = buildLlmParams()
         val strategy = scoopManifestStrategy(
+            researchTools = researchTools,
+            analyzeTools = analyzeTools,
+            generateTools = generateTools,
             llmParams = llmParams,
             researchPromptBuilder = researchPrompt,
             analyzePromptBuilder = analyzePrompt,
@@ -68,6 +91,8 @@ class ScoopManifestGenerator(
             model = model,
             maxAgentIterations = maxIterations,
         )
+
+        var capturedManifestJson = ""
 
         val agent = AIAgent(
             promptExecutor = promptExecutor,
@@ -83,6 +108,14 @@ class ScoopManifestGenerator(
                 onToolCallCompleted { ctx ->
                     val result = ctx.toolResult?.toString()?.take(200) ?: "null"
                     logger.info { "[tool] ${ctx.toolName} -> $result" }
+                    // Capture manifest from generate-phase tool calls
+                    if (ctx.toolName in listOf("write", "validate", "read")) {
+                        val json = extractManifestJsonFromToolArgs(ctx.toolArgs)
+                        if (json != null) {
+                            capturedManifestJson = json
+                            logger.info { "[tool] Captured manifest from ${ctx.toolName} (${json.length} chars)" }
+                        }
+                    }
                 }
                 onAgentCompleted {
                     logger.info { "[agent] Agent completed." }
@@ -91,21 +124,20 @@ class ScoopManifestGenerator(
         }
 
         val result = agent.run(url)
-        if (result.isBlank()) {
-            logger.warn { "[generate] Graph agent returned empty result" }
+        if (result.isBlank() && capturedManifestJson.isBlank()) {
+            logger.warn { "[generate] Graph agent returned empty result and no manifest captured" }
             return ""
         }
 
-        val status = parseResearchStatus(result)
-        if (status == "no_windows_assets") {
-            logger.info { "[generate] No Windows assets found" }
-            return result
+        // Prefer captured manifest from tool calls, fall back to text extraction
+        val manifestJson = when {
+            capturedManifestJson.isNotBlank() -> capturedManifestJson
+            else -> extractJson(result) ?: ""
         }
-
-        val manifestJson = extractJson(result) ?: result
         if (manifestJson.isBlank()) {
-            logger.warn { "[generate] No manifest JSON found" }
-            return ""
+            // No manifest generated — return the raw result as a user-facing message
+            logger.warn { "[generate] No manifest JSON found in result or tool args" }
+            return result
         }
 
         return validateAndFix(manifestJson)
@@ -141,27 +173,40 @@ class ScoopManifestGenerator(
         } else {
             "Research the project at: $url"
         }
-        return "$task\n\nResearch stopping rule: as soon as you have enough trustworthy Windows asset URLs for the analyze phase to compute hashes, stop researching and report the findings. If GitHub releases have no assets, prefer the official download page and stop once version variables, filename patterns, or direct download links are sufficient to derive the real Windows asset URLs."
+        return """You are now in the RESEARCH phase. Your task is to gather information about the project using research tools (fetchRepoInfo, fetchLatestRelease, fetchAllReleases, fetchWebPage, etc).
+
+$task
+
+Research stopping rule: as soon as you have enough trustworthy Windows asset URLs for the analyze phase to compute hashes, stop researching and report the findings. If GitHub releases have no assets, prefer the official download page and stop once version variables, filename patterns, or direct download links are sufficient to derive the real Windows asset URLs.
+
+IMPORTANT: Use the available tools to gather information. Do not answer from your training data alone. Call the GitHub API and web fetcher tools to get real, up-to-date data.
+
+${PhaseSchemas.RESEARCH_SCHEMA}"""
     }
 
-    private fun buildAnalyzePrompt(researchJson: String): String {
-        return """Based on the following research JSON, analyze only the most likely Scoop manifest assets first.
+    private fun buildAnalyzePrompt(research: ResearchOutput): String {
+        val researchJson = kotlinx.serialization.json.Json.encodeToString(ResearchOutput.serializer(), research)
+        return """You are now in the ANALYSIS phase. Your task is to compute hashes and inspect archive contents using the analysis tools (computeSha256FromUrl, listZipContents, findExecutables).
+
+Based on the following research results, analyze only the most likely Scoop manifest assets first.
 
 ```json
 $researchJson
 ```
 
-Prefer portable ZIP assets when suitable. Choose one installation strategy first, avoid exhaustive analysis of every candidate, and stop as soon as you have enough data to generate the manifest. Compute SHA-256 hashes only for selected assets. For chosen ZIP files, inspect archive contents to determine extract_dir and bin. Only detect installer type if you are actually using an installer-based strategy or ZIP analysis is insufficient."""
+Prefer portable ZIP assets when suitable. Choose one installation strategy first, avoid exhaustive analysis of every candidate, and stop as soon as you have enough data to generate the manifest. Compute SHA-256 hashes only for selected assets using computeSha256FromUrl. For chosen ZIP files, inspect archive contents using listZipContents and findExecutables to determine extract_dir and bin. Only detect installer type if you are actually using an installer-based strategy or ZIP analysis is insufficient.
+
+IMPORTANT: You MUST call the analysis tools (computeSha256FromUrl, listZipContents, findExecutables) to compute real values. Do not guess or estimate hashes.
+
+${PhaseSchemas.ANALYZE_SCHEMA}"""
     }
 
-    private fun buildGeneratePrompt(researchJson: String, analyzeJson: String, outputPath: String?): String {
+    private fun buildGeneratePrompt(analyze: AnalyzeOutput, outputPath: String?): String {
+        val analyzeJson = kotlinx.serialization.json.Json.encodeToString(AnalyzeOutput.serializer(), analyze)
         val outputPart = if (outputPath != null) "\nOutput file: $outputPath" else ""
-        return """Based on the following structured research and analysis JSON, generate a complete Scoop manifest.
+        return """You are now in the GENERATION phase. Your task is to generate a Scoop manifest JSON and save it using the tools (validate, write).
 
-## Research JSON
-```json
-$researchJson
-```
+Based on the following analysis JSON, generate a complete Scoop manifest.
 
 ## Analysis JSON
 ```json
@@ -169,7 +214,7 @@ $analyzeJson
 ```
 $outputPart
 
-Generate the manifest JSON, then call validateManifestJson and writeManifestToFile to save it."""
+You MUST call the tools: first call validate with the manifest JSON to check it, then call write to save it. Do not just output text — you must use the validate and write tools."""
     }
 
     // ── JSON extraction & validation ─────────────────────────────────
@@ -246,26 +291,9 @@ Generate the manifest JSON, then call validateManifestJson and writeManifestToFi
         else extractJson(args.toString())
     }
 
-    internal fun extractJson(text: String): String? {
-        val codeBlockRegex = Regex("```(?:json)?\\s*\\n?([\\s\\S]*?)```")
-        codeBlockRegex.find(text)?.let { match ->
-            val candidate = match.groupValues[1].trim()
-            if (isValidJson(candidate)) return candidate
-        }
-        val candidate = text.trim()
-        if (isValidJson(candidate)) return candidate
-        val start = candidate.indexOf('{')
-        val end = candidate.lastIndexOf('}')
-        if (start >= 0 && end > start) {
-            val sub = candidate.substring(start, end + 1)
-            if (isValidJson(sub)) return sub
-        }
-        return null
-    }
+    internal fun extractJson(text: String): String? = com.scoopai.core.agent.extractJsonBlock(text)
 
-    internal fun isValidJson(text: String): Boolean = try {
-        kotlinx.serialization.json.Json.parseToJsonElement(text) is kotlinx.serialization.json.JsonObject
-    } catch (_: Exception) { false }
+    internal fun isValidJson(text: String): Boolean = com.scoopai.core.agent.isValidJson(text)
 
     private fun buildFixPrompt(originalJson: String, errors: List<String>): String {
         val errorList = errors.joinToString("\n") { "- $it" }

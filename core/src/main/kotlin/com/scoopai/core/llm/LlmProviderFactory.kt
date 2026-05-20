@@ -34,7 +34,7 @@ object LlmProviderFactory {
         "openrouter" -> SingleLLMPromptExecutor(OpenRouterLLMClient(apiKey = apiKey))
         "openai-compatible" -> {
             val resolvedBaseUrl = baseUrl ?: error("--base-url is required for openai-compatible provider")
-            val settings = DeepSeekClientSettings(
+            val deepSeekSettings = DeepSeekClientSettings(
                 baseUrl = resolvedBaseUrl,
                 chatCompletionsPath = "v1/chat/completions",
             )
@@ -42,19 +42,33 @@ object LlmProviderFactory {
             // wrap with LoggingKoogHttpClient when SCOOP_AI_DEBUG_HTTP is set.
             val baseHttpClient: KoogHttpClient = AbstractOpenAILLMClient.createConfiguredHttpClient(
                 apiKey = apiKey,
-                settings = settings,
+                settings = deepSeekSettings,
                 httpClientFactory = ai.koog.http.client.ktor.KtorKoogHttpClient.Factory(),
-                clientName = "DeepSeekLLMClient",
+                clientName = "OpenAICompatibleLLMClient",
             )
             val httpClient = DoubleEncodingFixHttpClient(
                 LoggingKoogHttpClient.wrapIfDebug(baseHttpClient)
             )
-            SingleLLMPromptExecutor(
-                DeepSeekLLMClient(
-                    settings = settings,
-                    httpClient = httpClient,
+            // Use OpenAILLMClient for non-DeepSeek models (e.g. GLM, Qwen, etc.) to avoid
+            // DeepSeek's strict response schema (required systemFingerprint field).
+            // DeepSeekLLMClient is used only when the model name contains "deepseek".
+            val isDeepSeekModel = modelName.isDeepSeekModelName()
+            val client = if (isDeepSeekModel) {
+                DeepSeekLLMClient(settings = deepSeekSettings, httpClient = httpClient)
+            } else {
+                // OpenAILLMClient constructors:
+                //   (settings: OpenAIClientSettings, httpClient: KoogHttpClient, ...)
+                //   (apiKey: String, settings: OpenAIClientSettings, httpClientFactory, ...)
+                OpenAILLMClient(
+                    apiKey = apiKey,
+                    settings = ai.koog.prompt.executor.clients.openai.OpenAIClientSettings(
+                        baseUrl = resolvedBaseUrl,
+                        chatCompletionsPath = "v1/chat/completions",
+                    ),
+                    httpClientFactory = ai.koog.http.client.ktor.KtorKoogHttpClient.Factory(),
                 )
-            )
+            }
+            SingleLLMPromptExecutor(client)
         }
         else -> error("Unsupported provider: $provider. Supported: deepseek, openai, anthropic, ollama, openrouter, openai-compatible")
     }

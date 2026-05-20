@@ -16,7 +16,7 @@ import kotlinx.serialization.serializer
 @Serializable
 data class ResearchOutput(
     /** "ok" or "no_windows_assets" */
-    val status: String,
+    val status: String = "ok",
     /** "owner/repo" for GitHub projects, or project name */
     val project: String = "",
     val description: String = "",
@@ -61,7 +61,7 @@ data class WindowsAsset(
 @Serializable
 data class AnalyzeOutput(
     /** "ok" or "needs_clarification" */
-    val status: String,
+    val status: String = "ok",
     /** "portable_zip", "installer", "portable_exe" */
     val strategy: String = "",
     /** Per-architecture asset entries with hash */
@@ -147,6 +147,8 @@ Rules:
 - The version MUST NOT have a leading "v".
 - All fields except status, project, version are optional (omit or use empty string/list).
 - Output ONLY the JSON code block as your final message. You may write brief reasoning before it, but the JSON block is what gets parsed.
+- CRITICAL: Your response MUST end with a ```json code block. Do NOT end with plain text, explanations, or tool calls after the JSON block.
+- NEVER output the JSON as plain text without ```json ... ``` markers.
 """.trimIndent()
 
     val ANALYZE_SCHEMA: String = """
@@ -181,5 +183,7 @@ Rules:
 - shortcuts format: [executable, shortcut_name] or [executable, shortcut_name, start_dir].
 - pre_install lines are PowerShell statements.
 - Output ONLY the JSON code block as your final message. You may write brief reasoning before it, but the JSON block is what gets parsed.
+- CRITICAL: Your response MUST end with a ```json code block. Do NOT end with plain text, explanations, or tool calls after the JSON block.
+- NEVER output the JSON as plain text without ```json ... ``` markers.
 """.trimIndent()
 }
