@@ -67,8 +67,8 @@ class GraphStrategyApiVerificationTest {
         val s = strategy<String, String>("llm_subgraph") {
             val mySubgraph by subgraph<String, String>(name = "echo") {
                 val nodeLLM by nodeLLMRequest()
-                edge(nodeStart forwardTo nodeLLM asUserMessage { it })
-                edge(nodeLLM forwardTo nodeFinish onTextMessage { true })
+                edge(nodeStart forwardTo nodeLLM)
+                edge(nodeLLM forwardTo nodeFinish onTextMessage { _ -> true })
             }
             nodeStart then mySubgraph then nodeFinish
         }
@@ -107,13 +107,13 @@ class GraphStrategyApiVerificationTest {
         val s = strategy<String, String>("sequential") {
             val sub1 by subgraph<String, String>("phase1") {
                 val nodeLLM by nodeLLMRequest()
-                edge(nodeStart forwardTo nodeLLM asUserMessage { it })
-                edge(nodeLLM forwardTo nodeFinish onTextMessage { true })
+                edge(nodeStart forwardTo nodeLLM)
+                edge(nodeLLM forwardTo nodeFinish onTextMessage { _ -> true })
             }
             val sub2 by subgraph<String, String>("phase2") {
                 val nodeLLM by nodeLLMRequest()
-                edge(nodeStart forwardTo nodeLLM asUserMessage { it })
-                edge(nodeLLM forwardTo nodeFinish onTextMessage { true })
+                edge(nodeStart forwardTo nodeLLM)
+                edge(nodeLLM forwardTo nodeFinish onTextMessage { _ -> true })
             }
             nodeStart then sub1 then sub2 then nodeFinish
         }
@@ -151,8 +151,8 @@ class GraphStrategyApiVerificationTest {
                 llmParams = ai.koog.prompt.params.LLMParams(),
             ) {
                 val nodeLLM by nodeLLMRequest()
-                edge(nodeStart forwardTo nodeLLM asUserMessage { it })
-                edge(nodeLLM forwardTo nodeFinish onTextMessage { true })
+                edge(nodeStart forwardTo nodeLLM)
+                edge(nodeLLM forwardTo nodeFinish onTextMessage { _ -> true })
             }
             nodeStart then sg then nodeFinish
         }

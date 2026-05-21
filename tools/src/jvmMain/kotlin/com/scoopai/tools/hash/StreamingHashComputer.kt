@@ -5,26 +5,15 @@ import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
 import ai.koog.agents.core.tools.validateNotNull
 import com.scoopai.core.tools.api.HashComputer
+import com.scoopai.tools.cache.ScoopCacheManager
 import kotlinx.serialization.json.*
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.nio.file.Files
-import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 
 @LLMDescription("Hash computation tools")
-class StreamingHashComputer : HashComputer, ToolSet {
-
-    companion object {
-        private const val MAX_DOWNLOAD_BYTES: Long = 500L * 1024 * 1024 // 500 MB
-    }
-
-    private val httpClient: HttpClient = HttpClient.newBuilder()
-        .followRedirects(HttpClient.Redirect.NORMAL)
-        .build()
+class StreamingHashComputer(
+    private val cache: ScoopCacheManager,
+) : HashComputer, ToolSet {
 
     @Tool
     @LLMDescription("Download a file from URL and compute its SHA-256 hash. Returns the hex-encoded hash.")
@@ -33,38 +22,11 @@ class StreamingHashComputer : HashComputer, ToolSet {
         url: String?
     ): String {
         val urlNotNull = validateNotNull(url) { "Parameter 'url' is required. Provide the URL of the file to hash." }
-        var tempFile: Path? = null
         return try {
-            tempFile = Files.createTempFile("scoop-ai-hash-", ".tmp")
-
-            val request = HttpRequest.newBuilder()
-                .uri(URI.create(urlNotNull))
-                .header("User-Agent", "scoop-ai/0.1.0")
-                .GET()
-                .build()
-
-            val response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream())
-            if (response.statusCode() !in 200..299) {
-                Files.deleteIfExists(tempFile)
-                return buildJsonObject {
-                    put("error", "HTTP ${response.statusCode()} for $urlNotNull")
-                }.toString()
-            }
-
-            response.body().use { input ->
-                Files.copy(input, tempFile, StandardCopyOption.REPLACE_EXISTING)
-            }
-
-            val fileSize = Files.size(tempFile)
-            if (fileSize > MAX_DOWNLOAD_BYTES) {
-                Files.deleteIfExists(tempFile)
-                return buildJsonObject {
-                    put("error", "File too large: $fileSize bytes (max $MAX_DOWNLOAD_BYTES)")
-                }.toString()
-            }
+            val file = cache.getOrDownload(urlNotNull)
 
             val digest = MessageDigest.getInstance("SHA-256")
-            Files.newInputStream(tempFile).use { input ->
+            Files.newInputStream(file).use { input ->
                 val buffer = ByteArray(8192)
                 var bytesRead: Int
                 while (input.read(buffer).also { bytesRead = it } != -1) {
@@ -74,6 +36,7 @@ class StreamingHashComputer : HashComputer, ToolSet {
 
             val hashBytes = digest.digest()
             val hexHash = hashBytes.joinToString("") { "%02x".format(it) }
+            val fileSize = Files.size(file)
 
             buildJsonObject {
                 put("url", urlNotNull)
@@ -84,8 +47,6 @@ class StreamingHashComputer : HashComputer, ToolSet {
             buildJsonObject {
                 put("error", "Failed to compute SHA-256: ${e.message ?: e.javaClass.name}")
             }.toString()
-        } finally {
-            tempFile?.let { Files.deleteIfExists(it) }
         }
     }
 }

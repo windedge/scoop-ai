@@ -10,6 +10,7 @@ version = "0.1.0"
 application {
     mainClass.set("com.scoopai.cli.MainKt")
     applicationName = "scoop-ai"
+    applicationDefaultJvmArgs = listOf("-Dfile.encoding=UTF-8")
 }
 
 repositories {

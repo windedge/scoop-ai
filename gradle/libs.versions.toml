@@ -1,6 +1,6 @@
 [versions]
 kotlin = "2.1.21"
-koog = "1.0.0-preview"
+koog = "1.0.0-preview2"
 kotlinx-serialization = "1.8.1"
 kotlinx-coroutines = "1.10.2"
 logback = "1.5.18"

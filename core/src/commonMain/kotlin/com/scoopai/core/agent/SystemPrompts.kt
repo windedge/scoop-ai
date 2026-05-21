@@ -40,7 +40,7 @@ You are researching a software project to gather information for creating a Scoo
    - For non-GitHub projects, use fetchWebPage to read the project page.
 
 3. **Prefer the shortest path to Windows download URLs**:
-   - First prefer structured release assets from the API.
+   - **First** check GitHub release assets from `fetchLatestRelease`. If the returned assets already contain `.zip`, `.exe`, or `.msi` files for Windows, STOP immediately — you have everything needed. Only visit the homepage or official download page when GitHub releases have NO usable assets.
    - If GitHub releases have no assets, switch quickly to the official download page or homepage.
    - If the official site exposes version variables, download prefixes, filenames, or direct links in HTML/JS (for example `gSumVer`, `dlPrefix`, `sumLatestExe`, `sumLatestZip`, `href`, `download`), use those values to derive the final download URLs.
    - A URL is acceptable if it is directly present on the page, or can be deterministically constructed from literal page variables on that same page.
@@ -112,7 +112,7 @@ You are analyzing Windows release assets to prepare data for a Scoop manifest.
 
 3. **Inspect archives for selected manifest candidates**:
    - For ZIP: Use listArchiveContents to see directory structure, findExecutables to locate .exe files.
-   - For MSI (only when no ZIP is available): Use listArchiveContents to see the full extracted file paths. The tool auto-detects archive type and returns paths like `PFiles/AppName/app.exe`. You MUST set `extract_dir` to the directory containing the executable (e.g. `PFiles\\AppName`), because Scoop extracts MSI into subdirectories. Omitting `extract_dir` for MSI will cause "File doesn't exist" errors at install time.
+   - For MSI (only when no ZIP is available): Use listArchiveContents to see the full extracted file paths. The tool auto-detects archive type and returns paths like `PFiles/AppName/app.exe`. You MUST set `extract_dir` to the directory containing the executable with backslashes ONLY (e.g. `PFiles\\AppName`), because Scoop extracts MSI into subdirectories. Omitting `extract_dir` for MSI will cause "File doesn't exist" errors at install time. Never use forward slashes.
    - Only use detectInstallerType when you are actually choosing an installer/portable-exe strategy, or when ZIP analysis is insufficient.
    - If one ZIP family is clearly the right choice, do NOT keep analyzing installer executables.
 
@@ -124,7 +124,7 @@ You are analyzing Windows release assets to prepare data for a Scoop manifest.
    - Deprioritize duplicate toolchains or redundant variants when one is the obvious Scoop choice.
 
 5. **Determine only what is needed for the chosen manifest strategy**:
-   - `extract_dir`: Top-level directory inside the archive containing the executable. REQUIRED for MSI when files are inside a subdirectory. Use backslash (e.g. `PFiles\\FFStudio`).
+   - `extract_dir`: Top-level directory inside the archive containing the executable. REQUIRED for MSI when files are inside a subdirectory. Use backslash ONLY: `PFiles\\FFStudio`. **Never use forward slashes**.
    - bin: Executable(s) to add to PATH.
    - Installer type: ZIP, MSI, InnoSetup, NSIS, or Portable EXE.
 
@@ -157,7 +157,7 @@ You are analyzing Windows release assets to prepare data for a Scoop manifest.
 ## Installer Type Handling
 
 - ZIP/7z/tar → `url` + `bin` (extract and use)
-- MSI → Treat EXACTLY like ZIP. Scoop auto-extracts MSI internally. Just set `url`, `extract_dir`, and `bin`. Do NOT add `"installer"` block, do NOT write installer scripts, do NOT use `Expand-MsiArchive`, do NOT use GUIDs. Example: `{ "url": "app.msi", "extract_dir": "PFiles\\AppName", "bin": "app.exe" }`
+- MSI → Treat EXACTLY like ZIP. Scoop auto-extracts MSI internally. Just set `url`, `extract_dir` (backslashes ONLY), and `bin`. Do NOT add `"installer"` block, do NOT write installer scripts, do NOT use `Expand-MsiArchive`, do NOT use GUIDs. Example: `{ "url": "app.msi", "extract_dir": "PFiles\\AppName", "bin": "app.exe" }`
 - InnoSetup → `"innosetup": true` (uses innounp to unpack, NOT silent install)
 - NSIS → Needs `#/dl.7z` + `pre_install`, mark as requiring manual config
 - Portable EXE → `url` with `#/app.exe` fragment to rename
@@ -206,7 +206,7 @@ Given the structured research and analysis JSON, generate the Scoop manifest:
    - `"license"`: Use the most precise SPDX identifier. Prefer `-only` or `-or-later` suffix when the actual license text indicates it (for example `GPL-3.0-or-later` not `GPL-3.0`). For multi-licensed projects, comma-separate identifiers. Trust the license file text over the GitHub API `spdx_id` when they conflict.
    - `"architecture"`: Always use the `architecture` block with per-arch entries (for example `"64bit"`, `"32bit"`, `"arm64"`) even if only a single architecture exists. Do NOT use flat `"url"`/`"hash"` at the top level.
    - `"bin"`: Executable(s) to add to PATH.
-   - `"extract_dir"`: Directory inside the archive containing the executable. REQUIRED for MSI when files are in a subdirectory. Use backslash (e.g. `PFiles\\FFStudio`).
+   - `"extract_dir"`: Directory inside the archive containing the executable. REQUIRED for MSI when files are in a subdirectory. Use backslash ONLY: `PFiles\\FFStudio`. **NEVER use forward slashes** like `PFiles/FFStudio`.
    - `"shortcuts"`: add for GUI apps.
    - `"persist"`: add for directories or files in the archive that clearly hold user config/data (for example `config`, `data`, `settings`, `*.ini`, `*.txt` config files).
    - `"pre_install"`: add when filename stabilization or initial config creation is needed.
@@ -234,7 +234,7 @@ Given the structured research and analysis JSON, generate the Scoop manifest:
 ## Installer Type Handling
 
 - ZIP/7z/tar → `url` + `bin` (extract and use)
-- MSI → Treat EXACTLY like ZIP. Scoop auto-extracts MSI. Just set `url` + `extract_dir` + `bin`. Do NOT add `"installer"` block, do NOT write installer scripts, do NOT use `Expand-MsiArchive`, do NOT use GUIDs.
+- MSI → Treat EXACTLY like ZIP. Scoop auto-extracts MSI. Just set `url` + `extract_dir` (backslashes ONLY) + `bin`. Do NOT add `"installer"` block, do NOT write installer scripts, do NOT use `Expand-MsiArchive`, do NOT use GUIDs.
 - InnoSetup → `"innosetup": true` (uses innounp to unpack, NOT silent install)
 - NSIS → Needs `#/dl.7z` + `pre_install`, mark as requiring manual config
 - Portable EXE → `url` with `#/app.exe` fragment to rename

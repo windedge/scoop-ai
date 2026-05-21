@@ -36,8 +36,31 @@ import kotlinx.serialization.json.put
 private val logger = KotlinLogging.logger {}
 
 /**
+ * Safely truncate a string for logging, preserving valid Unicode characters.
+ * Replaces non-ASCII control characters and truncates to [maxLen] code points.
+ */
+internal fun sanitizeForLog(text: String, maxLen: Int = 120): String {
+    // Replace problematic characters
+    val sanitized = text
+        .replace('\n', ' ')
+        .replace('\r', ' ')
+        .replace('\t', ' ')
+        .replace(Regex("[\\p{Cntrl}&&[^\n\r\t]]"), "?") // other control chars
+    // Truncate by code points to avoid breaking multi-byte chars
+    val codePoints = sanitized.codePoints().toArray()
+    return if (codePoints.size <= maxLen) {
+        sanitized
+    } else {
+        val truncated = codePoints.take(maxLen)
+            .map { String(Character.toChars(it)) }
+            .joinToString("")
+        "$truncated..."
+    }
+}
+
+/**
  * Generates a Scoop manifest using a Koog graph strategy with three phases
- * (research → analyze → generate), routed by conditional edges.
+ * (research -> analyze -> generate), routed by conditional edges.
  *
  * This class focuses on **orchestration**: connecting the strategy, tools,
  * prompts, and fix loop. Prompt content is in [prompt][com.scoopai.core.agent.prompt],
@@ -55,7 +78,7 @@ class ScoopManifestGenerator(
     private val thinkingLevel: String? = null,
 ) {
     suspend fun generate(url: String, outputPath: String? = null): String {
-        // ── Phase-specific tool subsets ────────────────────────────────
+        // -- Phase-specific tool subsets -----------------------------------
         val allTools = toolRegistry.tools
 
         val researchTools = allTools.filter { it.name in PhaseTools.RESEARCH_TOOL_NAMES }
@@ -64,7 +87,7 @@ class ScoopManifestGenerator(
 
         logger.info { "[tools] Total: ${allTools.size}, Research: ${researchTools.map { it.name }}, Analyze: ${analyzeTools.map { it.name }}, Generate: ${generateTools.map { it.name}}" }
 
-        // ── Build prompt constructors for each phase ─────────────────
+        // -- Build prompt constructors for each phase ----------------------
         val researchPrompt: suspend (String) -> String =
             { buildResearchPrompt(it, outputPath) }
         val analyzePrompt: suspend (ResearchOutput) -> String =
@@ -101,11 +124,11 @@ class ScoopManifestGenerator(
         ) {
             handleEvents {
                 onToolCallStarting { ctx ->
-                    val args = ctx.toolArgs.toString().take(120)
+                    val args = sanitizeForLog(ctx.toolArgs.toString())
                     logger.info { "[tool] ${ctx.toolName}($args)" }
                 }
                 onToolCallCompleted { ctx ->
-                    val result = ctx.toolResult?.toString()?.take(200) ?: "null"
+                    val result = sanitizeForLog(ctx.toolResult?.toString() ?: "null", maxLen = 200)
                     logger.info { "[tool] ${ctx.toolName} -> $result" }
                     // Capture manifest from generate-phase tool calls
                     if (ctx.toolName == PhaseTools.WRITE ||
@@ -150,7 +173,7 @@ class ScoopManifestGenerator(
         ).validateAndFix(manifestJson)
     }
 
-    // ── JSON extraction ─────────────────────────────────────────────
+    // -- JSON extraction ------------------------------------------------
 
     private fun extractManifestJsonFromToolArgs(args: JSONObject): String? {
         val fromJsonField = (args.entries["json"] as? JSONPrimitive)?.contentOrNull

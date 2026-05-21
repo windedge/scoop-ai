@@ -5,75 +5,20 @@ import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
 import ai.koog.agents.core.tools.validateNotNull
 import com.scoopai.core.tools.api.ArchiveInspector
+import com.scoopai.tools.cache.ScoopCacheManager
 import kotlinx.serialization.json.*
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
 
 @LLMDescription("Archive inspection tools for ZIP, MSI and installer analysis")
-class ZipArchiveInspector : ArchiveInspector, ToolSet {
+class ZipArchiveInspector(
+    private val cache: ScoopCacheManager,
+) : ArchiveInspector, ToolSet {
 
     companion object {
-        private const val MAX_DOWNLOAD_BYTES: Long = 200L * 1024 * 1024 // 200 MB
         private const val MAX_DEPTH = 3
-    }
-
-    // -----------------------------------------------------------------------
-    // Download cache — same URL downloaded only once per agent run
-    // -----------------------------------------------------------------------
-
-    private val downloadCache = mutableMapOf<String, Path>()
-
-    fun cleanup() {
-        downloadCache.values.forEach { Files.deleteIfExists(it) }
-        downloadCache.clear()
-    }
-
-    private fun getOrDownload(url: String): Path {
-        downloadCache[url]?.let { cached ->
-            if (Files.exists(cached)) return cached
-            downloadCache.remove(url)
-        }
-        val tempFile = downloadToTempFile(url)
-        downloadCache[url] = tempFile
-        return tempFile
-    }
-
-    private fun downloadToTempFile(url: String): Path {
-        val tempFile = Files.createTempFile("scoop-ai-", ".tmp")
-        return try {
-            val client = HttpClient.newBuilder()
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build()
-            val request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .header("User-Agent", "scoop-ai/0.1.0")
-                .GET()
-                .build()
-            val response = client.send(request, HttpResponse.BodyHandlers.ofInputStream())
-            if (response.statusCode() !in 200..299) {
-                Files.deleteIfExists(tempFile)
-                throw IllegalStateException("HTTP ${response.statusCode()} for $url")
-            }
-            response.body().use { input ->
-                Files.copy(input, tempFile, StandardCopyOption.REPLACE_EXISTING)
-            }
-            val fileSize = Files.size(tempFile)
-            if (fileSize > MAX_DOWNLOAD_BYTES) {
-                Files.deleteIfExists(tempFile)
-                throw IllegalStateException("File too large: $fileSize bytes (max $MAX_DOWNLOAD_BYTES)")
-            }
-            tempFile
-        } catch (e: Exception) {
-            Files.deleteIfExists(tempFile)
-            throw e
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -155,7 +100,6 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
     ): String {
         val urlNotNull = validateNotNull(url) { "Parameter 'url' is required." }
         return try {
-            // Fast: check URL extension first
             val type = fileType(urlNotNull)
             if (type == "msi" || type == "zip" || type == "7z" || type == "tar") {
                 return buildJsonObject {
@@ -164,8 +108,7 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
                 }.toString()
             }
 
-            // Read first 1MB from cached file
-            val file = getOrDownload(urlNotNull)
+            val file = cache.getOrDownload(urlNotNull)
             val headerBytes = Files.newInputStream(file).use { it.readNBytes(1024 * 1024) }
             val headerContent = String(headerBytes, Charsets.ISO_8859_1)
 
@@ -189,7 +132,7 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
     // -----------------------------------------------------------------------
 
     private fun listZip(url: String): String {
-        val file = getOrDownload(url)
+        val file = cache.getOrDownload(url)
         val entries = mutableListOf<String>()
         Files.newInputStream(file).use { fis ->
             ZipInputStream(fis).use { zis ->
@@ -209,7 +152,7 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
     }
 
     private fun listZipPaths(url: String): List<String> {
-        val file = getOrDownload(url)
+        val file = cache.getOrDownload(url)
         val entries = mutableListOf<String>()
         Files.newInputStream(file).use { fis ->
             ZipInputStream(fis).use { zis ->
@@ -228,7 +171,7 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
     // -----------------------------------------------------------------------
 
     private fun listMsi(url: String): String {
-        val file = getOrDownload(url)
+        val file = cache.getOrDownload(url)
         val files = listMsiPathsFromFile(file)
         return buildJsonObject {
             put("url", url)
@@ -236,7 +179,7 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
         }.toString()
     }
 
-    private fun listMsiPaths(url: String): List<String> = listMsiPathsFromFile(getOrDownload(url))
+    private fun listMsiPaths(url: String): List<String> = listMsiPathsFromFile(cache.getOrDownload(url))
 
     private fun listMsiPathsFromFile(msiFile: Path): List<String> {
         return if (isLessmsiAvailable()) {
@@ -246,7 +189,6 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
         }
     }
 
-    /** lessmsi available? */
     private fun isLessmsiAvailable(): Boolean {
         return try {
             val proc = ProcessBuilder("lessmsi", "h")
@@ -259,7 +201,6 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
         }
     }
 
-    /** Fast: query Directory + Component + File tables to build full paths. */
     private fun runLessmsiQueryPaths(msiFile: Path): List<String> {
         val dirCsv = lessmsiTable(msiFile, "Directory")
         val compCsv = lessmsiTable(msiFile, "Component")
@@ -272,12 +213,19 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
         val dirCache = mutableMapOf<String, String>()
         fun resolveDir(id: String): String = dirCache.getOrPut(id) {
             val (parent, name) = dirRaw[id] ?: (null to id)
-            if (parent.isNullOrBlank() || parent == id) name ?: id
-            else "${resolveDir(parent)}/$name"
+            // Skip virtual root directories: TARGETDIR (DefaultDir="SourceDir"), or self-referencing
+            if (parent.isNullOrBlank() || parent == id) ""
+            else {
+                val parentPath = resolveDir(parent)
+                // Skip SourceDir — it's a virtual MSI root that doesn't exist on disk
+                if (name == "SourceDir") parentPath
+                else if (parentPath.isEmpty()) name ?: ""
+                else "$parentPath/${name ?: ""}"
+            }
         }
 
         val compToDir = parseCsvRows(compCsv).associate { row ->
-            row.getOrNull(0)!! to row.getOrNull(1)!!
+            row.getOrNull(0)!! to row.getOrNull(2)!!
         }
 
         return parseCsvRows(fileCsv).mapNotNull { row ->
@@ -301,7 +249,6 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
         return output
     }
 
-    /** Fallback: msiexec /a extract + walk directory tree. */
     private fun runMsiexecExtractAndList(msiFile: Path): List<String> {
         val extractDir = Files.createTempDirectory("scoop-ai-msi-")
         try {
@@ -334,7 +281,6 @@ class ZipArchiveInspector : ArchiveInspector, ToolSet {
         }
     }
 
-    /** Parse CSV rows, skipping header. */
     private fun parseCsvRows(csv: String): List<List<String>> {
         return csv.lines()
             .drop(1)

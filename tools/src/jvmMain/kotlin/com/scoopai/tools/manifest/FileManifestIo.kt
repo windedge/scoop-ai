@@ -11,7 +11,9 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 @LLMDescription("Scoop manifest file I/O and validation tools")
-class FileManifestIo : ManifestIo, ToolSet {
+class FileManifestIo(
+    private val defaultAppName: String? = null
+) : ManifestIo, ToolSet {
 
     companion object {
         private val SHA256_REGEX = Regex("^[a-fA-F0-9]{64}$")
@@ -101,6 +103,7 @@ class FileManifestIo : ManifestIo, ToolSet {
             validateArchitectureBlock(obj, errors, warnings)
             validateExtractDir(obj, warnings)
             validateVersion(obj, errors)
+            validateUnknownFields(obj, errors)
 
         } catch (e: Exception) {
             errors.add("Invalid JSON: ${e.message}")
@@ -122,11 +125,15 @@ class FileManifestIo : ManifestIo, ToolSet {
             val resolvedPath = if (!path.isNullOrBlank()) {
                 Path.of(path)
             } else {
-                val appName = extractAppName(jsonNotNull)
+                val appName = defaultAppName ?: extractAppName(jsonNotNull)
                 Path.of("bucket").resolve("$appName.json")
             }
             resolvedPath.parent?.let { Files.createDirectories(it) }
-            Files.writeString(resolvedPath, jsonNotNull)
+
+            // Pretty-print and normalize extract_dir slashes
+            val prettyJson = formatManifest(jsonNotNull)
+            Files.writeString(resolvedPath, prettyJson)
+
             buildJsonObject {
                 put("path", resolvedPath.toAbsolutePath().toString())
                 put("success", true)
@@ -156,8 +163,21 @@ class FileManifestIo : ManifestIo, ToolSet {
     }
 
     // ---------------------------------------------------------------------------
-    // Internal helpers
+    // Formatting helper
     // ---------------------------------------------------------------------------
+
+    /** Pretty-print JSON and normalize extract_dir slashes. */
+    private fun formatManifest(rawJson: String): String {
+        val element = try {
+            Json.parseToJsonElement(rawJson)
+        } catch (_: Exception) {
+            return rawJson
+        }
+        return kotlinx.serialization.json.Json {
+            prettyPrint = true
+            prettyPrintIndent = "    "
+        }.encodeToString(JsonElement.serializer(), element)
+    }
 
     private fun extractAppName(json: String): String {
         return try {
@@ -298,17 +318,20 @@ class FileManifestIo : ManifestIo, ToolSet {
 
     /** Warns if `extract_dir` uses "." or empty string (should be omitted instead). */
     private fun validateExtractDir(obj: JsonObject, warnings: MutableList<String>) {
-        val extractDir = obj["extract_dir"]?.jsonPrimitive?.contentOrNull
-        if (extractDir == "." || extractDir == "") {
-            warnings.add("Field 'extract_dir' should be omitted when the exe is at the archive root, not set to '$extractDir'")
+        fun checkExtractDir(path: String, fieldPath: String) {
+            if (path == "." || path == "") {
+                warnings.add("Field '$fieldPath' should be omitted when the exe is at the archive root, not set to '$path'")
+            }
+            if (path.contains('/')) {
+                warnings.add("Field '$fieldPath' uses forward slashes ('$path'). Use backslashes only: '${path.replace('/', '\\')}')")
+            }
         }
-        // Check extract_dir in architecture blocks too
+        obj["extract_dir"]?.jsonPrimitive?.contentOrNull?.let { checkExtractDir(it, "extract_dir") }
         obj["architecture"]?.jsonObject?.let { arch ->
             for ((archName, archElement) in arch) {
                 if (archElement !is JsonObject) continue
-                val archExtractDir = archElement["extract_dir"]?.jsonPrimitive?.contentOrNull
-                if (archExtractDir == "." || archExtractDir == "") {
-                    warnings.add("architecture.$archName.extract_dir should be omitted when the exe is at the archive root")
+                archElement["extract_dir"]?.jsonPrimitive?.contentOrNull?.let {
+                    checkExtractDir(it, "architecture.$archName.extract_dir")
                 }
             }
         }
@@ -319,6 +342,25 @@ class FileManifestIo : ManifestIo, ToolSet {
         val version = obj["version"]?.jsonPrimitive?.contentOrNull ?: return
         if (version.startsWith("v")) {
             errors.add("Field 'version' must not have a leading 'v': $version")
+        }
+    }
+
+    /** Known Scoop manifest top-level fields. */
+    private val KNOWN_SCOOP_FIELDS = setOf(
+        "version", "description", "homepage", "license",
+        "url", "hash", "extract_dir", "extract_to",
+        "architecture", "bin", "shortcuts", "persist",
+        "pre_install", "post_install", "uninstaller",
+        "installer", "innosetup", "notes",
+        "checkver", "autoupdate", "depends",
+        "suggest", "conflict", "env_add_path", "env_set",
+    )
+
+    /** Detects fields not recognized by Scoop. */
+    private fun validateUnknownFields(obj: JsonObject, errors: MutableList<String>) {
+        val unknown = obj.keys.filter { it !in KNOWN_SCOOP_FIELDS }
+        for (field in unknown) {
+            errors.add("Unknown field '$field' is not a standard Scoop manifest field. Remove it.")
         }
     }
 

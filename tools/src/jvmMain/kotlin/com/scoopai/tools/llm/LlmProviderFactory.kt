@@ -9,7 +9,7 @@ import ai.koog.prompt.executor.clients.openai.OpenAILLMClient
 import ai.koog.prompt.executor.clients.openai.OpenAIModels
 import ai.koog.prompt.executor.clients.openai.base.AbstractOpenAILLMClient
 import ai.koog.prompt.executor.clients.openrouter.OpenRouterLLMClient
-import ai.koog.prompt.executor.llms.SingleLLMPromptExecutor
+import ai.koog.prompt.executor.llms.MultiLLMPromptExecutor
 import ai.koog.prompt.executor.model.PromptExecutor
 import ai.koog.prompt.executor.ollama.client.OllamaClient
 import ai.koog.prompt.llm.LLMCapability
@@ -30,11 +30,11 @@ object LlmProviderFactory {
      * longer need the manual InterceptBodyPlugin workaround from Koog 0.8.0.
      */
     fun create(provider: String, apiKey: String, baseUrl: String? = null, modelName: String? = null): PromptExecutor = when (provider) {
-        "deepseek" -> SingleLLMPromptExecutor(DeepSeekLLMClient(apiKey))
-        "openai" -> SingleLLMPromptExecutor(OpenAILLMClient(apiKey = apiKey))
-        "anthropic" -> SingleLLMPromptExecutor(AnthropicLLMClient(apiKey = apiKey))
-        "ollama" -> SingleLLMPromptExecutor(OllamaClient())
-        "openrouter" -> SingleLLMPromptExecutor(OpenRouterLLMClient(apiKey = apiKey))
+        "deepseek" -> MultiLLMPromptExecutor(DeepSeekLLMClient(apiKey))
+        "openai" -> MultiLLMPromptExecutor(OpenAILLMClient(apiKey = apiKey))
+        "anthropic" -> MultiLLMPromptExecutor(AnthropicLLMClient(apiKey = apiKey))
+        "ollama" -> MultiLLMPromptExecutor(OllamaClient())
+        "openrouter" -> MultiLLMPromptExecutor(OpenRouterLLMClient(apiKey = apiKey))
         "openai-compatible" -> {
             val resolvedBaseUrl = baseUrl ?: error("--base-url is required for openai-compatible provider")
             val deepSeekSettings = DeepSeekClientSettings(
@@ -71,7 +71,7 @@ object LlmProviderFactory {
                     httpClient = httpClient,
                 )
             }
-            SingleLLMPromptExecutor(client)
+            MultiLLMPromptExecutor(client)
         }
         else -> error("Unsupported provider: $provider. Supported: deepseek, openai, anthropic, ollama, openrouter, openai-compatible")
     }

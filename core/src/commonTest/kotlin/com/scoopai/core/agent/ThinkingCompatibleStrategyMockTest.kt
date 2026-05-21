@@ -3,6 +3,7 @@ package com.scoopai.core.agent
 import ai.koog.agents.core.agent.AIAgent
 import ai.koog.agents.core.agent.config.AIAgentConfig
 import ai.koog.agents.core.tools.SimpleTool
+import ai.koog.serialization.typeToken
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.testing.feature.withTesting
 import ai.koog.agents.testing.tools.getMockExecutor
@@ -48,7 +49,7 @@ class ThinkingCompatibleStrategyMockTest {
         data class EchoArgs(val message: String)
 
         val echoTool = object : SimpleTool<EchoArgs>(
-            argsSerializer = EchoArgs.serializer(),
+            typeToken<EchoArgs>(),
             name = "echo",
             description = "Echo back the input",
         ) {

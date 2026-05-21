@@ -11,6 +11,7 @@ import com.scoopai.core.tools.api.ManifestIo
 import com.scoopai.core.tools.api.ScoopVerifier
 import com.scoopai.core.tools.api.WebFetcher
 import com.scoopai.tools.archive.ZipArchiveInspector
+import com.scoopai.tools.cache.ScoopCacheManager
 import com.scoopai.tools.github.JdkHttpGitHubApi
 import com.scoopai.tools.hash.StreamingHashComputer
 import com.scoopai.tools.manifest.FileManifestIo
@@ -19,22 +20,19 @@ import com.scoopai.tools.verify.ProcessScoopVerifier
 import com.scoopai.tools.web.JdkHttpWebFetcher
 
 object DefaultToolRegistryFactory {
-    /** Tools that need cleanup after the agent run finishes. */
-    private val cleanupTargets = mutableListOf<() -> Unit>()
+    private var cacheManager: ScoopCacheManager? = null
 
     fun create(
+        cache: ScoopCacheManager = ScoopCacheManager(),
         gitHubApi: GitHubApi = JdkHttpGitHubApi(),
         webFetcher: WebFetcher = JdkHttpWebFetcher(),
-        hashComputer: HashComputer = StreamingHashComputer(),
-        archiveInspector: ArchiveInspector = ZipArchiveInspector(),
         manifestIo: ManifestIo = FileManifestIo(),
         scoopVerifier: ScoopVerifier? = null,
         extraTools: List<Tool<*, *>> = emptyList(),
     ): ToolRegistry {
-        cleanupTargets.clear()
-        (archiveInspector as? ZipArchiveInspector)?.let {
-            cleanupTargets.add { it.cleanup() }
-        }
+        cacheManager = cache
+        val hashComputer = StreamingHashComputer(cache)
+        val archiveInspector = ZipArchiveInspector(cache)
 
         return ToolRegistry {
             (gitHubApi as? ToolSet)?.let { tools(it.asTools()) }
@@ -48,30 +46,8 @@ object DefaultToolRegistryFactory {
         }
     }
 
-    /** Phase 1: Research tools — GitHub API, Web fetcher, AskUser */
-    val researchTools: List<Tool<*, *>> by lazy {
-        (JdkHttpGitHubApi() as ToolSet).asTools() +
-            (JdkHttpWebFetcher() as ToolSet).asTools() +
-            listOf(SafeAskUser)
-    }
-
-    /** Phase 2: Analysis tools — Hash computer, Archive inspector, AskUser */
-    val analyzeTools: List<Tool<*, *>> by lazy {
-        (StreamingHashComputer() as ToolSet).asTools() +
-            (ZipArchiveInspector() as ToolSet).asTools() +
-            listOf(SafeAskUser)
-    }
-
-    /** Phase 3: Generation tools — Manifest I/O, AskUser */
-    val generateTools: List<Tool<*, *>> by lazy {
-        (FileManifestIo() as ToolSet).asTools() +
-            listOf(SafeAskUser)
-    }
-
-    /** Verify tools — ScoopVerifier (optional) */
-    val verifyTools: List<Tool<*, *>> by lazy {
-        (ProcessScoopVerifier() as ToolSet).asTools()
-    }
+    /** Get the cache manager used in the current run (for finalizing cache entries). */
+    fun getCacheManager(): ScoopCacheManager? = cacheManager
 
     /**
      * Validates that the tools in this registry contain all tools referenced
@@ -86,9 +62,9 @@ object DefaultToolRegistryFactory {
         return (allNames - registeredNames).toList()
     }
 
-    /** Clean up resources (downloaded temp files, etc.). Call after agent run finishes. */
+    /** Clean up resources. Call after agent run finishes. */
     fun cleanup() {
-        cleanupTargets.forEach { it() }
-        cleanupTargets.clear()
+        cacheManager?.cleanup()
+        cacheManager = null
     }
 }

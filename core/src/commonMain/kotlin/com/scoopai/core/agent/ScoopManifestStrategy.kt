@@ -1,6 +1,5 @@
 package com.scoopai.core.agent
 
-import ai.koog.agents.core.dsl.builder.forwardTo
 import ai.koog.agents.core.dsl.builder.strategy
 import ai.koog.agents.core.tools.ToolBase
 import ai.koog.agents.core.tools.annotations.InternalAgentToolsApi
