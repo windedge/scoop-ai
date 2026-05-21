@@ -121,6 +121,49 @@ class PhaseOutputTest {
         assertEquals(original.shortcuts.size, restored.shortcuts.size)
     }
 
+    @Test
+    fun `ResearchOutput with suggested_app_name round-trip`() {
+        val original = ResearchOutput(
+            status = "ok",
+            project = "ggml-org/llama.cpp",
+            version = "b9264",
+            suggested_app_name = "llama-cpp-sycl"
+        )
+
+        val jsonStr = json.encodeToString(ResearchOutput.serializer(), original)
+        val restored = json.decodeFromString<ResearchOutput>(jsonStr)
+
+        assertEquals("llama-cpp-sycl", restored.suggested_app_name)
+    }
+
+    @Test
+    fun `ResearchOutput suggested_app_name defaults to null`() {
+        val input = """{"status":"ok","project":"sharkdp/fd"}"""
+        val output = json.decodeFromString<ResearchOutput>(input)
+        assertEquals(null, output.suggested_app_name)
+    }
+
+    @Test
+    fun `AnalyzeOutput with suggested_app_name round-trip`() {
+        val original = AnalyzeOutput(
+            status = "ok",
+            strategy = "portable_zip",
+            suggested_app_name = "llama-cpp-sycl"
+        )
+
+        val jsonStr = json.encodeToString(AnalyzeOutput.serializer(), original)
+        val restored = json.decodeFromString<AnalyzeOutput>(jsonStr)
+
+        assertEquals("llama-cpp-sycl", restored.suggested_app_name)
+    }
+
+    @Test
+    fun `AnalyzeOutput suggested_app_name defaults to null`() {
+        val input = """{"status":"ok","strategy":"portable_zip"}"""
+        val output = json.decodeFromString<AnalyzeOutput>(input)
+        assertEquals(null, output.suggested_app_name)
+    }
+
     // ---------------------------------------------------------------
     // Individual value objects
     // ---------------------------------------------------------------

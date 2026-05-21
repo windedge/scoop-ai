@@ -12,6 +12,7 @@ import com.scoopai.core.tools.api.ManifestIo
 import ai.koog.serialization.typeToken
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class ScoopManifestGeneratorMockTest {
@@ -24,6 +25,59 @@ class ScoopManifestGeneratorMockTest {
 
     @OptIn(InternalAgentToolsApi::class)
     private val generateFinishTool = FinishTool<String>(typeToken<String>())
+
+    @Test
+    fun `suggestedAppName is populated when research provides it`() = runBlocking {
+        val researchResult = ResearchOutput(
+            status = "ok",
+            project = "ggml-org/llama.cpp",
+            version = "b9264",
+            suggested_app_name = "llama-cpp-sycl",
+            windows_assets = listOf(
+                WindowsAsset(
+                    url = "https://example.com/llama-sycl.zip",
+                    architecture = "64bit",
+                    asset_type = "zip",
+                    source = "release_api"
+                )
+            )
+        )
+        val analyzeResult = AnalyzeOutput(
+            status = "ok",
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://example.com/llama-sycl.zip",
+                    hash = "abc123"
+                )
+            ),
+            bin = emptyList()
+        )
+        val manifestJson = """{"version":"b9264","architecture":{"64bit":{"url":"https://example.com/llama-sycl.zip","hash":"abc123"}},"bin":["llama-cli.exe"]}"""
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "Research the project at"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "Based on the following research"
+            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "generate a complete Scoop manifest"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = model,
+            toolRegistry = ToolRegistry {},
+            manifestIo = mockManifestIo(),
+            maxIterations = 50,
+        )
+
+        val result = generator.generate("https://github.com/ggml-org/llama.cpp")
+
+        assertEquals("llama-cpp-sycl", result.suggestedAppName)
+        assertTrue(result.manifest.contains("b9264"), "Result should contain version, got: $result")
+    }
 
     private fun mockManifestIo(): ManifestIo = object : ManifestIo {
         override fun validate(json: String?): String = """{"valid":true,"errors":[]}"""

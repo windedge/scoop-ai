@@ -126,6 +126,120 @@ class ScoopManifestStrategyTest {
     }
 
     @Test
+    fun `suggested_app_name flows from research to GenerateResult`() = runBlocking {
+        val researchResult = ResearchOutput(
+            status = "ok",
+            project = "ggml-org/llama.cpp",
+            version = "b9264",
+            suggested_app_name = "llama-cpp-sycl",
+            windows_assets = listOf(
+                WindowsAsset(
+                    url = "https://example.com/llama-sycl.zip",
+                    architecture = "64bit",
+                    asset_type = "zip",
+                    source = "release_api"
+                )
+            )
+        )
+        val analyzeResult = AnalyzeOutput(
+            status = "ok",
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://example.com/llama-sycl.zip",
+                    hash = "abc123",
+                    extract_dir = "llama-sycl"
+                )
+            ),
+            bin = emptyList()
+        )
+        val generateResult = """{"version":"b9264","architecture":{"64bit":{"url":"https://example.com/llama-sycl.zip","hash":"abc123"}},"bin":["llama-cli.exe"]}"""
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "https://github.com/ggml-org/llama.cpp"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ggml-org/llama.cpp"
+            mockLLMToolCall(generateFinishTool, generateResult) onRequestContains "portable_zip"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val strategy = scoopManifestStrategy()
+
+        val agent = AIAgent(
+            promptExecutor = promptExecutor,
+            toolRegistry = ToolRegistry.EMPTY,
+            strategy = strategy,
+            agentConfig = AIAgentConfig(
+                prompt = prompt("test") { system("You are a helpful assistant.") },
+                model = DeepSeekModels.DeepSeekV4Flash,
+                maxAgentIterations = 50,
+            ),
+        ) {
+            withTesting()
+        }
+
+        val result = agent.run("https://github.com/ggml-org/llama.cpp")
+        assertEquals("llama-cpp-sycl", result.suggestedAppName)
+        assertTrue(result.manifest.contains("b9264"), "Result should contain version, got: ${result.manifest}")
+    }
+
+    @Test
+    fun `suggested_app_name is null when research does not provide it`() = runBlocking {
+        val researchResult = ResearchOutput(
+            status = "ok",
+            project = "sharkdp/fd",
+            version = "10.2.0",
+            windows_assets = listOf(
+                WindowsAsset(
+                    url = "https://example.com/fd.zip",
+                    architecture = "64bit",
+                    asset_type = "zip",
+                    source = "release_api"
+                )
+            )
+        )
+        val analyzeResult = AnalyzeOutput(
+            status = "ok",
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://example.com/fd.zip",
+                    hash = "abc123",
+                    extract_dir = "fd-10.2.0"
+                )
+            ),
+            bin = emptyList()
+        )
+        val generateResult = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://example.com/fd.zip","hash":"abc123"}},"bin":["fd.exe"]}"""
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "https://github.com/sharkdp/fd"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "sharkdp/fd"
+            mockLLMToolCall(generateFinishTool, generateResult) onRequestContains "portable_zip"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val strategy = scoopManifestStrategy()
+
+        val agent = AIAgent(
+            promptExecutor = promptExecutor,
+            toolRegistry = ToolRegistry.EMPTY,
+            strategy = strategy,
+            agentConfig = AIAgentConfig(
+                prompt = prompt("test") { system("You are a helpful assistant.") },
+                model = DeepSeekModels.DeepSeekV4Flash,
+                maxAgentIterations = 50,
+            ),
+        ) {
+            withTesting()
+        }
+
+        val result = agent.run("https://github.com/sharkdp/fd")
+        assertEquals(null, result.suggestedAppName)
+    }
+
+    @Test
     fun `parseResearchStatus extracts status from JSON`() {
         assertEquals("ok", parseResearchStatus("""{"status":"ok"}"""))
         assertEquals("no_windows_assets", parseResearchStatus("""{"status":"no_windows_assets"}"""))
