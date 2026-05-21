@@ -6,20 +6,15 @@ import ai.koog.agents.ext.agent.FinishTool
 import ai.koog.agents.testing.tools.getMockExecutor
 import com.scoopai.core.agent.AnalyzeOutput
 import com.scoopai.core.agent.AssetEntry
-import com.scoopai.core.agent.PhaseSchemas
 import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.agent.WindowsAsset
 import com.scoopai.core.tools.api.ManifestIo
 import ai.koog.serialization.typeToken
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
 import kotlin.test.Test
-import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class ScoopManifestGeneratorMockTest {
-
-    private val json = Json { ignoreUnknownKeys = true }
 
     @OptIn(InternalAgentToolsApi::class)
     private val researchFinishTool = FinishTool<ResearchOutput>(typeToken<ResearchOutput>())
@@ -88,8 +83,8 @@ class ScoopManifestGeneratorMockTest {
 
         val result = generator.generate("https://github.com/sharkdp/fd")
 
-        assertTrue(result.contains("10.2.0"), "Result should contain version, got: $result")
-        assertTrue(result.contains("fd.exe"), "Result should contain bin entry, got: $result")
+        assertTrue(result.manifest.contains("10.2.0"), "Result should contain version, got: $result")
+        assertTrue(result.manifest.contains("fd.exe"), "Result should contain bin entry, got: $result")
     }
 
     @Test
@@ -121,32 +116,7 @@ class ScoopManifestGeneratorMockTest {
 
         val result = generator.generate("https://github.com/linux-only/tool")
 
-        assertTrue(result.isNotBlank(), "Should return some text, got: $result")
-        assertTrue(result.contains("0.0.0"), "Should contain version from generate phase, got: $result")
-    }
-
-    @Test
-    fun `extractJson extracts JSON from code block`() {
-        val generator = createMinimalGenerator()
-        val result = generator.extractJson("Here is the manifest:\n```json\n{\"version\":\"1.0.0\"}\n```")
-        assertEquals("""{"version":"1.0.0"}""", result)
-    }
-
-    @Test
-    fun `extractJson returns null for non-JSON text`() {
-        val generator = createMinimalGenerator()
-        val result = generator.extractJson("Just some plain text without JSON")
-        assertEquals(null, result)
-    }
-
-    private fun createMinimalGenerator(): ScoopManifestGenerator {
-        val model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash
-        return ScoopManifestGenerator(
-            promptExecutor = getMockExecutor { mockLLMAnswer("").asDefaultResponse },
-            model = model,
-            toolRegistry = ToolRegistry {},
-            manifestIo = mockManifestIo(),
-            maxIterations = 10,
-        )
+        assertTrue(result.manifest.isNotBlank(), "Should return some text, got: $result")
+        assertTrue(result.manifest.contains("0.0.0"), "Should contain version from generate phase, got: $result")
     }
 }

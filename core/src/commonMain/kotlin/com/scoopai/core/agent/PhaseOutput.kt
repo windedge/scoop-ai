@@ -25,6 +25,8 @@ data class ResearchOutput(
     val notes: String = "",
     /** Only used when status = "no_windows_assets" */
     val alternatives: String = "",
+    /** Suggested kebab-case app name reflecting variant (e.g. llama-cpp-sycl) */
+    val suggested_app_name: String? = null,
 )
 
 @Serializable
@@ -73,6 +75,8 @@ data class AnalyzeOutput(
     val installer_type: String = "",
     /** Free-text notes for the generate phase */
     val notes: String = "",
+    /** Passed through from Research phase; suggested kebab-case app name */
+    val suggested_app_name: String? = null,
 )
 
 @Serializable
@@ -116,7 +120,8 @@ When you have finished researching, call the `finalize_task_result` tool with yo
     }
   ],
   "notes": "Any additional context for the analyze phase",
-  "alternatives": "Only when status=no_windows_assets: suggested alternatives"
+  "alternatives": "Only when status=no_windows_assets: suggested alternatives",
+  "suggested_app_name": "Kebab-case app name reflecting user-requested variant, e.g. llama-cpp-sycl (omit if no variant requested)"
 }
 
 Rules:

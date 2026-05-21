@@ -10,6 +10,7 @@ import ai.koog.agents.testing.tools.getMockExecutor
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.deepseek.DeepSeekModels
 import ai.koog.serialization.typeToken
+import com.scoopai.core.GenerateResult
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -65,7 +66,7 @@ class ScoopManifestStrategyTest {
         }
 
         val result = agent.run("https://github.com/linux-only/tool")
-        assertTrue(result.isNotBlank(), "Should return some text, got: $result")
+        assertTrue(result.manifest.isNotBlank(), "Should return some text, got: $result")
     }
 
     @Test
@@ -121,7 +122,7 @@ class ScoopManifestStrategyTest {
         }
 
         val result = agent.run("https://github.com/sharkdp/fd")
-        assertTrue(result.contains("10.2.0"), "Result should contain version, got: $result")
+        assertTrue(result.manifest.contains("10.2.0"), "Result should contain version, got: $result")
     }
 
     @Test

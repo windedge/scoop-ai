@@ -48,7 +48,7 @@ Dependency direction: `cli → core + tools`, `tools → core`, `core → Koog f
 ./gradlew :cli:run --args="https://github.com/sharkdp/fd"
 
 # With specific provider
-./gradlew :cli:run --args="https://github.com/jqlang/jq -p openai"
+./gradlew :cli:run --args="https://github.com/jqlang/jq -P openai"
 
 # With output path and verification
 ./gradlew :cli:run --args="https://github.com/BurntSushi/ripgrep -o bucket/ripgrep.json -V"
@@ -61,10 +61,13 @@ Usage: scoop-ai <url> [options]
 
 Options:
   -o, --output <path>          Output file path
-  -p, --provider <name>        LLM provider: deepseek|openai|anthropic|ollama|openrouter|openai-compatible
+  -P, --provider <name>        LLM provider: deepseek|openai|anthropic|ollama|openrouter|openai-compatible
   -m, --model <name>           LLM model name (overrides default for provider)
       --base-url <url>         Custom API base URL (required for openai-compatible)
       --api-key <key>          API key
+  -p, --prompt <text>          Additional requirements for manifest generation
+      --app-name <name>        App name for cache (default: inferred from URL)
+      --no-cache               Do not keep downloaded files in Scoop cache
   -V, --verify                 Verify manifest by running scoop install
   -h, --help                   Show this help message
 ```

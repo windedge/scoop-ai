@@ -1,5 +1,6 @@
 package com.scoopai.cli
 
+import com.scoopai.core.GenerateResult
 import com.scoopai.core.ScoopManifestGenerator
 import com.scoopai.tools.cache.ScoopCacheManager
 import com.scoopai.tools.config.ProviderConfigResolver
@@ -33,18 +34,20 @@ fun main(args: Array<String>) {
     var verify = false
     var appName: String? = null
     var keepCache = true
+    var userPrompt: String? = null
 
     val i = args.iterator()
     while (i.hasNext()) {
         when (val arg = i.next()) {
             "-o", "--output" -> output = i.next()
-            "-p", "--provider" -> provider = i.next()
+            "-P", "--provider" -> provider = i.next()
             "--api-key" -> apiKey = i.next()
             "--base-url" -> baseUrl = i.next()
             "-m", "--model" -> modelName = i.next()
             "-V", "--verify" -> verify = true
             "--app-name" -> appName = i.next()
             "--no-cache" -> keepCache = false
+            "-p", "--prompt" -> userPrompt = i.next()
             "-h", "--help" -> {
                 println(HELP_TEXT)
                 return
@@ -111,7 +114,7 @@ fun main(args: Array<String>) {
     )
 
     try {
-        val result = runBlocking {
+        val result: GenerateResult = runBlocking {
             val generator = ScoopManifestGenerator(
                 promptExecutor = config.createExecutor(),
                 model = config.model,
@@ -121,22 +124,28 @@ fun main(args: Array<String>) {
             )
 
             val outputPath = resolvedOutput.ifBlank { null }
-            generator.generate(url, outputPath)
+            generator.generate(url, outputPath, userPrompt = userPrompt)
         }
-        println(result)
+
+        // Print suggested app name when available
+        if (result.suggestedAppName != null) {
+            println("Suggested app name: ${result.suggestedAppName}")
+        }
+        println(result.manifest)
 
         // ── Finalize cache entries ─────────────────────────────────
         if (keepCache) {
             // Parse version and URL with regex (handles indented or compact JSON)
-            val version = Regex(""""version"\s*:\s*"([^"]+)"""").find(result)?.groupValues?.get(1)
-            val mainUrl = Regex(""""url"\s*:\s*"(https?://[^"]+)"""").find(result)?.groupValues?.get(1)
+            val version = Regex(""""version"\s*:\s*"([^"]+)"""").find(result.manifest)?.groupValues?.get(1)
+            val mainUrl = Regex(""""url"\s*:\s*"(https?://[^"]+)"""").find(result.manifest)?.groupValues?.get(1)
 
-            logger.info { "[cache] Finalizing: app=$resolvedAppName version=$version url=$mainUrl" }
+            val appNameForCache = result.suggestedAppName ?: resolvedAppName
+            logger.info { "[cache] Finalizing: app=$appNameForCache version=$version url=$mainUrl" }
             if (version != null && mainUrl != null) {
-                val finalized = cache.finalizeCacheEntry(mainUrl, resolvedAppName, version)
+                val finalized = cache.finalizeCacheEntry(mainUrl, appNameForCache, version)
                 if (finalized != null) {
                     println("\nCache: ${finalized.toAbsolutePath()}")
-                    println("scoop install $resolvedAppName will reuse this file.")
+                    println("scoop install $appNameForCache will reuse this file.")
                 } else {
                     logger.warn { "[cache] No cached file found for $mainUrl" }
                 }
@@ -149,6 +158,7 @@ fun main(args: Array<String>) {
     } finally {
         DefaultToolRegistryFactory.cleanup()
     }
+
 }
 
 private val HELP_TEXT = """
@@ -159,10 +169,11 @@ private val HELP_TEXT = """
 
     Options:
       -o, --output <path>          Output file path
-      -p, --provider <name>        LLM provider: deepseek|openai|anthropic|ollama|openrouter|openai-compatible
+      -P, --provider <name>        LLM provider: deepseek|openai|anthropic|ollama|openrouter|openai-compatible
       -m, --model <name>           LLM model name (overrides default for provider)
           --base-url <url>         Custom API base URL (required for openai-compatible)
           --api-key <key>          API key
+      -p, --prompt <text>          Additional requirements for manifest generation
           --app-name <name>        App name for cache (default: inferred from URL)
           --no-cache               Do not keep downloaded files in Scoop cache
       -V, --verify                 Verify manifest by running scoop install
@@ -182,7 +193,8 @@ private val HELP_TEXT = """
 
     Examples:
       scoop-ai https://github.com/sharkdp/fd
-      scoop-ai https://github.com/jqlang/jq -p openai
-      scoop-ai https://github.com/BurntSushi/ripgrep -p openai-compatible --base-url http://localhost:8080/v1 -m qwen3
+      scoop-ai https://github.com/jqlang/jq -P openai
+      scoop-ai https://github.com/BurntSushi/ripgrep -P openai-compatible --base-url http://localhost:8080/v1 -m qwen3
       scoop-ai https://github.com/Draver93/ff-studio --app-name ff-studio
+      scoop-ai https://github.com/ggml-org/llama.cpp -p "Use SYCL-enabled binary"
 """.trimIndent()

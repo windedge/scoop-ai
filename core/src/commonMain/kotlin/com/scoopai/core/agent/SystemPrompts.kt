@@ -72,6 +72,8 @@ You are researching a software project to gather information for creating a Scoo
 
 7. **Report your findings**: Summarize the project info (description, homepage, license), the version, and list all Windows assets with their download URLs and detected architecture. If URLs were derived from official page variables, explicitly say which variables/patterns were used.
 
+   **If the user requirements specify a particular variant** (e.g. SYCL-enabled, CUDA, Vulkan), fill `suggested_app_name` with a short kebab-case app name that reflects the variant — for example `llama-cpp-sycl` for a SYCL-enabled build. Omit this field when no variant is requested.
+
 8. **No Windows assets**: If after all research you find that the project has **no Windows assets at all** (no .zip, .exe, .msi for Windows in releases or official download pages), set `"status": "no_windows_assets"` in your output JSON and fill the `alternatives` field with suggested alternatives. Do NOT proceed to list fake or non-Windows assets.
 
 ## Output Format
