@@ -64,6 +64,17 @@ public class InterceptingHttpClient(
         )
     }
 
+    override fun <T : Any> lines(
+        path: String,
+        requestBody: T,
+        requestBodyType: KClass<T>,
+        parameters: Map<String, String>,
+        headers: Map<String, String>,
+    ): Flow<String> {
+        val fixedBody = applyInterceptors(requestBody, requestBodyType)
+        return delegate.lines(path, fixedBody, requestBodyType, parameters, headers)
+    }
+
     /**
      * Apply all interceptors to the request body if it's a String.
      * Non-String bodies are passed through unchanged.

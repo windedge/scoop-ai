@@ -1,6 +1,6 @@
 [versions]
 kotlin = "2.1.21"
-koog = "1.0.0-preview2"
+koog = "1.0.0"
 kotlinx-serialization = "1.8.1"
 kotlinx-coroutines = "1.10.2"
 logback = "1.5.18"
@@ -10,7 +10,7 @@ junit = "5.10.2"
 
 [libraries]
 koog-agents = { module = "ai.koog:koog-agents", version.ref = "koog" }
-koog-deepseek-client = { module = "ai.koog:prompt-executor-deepseek-client", version = "1.0.0-beta-preview" }
+koog-deepseek-client = { module = "ai.koog:prompt-executor-deepseek-client", version = "1.0.0-beta-preview7" }
 koog-openrouter-client = { module = "ai.koog:prompt-executor-openrouter-client", version.ref = "koog" }
 koog-anthropic-client = { module = "ai.koog:prompt-executor-anthropic-client", version.ref = "koog" }
 koog-ollama-client = { module = "ai.koog:prompt-executor-ollama-client", version.ref = "koog" }

@@ -77,7 +77,7 @@ public fun thinkingCompatibleSingleRunStrategy(parallelTools: Boolean = false) =
                         )
                     ),
                     metaInfo = ai.koog.prompt.message.ResponseMetaInfo(
-                        timestamp = kotlin.time.Clock.System.now()
+                        ai.koog.utils.time.KoogClock.System.now()
                     )
                 )
             } else {
