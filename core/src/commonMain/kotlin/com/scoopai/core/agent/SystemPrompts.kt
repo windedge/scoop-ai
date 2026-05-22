@@ -233,6 +233,31 @@ Given the structured research and analysis JSON, generate the Scoop manifest:
 - Alias with args → `"bin": [["app.exe", "alias", "--flag"]]`
 - **Auto-alias**: When the exe name is not a clean, intuitive command name (for example `localsend_app.exe`, `SumatraPDF-3.6.1-64.exe` after rename), add a short alias. For example `[["localsend_app.exe", "localsend"]]`.
 
+## Script-based Applications (no .exe)
+
+When the archive contains **no .exe files** but has script entry points (Node.js, Python, PowerShell), do NOT use the `[["runtime", "path", "alias"]]` array format — Scoop's `shim_def()` treats the second element as the **shim name** (not a script path), so paths with `\` cause it to create nested directories under `shims\` and fail.
+
+Instead, use `"pre_install"` to create a wrapper `.cmd` file, then `"bin"` that wrapper:
+
+```json
+"pre_install": "Set-Content \"${'$'}dir\app.cmd\" -Value \"@node.exe \"\"${'$'}dir\path\to\main.js\"\" %*\" -Encoding ascii",
+"bin": "app.cmd",
+"suggest": { "Node.js (required to run)": ["nodejs"] }
+```
+
+Where `${'$'}dir` should be used as-is — it is a Scoop variable expanded at install time to the app's actual directory.
+
+- Replace `app` with the desired command name (e.g. `smallcode`).
+- Replace `node.exe` with `python.exe` or `pwsh.exe -File` for Python/PowerShell apps.
+- The `""..""` pattern inside `-Value` is PowerShell's way of embedding `"` inside a double-quoted string.
+- Always add `"suggest"` for the required runtime.
+
+Example for a Node.js app with `extract_dir: "smallcode"` and entry point `bin/smallcode.js`:
+```json
+"pre_install": "Set-Content \"${'$'}dir\smallcode.cmd\" -Value \"@node.exe \"\"${'$'}dir\bin\smallcode.js\"\" %*\" -Encoding ascii",
+"bin": "smallcode.cmd"
+```
+
 ## Installer Type Handling
 
 - ZIP/7z/tar → `url` + `bin` (extract and use)

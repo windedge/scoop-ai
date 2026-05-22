@@ -102,5 +102,6 @@ After validation passes, call `finalize_task_result` with the complete manifest 
 Scoop manifest rules:
 - `extract_dir`: ONLY include this field when the executable is inside a NAMED subdirectory (e.g. "fd-v10.2.0-x86_64-pc-windows-msvc" for ZIP, or "PFiles\\FFStudio" for MSI). If the exe is at the archive root, OMIT `extract_dir` entirely — do NOT use `"."` or `""`. MSI files almost always need `extract_dir` because Scoop extracts them into nested subdirectories.
 - Do NOT add fields not recognized by Scoop (e.g. `innosetup`, `installer.script`). Only use standard Scoop manifest fields.
-- `bin` should be a string or list of strings/arrays matching actual exe paths inside the archive."""
+- `bin` should be a string or list of strings/arrays matching actual exe paths inside the archive.
+- **No .exe found?** For script-based apps (Node.js, Python, etc.), do NOT use `[["runtime", "path", "alias"]]` — the second element becomes the shim name and paths with `\` break shim creation. Instead, use `"pre_install"` to create a wrapper `.cmd` that calls the runtime with the full script path (`${'$'}dir`), then `"bin": "app.cmd"`. Add `"suggest"` for the runtime."""
 }
