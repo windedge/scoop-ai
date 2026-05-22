@@ -96,9 +96,8 @@ $analyzeJson
 ```
 $outputPart$suggestedPathGuidance$userReq
 
-You MUST call the tools: first call validate with the manifest JSON to check it, then call write to save it.
-After writing the manifest, call `finalize_task_result` with the final manifest JSON as the `result` parameter.
-Do NOT output the manifest as plain text — only use tools.
+You MUST call validate with the manifest JSON to check it for errors. Fix any issues found.
+After validation passes, call `finalize_task_result` with the complete manifest JSON as the `result` parameter — nothing else, no wrapper object.
 
 Scoop manifest rules:
 - `extract_dir`: ONLY include this field when the executable is inside a NAMED subdirectory (e.g. "fd-v10.2.0-x86_64-pc-windows-msvc" for ZIP, or "PFiles\\FFStudio" for MSI). If the exe is at the archive root, OMIT `extract_dir` entirely — do NOT use `"."` or `""`. MSI files almost always need `extract_dir` because Scoop extracts them into nested subdirectories.

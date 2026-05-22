@@ -15,7 +15,6 @@ import com.scoopai.core.agent.prompt.buildGeneratePrompt
 import com.scoopai.core.agent.prompt.buildResearchPrompt
 import com.scoopai.core.agent.scoopManifestStrategy
 import com.scoopai.core.llm.LlmParamsBuilder
-import com.scoopai.core.tools.api.ManifestIo
 import io.github.oshai.kotlinlogging.KotlinLogging
 
 private val logger = KotlinLogging.logger {}
@@ -65,7 +64,6 @@ class ScoopManifestGenerator(
     private val promptExecutor: PromptExecutor,
     private val model: LLModel,
     private val toolRegistry: ToolRegistry,
-    private val manifestIo: ManifestIo,
     private val maxIterations: Int,
     private val thinkingLevel: String? = null,
 ) {

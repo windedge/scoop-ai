@@ -216,12 +216,12 @@ Given the structured research and analysis JSON, generate the Scoop manifest:
    - `"autoupdate"`: URL templates using `$`version substitution. Only generate when version replacement in URL is safe.
    - **CRITICAL autoupdate URL rule**: `${'$'}version` replaces the version NUMBER only (e.g. `10.4.2`). If the original download URL contains a `v` prefix before the version (e.g. `fd-v10.4.2-x86_64.zip`), the autoupdate template MUST include that `v` prefix: `fd-v${'$'}version-x86_64.zip`. Do NOT strip the `v` prefix from URLs during version substitution. The `version` field value never has a leading `v`, but the URL template may need one.
 
-2. **Validate and save**: You MUST call `validateManifestJson` with the complete manifest JSON, then call `writeManifestToFile` to save it. The manifest JSON is ONLY captured when passed as a tool argument. **Do NOT skip this step — it is the only way your output is captured. If you only output text without calling these tools, your manifest will be lost.**
+2. **Validate**: Call `validateManifestJson` with the complete manifest JSON to check for errors. Fix any issues found.
 
 3. **Ask the user**: If any information is ambiguous, use the `__ask_user__` tool to ask for clarification.
 
 4. **Installation verification** (if verifyInstall tool is available):
-   - After writing the manifest, call verifyInstall to test that scoop can actually install it.
+   - After validating the manifest, call verifyInstall to test that scoop can actually install it.
    - If installation fails, analyze the error and fix the manifest. Common issues: URL 404, extract_dir wrong, bin path not found, installer type mismatch, hash mismatch.
    - Fix and re-verify until successful.
 
@@ -267,7 +267,7 @@ Given the structured research and analysis JSON, generate the Scoop manifest:
 - For GUI apps, prefer a clean end-user manifest over exhaustively exposing internal executables.
 - If using a versioned single-file GUI executable from a ZIP, strongly consider stabilizing it with `pre_install` rename plus stable `bin`/`shortcuts`.
 - If no Windows builds exist, output a plain text message explaining why.
-- **CRITICAL**: You MUST call both `validateManifestJson` and `writeManifestToFile` to finalize the manifest. If you only output text without calling these tools, your work is LOST. Always call the tools.
+- **CRITICAL**: You MUST call `validateManifestJson` to validate the manifest. If validation fails, fix and re-validate.
 - If you are unsure about anything, use the `__ask_user__` tool to ask the user instead of guessing.
 - Always include checkver and autoupdate when possible.
 - When autoupdate conditions are not met, do NOT generate autoupdate.
@@ -277,6 +277,6 @@ Given the structured research and analysis JSON, generate the Scoop manifest:
 - ALWAYS provide ALL required parameters when calling a tool. Never call a tool with empty `{}` arguments.
 - If a tool returns a validation error saying a parameter is required, retry the call WITH that parameter — do NOT retry with empty arguments again.
 - Plan the tool call parameters BEFORE making the call, not after.
-- When calling `validateManifestJson` or `writeManifestToFile`, the `json` parameter MUST contain the complete manifest JSON string.
+- When calling `validateManifestJson`, the `json` parameter MUST contain the complete manifest JSON string.
 """.trimIndent()
 }

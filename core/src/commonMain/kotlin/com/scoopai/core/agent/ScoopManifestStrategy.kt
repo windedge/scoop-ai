@@ -65,7 +65,8 @@ fun scoopManifestStrategy(
         generatePromptBuilder?.invoke(input) ?: input.toString()
     }
 
-    val wrapResult by node<String, GenerateResult>("wrapResult") { manifest ->
+    val wrapResult by node<String, GenerateResult>("wrapResult") { generateOutput ->
+        val manifest = extractJsonBlock(generateOutput) ?: generateOutput
         GenerateResult(manifest, suggestedAppName)
     }
 

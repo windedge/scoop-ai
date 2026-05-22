@@ -52,7 +52,8 @@ class ZipArchiveInspector(
         return try {
             when (fileType(urlNotNull)) {
                 "msi" -> listMsi(urlNotNull)
-                "zip", "7z", "tar" -> listZip(urlNotNull)
+                "zip", "7z" -> listZip(urlNotNull)
+                "tar" -> listTar(urlNotNull)
                 else -> listZip(urlNotNull) // try ZIP as fallback
             }
         } catch (e: Exception) {
@@ -76,6 +77,7 @@ class ZipArchiveInspector(
         return try {
             val files = when (fileType(urlNotNull)) {
                 "msi" -> listMsiPaths(urlNotNull)
+                "tar" -> listTarPaths(urlNotNull)
                 else -> listZipPaths(urlNotNull)
             }
             val exes = files.filter { it.substringAfterLast('/').endsWith(".exe", ignoreCase = true) }
@@ -164,6 +166,36 @@ class ZipArchiveInspector(
             }
         }
         return entries
+    }
+
+
+    // -----------------------------------------------------------------------
+    // tar.gz listing (uses system tar command)
+    // -----------------------------------------------------------------------
+
+    private fun listTar(url: String): String {
+        val files = listTarPaths(url)
+        return buildJsonObject {
+            put("url", url)
+            put("files", buildJsonArray { for (f in files) add(f) })
+        }.toString()
+    }
+
+    private fun listTarPaths(url: String): List<String> {
+        val file = cache.getOrDownload(url)
+        return try {
+            val process = ProcessBuilder("tar", "tzf", file.toAbsolutePath().toString())
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().readText()
+            process.waitFor(30, TimeUnit.SECONDS)
+            output.lineSequence()
+                .filter { it.isNotBlank() }
+                .filter { it.count { c -> c == '/' } <= MAX_DEPTH }
+                .toList()
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
 
     // -----------------------------------------------------------------------

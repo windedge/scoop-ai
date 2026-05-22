@@ -8,7 +8,6 @@ import com.scoopai.core.agent.AnalyzeOutput
 import com.scoopai.core.agent.AssetEntry
 import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.agent.WindowsAsset
-import com.scoopai.core.tools.api.ManifestIo
 import ai.koog.serialization.typeToken
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -69,7 +68,6 @@ class ScoopManifestGeneratorMockTest {
             promptExecutor = promptExecutor,
             model = model,
             toolRegistry = ToolRegistry {},
-            manifestIo = mockManifestIo(),
             maxIterations = 50,
         )
 
@@ -79,11 +77,6 @@ class ScoopManifestGeneratorMockTest {
         assertTrue(result.manifest.contains("b9264"), "Result should contain version, got: $result")
     }
 
-    private fun mockManifestIo(): ManifestIo = object : ManifestIo {
-        override fun validate(json: String?): String = """{"valid":true,"errors":[]}"""
-        override fun write(json: String?, path: String?): String = "written"
-        override fun read(path: String?): String = "{}"
-    }
 
     @Test
     fun `full 3-phase flow with mock tool calls`() = runBlocking {
@@ -131,7 +124,6 @@ class ScoopManifestGeneratorMockTest {
             promptExecutor = promptExecutor,
             model = model,
             toolRegistry = ToolRegistry {},
-            manifestIo = mockManifestIo(),
             maxIterations = 50,
         )
 
@@ -164,7 +156,6 @@ class ScoopManifestGeneratorMockTest {
             promptExecutor = promptExecutor,
             model = model,
             toolRegistry = ToolRegistry {},
-            manifestIo = mockManifestIo(),
             maxIterations = 30,
         )
 

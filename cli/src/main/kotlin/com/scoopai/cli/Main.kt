@@ -119,7 +119,6 @@ fun main(args: Array<String>) {
                 promptExecutor = config.createExecutor(),
                 model = config.model,
                 toolRegistry = toolRegistry,
-                manifestIo = manifestIo,
                 maxIterations = 500,
             )
 
@@ -127,25 +126,34 @@ fun main(args: Array<String>) {
             generator.generate(url, outputPath, userPrompt = userPrompt)
         }
 
+        val manifest = result.manifest
+        if (manifest.isBlank()) {
+            System.err.println("Error: no manifest generated")
+            return
+        }
+        
         // Print suggested app name when available
         if (result.suggestedAppName != null) {
             println("Suggested app name: ${result.suggestedAppName}")
         }
-        println(result.manifest)
-
+        
+        // Write manifest to file
+        val appNameForOutput = result.suggestedAppName?.ifBlank { null } ?: resolvedAppName
+        val writePath = output.ifBlank { "bucket/$appNameForOutput.json" }
+        manifestIo.write(manifest, writePath)
+        println("Written to $writePath")
+        
         // ── Finalize cache entries ─────────────────────────────────
         if (keepCache) {
-            // Parse version and URL with regex (handles indented or compact JSON)
-            val version = Regex(""""version"\s*:\s*"([^"]+)"""").find(result.manifest)?.groupValues?.get(1)
-            val mainUrl = Regex(""""url"\s*:\s*"(https?://[^"]+)"""").find(result.manifest)?.groupValues?.get(1)
-
-            val appNameForCache = result.suggestedAppName ?: resolvedAppName
-            logger.info { "[cache] Finalizing: app=$appNameForCache version=$version url=$mainUrl" }
+            val version = Regex(""""version"\s*:\s*"([^"]+)"""").find(manifest)?.groupValues?.get(1)
+            val mainUrl = Regex(""""url"\s*:\s*"(https?://[^"]+)"""").find(manifest)?.groupValues?.get(1)
+        
+            logger.info { "[cache] Finalizing: app=$appNameForOutput version=$version url=$mainUrl" }
             if (version != null && mainUrl != null) {
-                val finalized = cache.finalizeCacheEntry(mainUrl, appNameForCache, version)
+                val finalized = cache.finalizeCacheEntry(mainUrl, appNameForOutput, version)
                 if (finalized != null) {
-                    println("\nCache: ${finalized.toAbsolutePath()}")
-                    println("scoop install $appNameForCache will reuse this file.")
+                    println("Cache: ${finalized.toAbsolutePath()}")
+                    println("scoop install $appNameForOutput will reuse this file.")
                 } else {
                     logger.warn { "[cache] No cached file found for $mainUrl" }
                 }
