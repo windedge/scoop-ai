@@ -121,7 +121,7 @@ When you have finished researching, call the `finalize_task_result` tool with yo
   ],
   "notes": "Any additional context for the analyze phase",
   "alternatives": "Only when status=no_windows_assets: suggested alternatives",
-  "suggested_app_name": "Kebab-case app name reflecting user-requested variant, e.g. llama-cpp-sycl (omit if no variant requested)"
+  "suggested_app_name": "Kebab-case app name reflecting user-requested variant or edition, e.g. llama-cpp-sycl, app-desktop (omit if no variant requested)"
 }
 
 Rules:

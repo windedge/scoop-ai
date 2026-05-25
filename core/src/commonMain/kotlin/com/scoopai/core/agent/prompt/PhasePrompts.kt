@@ -24,6 +24,8 @@ Research stopping rule: as soon as you have enough trustworthy Windows asset URL
 
 IMPORTANT: Use the available tools to gather information. Do not answer from your training data alone. Call the GitHub API and web fetcher tools to get real, up-to-date data.
 
+CRITICAL: You can ONLY use these tools: parseGitHubUrl, fetchRepoInfo, fetchLatestRelease, fetchAllReleases, listReleaseAssets, fetchFileContent, fetchWebPage, resolveRedirect, fetchJson, __ask_user__. Do NOT call any other tool names.
+
 ${PhaseSchemas.RESEARCH_SCHEMA}"""
 }
 
@@ -35,7 +37,9 @@ ${PhaseSchemas.RESEARCH_SCHEMA}"""
 fun buildAnalyzePrompt(research: ResearchOutput, userPrompt: String? = null): String {
     val researchJson = kotlinx.serialization.json.Json.encodeToString(ResearchOutput.serializer(), research)
     val userReq = if (!userPrompt.isNullOrBlank()) "\n\n## Additional User Requirements\n$userPrompt" else ""
-    return """You are now in the ANALYSIS phase. Your task is to compute hashes and inspect archive contents using the analysis tools (computeSha256FromUrl, listArchiveContents, findExecutables).
+    return """You are now in the ANALYSIS phase. Your task is to compute hashes and inspect archive contents using the analysis tools (computeSha256FromUrl, listArchiveContents, findExecutables, detectInstallerType).
+
+CRITICAL: You can ONLY use these tools: computeSha256FromUrl, listArchiveContents, findExecutables, detectInstallerType, __ask_user__. Do NOT call any research tools (fetchRepoInfo, fetchWebPage, etc.) or any other tool names — they are NOT available in this phase.
 
 Based on the following research results, analyze only the most likely Scoop manifest assets first.
 
@@ -83,10 +87,12 @@ When calling `writeManifestToFile`, pass `"bucket/$suggestedAppName.json"` as th
 ## Additional User Requirements
 $userPrompt
 
-When user requirements specify a particular variant (e.g. SYCL-enabled, CUDA, Vulkan), you MUST:
-1. Reflect the variant in the `description` field (e.g. "LLM inference in C/C++ (SYCL-enabled)" instead of just "LLM inference in C/C++").
+When user requirements specify a particular variant or edition (e.g. SYCL-enabled, CUDA, Vulkan, desktop, GUI, CLI), you MUST:
+1. Reflect the variant in the `description` field (e.g. "LLM inference in C/C++ (SYCL-enabled)" instead of just "LLM inference in C/C++", or "Coding agents from your phone, desktop and CLI (Desktop)" for a desktop edition).
 2. Ensure the chosen assets match the requested variant.""" else ""
-    return """You are now in the GENERATION phase. Your task is to generate a Scoop manifest JSON and save it using the tools (validate, write).
+    return """You are now in the GENERATION phase. Your task is to generate a Scoop manifest JSON and save it using the tools (validate, __ask_user__).
+
+CRITICAL: You can ONLY use these tools: validate, __ask_user__, finalize_task_result. Do NOT call any research or analysis tools (fetchRepoInfo, computeSha256FromUrl, etc.) or any other tool names — they are NOT available in this phase.
 
 Based on the following analysis JSON, generate a complete Scoop manifest.
 
@@ -103,5 +109,6 @@ Scoop manifest rules:
 - `extract_dir`: ONLY include this field when the executable is inside a NAMED subdirectory (e.g. "fd-v10.2.0-x86_64-pc-windows-msvc" for ZIP, or "PFiles\\FFStudio" for MSI). If the exe is at the archive root, OMIT `extract_dir` entirely — do NOT use `"."` or `""`. MSI files almost always need `extract_dir` because Scoop extracts them into nested subdirectories.
 - Do NOT add fields not recognized by Scoop (e.g. `innosetup`, `installer.script`). Only use standard Scoop manifest fields.
 - `bin` should be a string or list of strings/arrays matching actual exe paths inside the archive.
-- **No .exe found?** For script-based apps (Node.js, Python, etc.), do NOT use `[["runtime", "path", "alias"]]` — the second element becomes the shim name and paths with `\` break shim creation. Instead, use `"pre_install"` to create a wrapper `.cmd` that calls the runtime with the full script path (`${'$'}dir`), then `"bin": "app.cmd"`. Add `"suggest"` for the runtime."""
+- **No .exe found?** For script-based apps (Node.js, Python, etc.), do NOT use `[["runtime", "path", "alias"]]` — the second element becomes the shim name and paths with `\` break shim creation. Instead, use `"pre_install"` to create a wrapper `.cmd` that calls the runtime with the full script path (`${'$'}dir`), then `"bin": "app.cmd"`. Add `"suggest"` for the runtime.
+- **checkver and autoupdate are REQUIRED** for GitHub-hosted projects. Always include `"checkver": "github"` (or `{ "github": "url" }` for non-default repos) and an `"autoupdate"` block with URL templates. Only omit these when the project is not on GitHub and no reliable version source exists."""
 }

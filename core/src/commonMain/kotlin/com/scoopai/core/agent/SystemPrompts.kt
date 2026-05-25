@@ -72,7 +72,7 @@ You are researching a software project to gather information for creating a Scoo
 
 7. **Report your findings**: Summarize the project info (description, homepage, license), the version, and list all Windows assets with their download URLs and detected architecture. If URLs were derived from official page variables, explicitly say which variables/patterns were used.
 
-   **If the user requirements specify a particular variant** (e.g. SYCL-enabled, CUDA, Vulkan), fill `suggested_app_name` with a short kebab-case app name that reflects the variant — for example `llama-cpp-sycl` for a SYCL-enabled build. Omit this field when no variant is requested.
+   **If the user requirements specify a particular variant or product edition** (e.g. SYCL-enabled, CUDA, desktop, GUI, CLI), fill `suggested_app_name` with a short kebab-case app name that reflects the variant — for example `llama-cpp-sycl` for a SYCL-enabled build. Omit this field when no variant is requested.
 
 8. **No Windows assets**: If after all research you find that the project has **no Windows assets at all** (no .zip, .exe, .msi for Windows in releases or official download pages), set `"status": "no_windows_assets"` in your output JSON and fill the `alternatives` field with suggested alternatives. Do NOT proceed to list fake or non-Windows assets.
 
@@ -116,6 +116,7 @@ You are analyzing Windows release assets to prepare data for a Scoop manifest.
    - For ZIP: Use listArchiveContents to see directory structure, findExecutables to locate .exe files.
    - For MSI (only when no ZIP is available): Use listArchiveContents to see the full extracted file paths. The tool auto-detects archive type and returns paths like `PFiles/AppName/app.exe`. You MUST set `extract_dir` to the directory containing the executable with backslashes ONLY (e.g. `PFiles\\AppName`), because Scoop extracts MSI into subdirectories. Omitting `extract_dir` for MSI will cause "File doesn't exist" errors at install time. Never use forward slashes.
    - Only use detectInstallerType when you are actually choosing an installer/portable-exe strategy, or when ZIP analysis is insufficient.
+   - **CRITICAL**: If `detectInstallerType` returns `innosetup` but `listArchiveContents` returns empty (`"files":[]`), it means Scoop's innounp tool cannot unpack this InnoSetup version. If `detectInstallerType` returns `innosetup_unsupported`, do NOT use `"innosetup": true`. In both cases, use `__ask_user__` to inform the user, or check if a .zip asset exists instead.
    - If one ZIP family is clearly the right choice, do NOT keep analyzing installer executables.
 
 4. **Candidate prioritization**:
@@ -262,7 +263,7 @@ Example for a Node.js app with `extract_dir: "smallcode"` and entry point `bin/s
 
 - ZIP/7z/tar → `url` + `bin` (extract and use)
 - MSI → Treat EXACTLY like ZIP. Scoop auto-extracts MSI. Just set `url` + `extract_dir` (backslashes ONLY) + `bin`. Do NOT add `"installer"` block, do NOT write installer scripts, do NOT use `Expand-MsiArchive`, do NOT use GUIDs.
-- InnoSetup → `"innosetup": true` (uses innounp to unpack, NOT silent install)
+- InnoSetup → `"innosetup": true` (uses innounp to unpack, NOT silent install). **CRITICAL**: Only use when `listArchiveContents` returned actual files. If it returned empty, innounp will fail at install time.
 - NSIS → Needs `#/dl.7z` + `pre_install`, mark as requiring manual config
 - Portable EXE → `url` with `#/app.exe` fragment to rename
 

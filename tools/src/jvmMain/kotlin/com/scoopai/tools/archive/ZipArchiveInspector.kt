@@ -54,6 +54,7 @@ class ZipArchiveInspector(
                 "msi" -> listMsi(urlNotNull)
                 "zip", "7z" -> listZip(urlNotNull)
                 "tar" -> listTar(urlNotNull)
+                "exe" -> listInnosetup(urlNotNull)
                 else -> listZip(urlNotNull) // try ZIP as fallback
             }
         } catch (e: Exception) {
@@ -78,6 +79,7 @@ class ZipArchiveInspector(
             val files = when (fileType(urlNotNull)) {
                 "msi" -> listMsiPaths(urlNotNull)
                 "tar" -> listTarPaths(urlNotNull)
+                "exe" -> listInnosetupPaths(urlNotNull)
                 else -> listZipPaths(urlNotNull)
             }
             val exes = files.filter { it.substringAfterLast('/').endsWith(".exe", ignoreCase = true) }
@@ -115,7 +117,11 @@ class ZipArchiveInspector(
             val headerContent = String(headerBytes, Charsets.ISO_8859_1)
 
             val installerType = when {
-                headerContent.contains("Inno Setup", ignoreCase = true) -> "innosetup"
+                headerContent.contains("Inno Setup", ignoreCase = true) -> {
+                    // Try to verify that innounp can actually unpack this
+                    val canList = tryInnounpList(file)
+                    if (canList) "innosetup" else "innosetup_unsupported"
+                }
                 headerContent.contains("Nullsoft", ignoreCase = true) -> "nsis"
                 else -> "unknown"
             }
@@ -123,9 +129,65 @@ class ZipArchiveInspector(
             buildJsonObject {
                 put("url", urlNotNull)
                 put("installer_type", installerType)
+                if (installerType == "innosetup_unsupported") {
+                    put("warning", "Inno Setup version not supported by innounp. Scoop install will fail with 'innosetup: true'. Consider using the .zip asset instead, or ask the user.")
+                }
             }.toString()
         } catch (e: Exception) {
             buildJsonObject { put("error", "Failed to detect installer type: ${e.message}") }.toString()
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // InnoSetup listing (via innounp)
+    // -----------------------------------------------------------------------
+
+    private fun listInnosetup(url: String): String {
+        val files = listInnosetupPaths(url)
+        return buildJsonObject {
+            put("url", url)
+            put("files", buildJsonArray { for (f in files) add(f) })
+        }.toString()
+    }
+
+    private fun listInnosetupPaths(url: String): List<String> {
+        val file = cache.getOrDownload(url)
+        return try {
+            val proc = ProcessBuilder("innounp", "-s", file.toAbsolutePath().toString())
+                .redirectErrorStream(true)
+                .start()
+            val output = proc.inputStream.bufferedReader().readText()
+            proc.waitFor(30, TimeUnit.SECONDS)
+            if (proc.exitValue() != 0) return emptyList()
+            // innounp -s output: lines like "  {app}\\bin\\app.exe"
+            // Skip header lines (program info, archive info, blank lines)
+            output.lineSequence()
+                .map { it.trim() }
+                .filter { it.startsWith("{") }  // {app}\\... paths
+                .toList()
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // InnoSetup verification via innounp
+    // -----------------------------------------------------------------------
+
+    /**
+     * Try running `innounp -v` on the file to verify it can be unpacked.
+     * Returns true if innounp can list files, false if it fails.
+     */
+    private fun tryInnounpList(file: java.nio.file.Path): Boolean {
+        return try {
+            val proc = ProcessBuilder("innounp", "-v", file.toAbsolutePath().toString())
+                .redirectErrorStream(true)
+                .start()
+            val output = proc.inputStream.bufferedReader().readText()
+            proc.waitFor(15, TimeUnit.SECONDS)
+            proc.exitValue() == 0 && !output.contains("corrupted", ignoreCase = true)
+        } catch (_: Exception) {
+            false
         }
     }
 
