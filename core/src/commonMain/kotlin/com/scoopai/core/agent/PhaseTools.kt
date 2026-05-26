@@ -25,6 +25,7 @@ object PhaseTools {
     const val FETCH_WEB_PAGE = "fetchWebPage"
     const val RESOLVE_REDIRECT = "resolveRedirect"
     const val FETCH_JSON = "fetchJson"
+    const val SEARCH_TEXT_IN_ARCHIVE = "searchTextInArchive"
 
     // Analyze tools
     const val COMPUTE_SHA256 = "computeSha256FromUrl"
@@ -51,6 +52,7 @@ object PhaseTools {
         FETCH_WEB_PAGE,
         RESOLVE_REDIRECT,
         FETCH_JSON,
+        SEARCH_TEXT_IN_ARCHIVE,
         ASK_USER,
     )
 

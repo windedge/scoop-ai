@@ -11,9 +11,19 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
-import kotlinx.serialization.json.*
 
-private val nsisLogger = io.github.oshai.kotlinlogging.KotlinLogging.logger {}
+
+private val logger = io.github.oshai.kotlinlogging.KotlinLogging.logger {}
+
+/** Text-like file extensions that should be scanned by searchTextInArchive. */
+private val TEXT_EXTENSIONS = setOf(
+    ".cs", ".rs", ".go", ".ts", ".js", ".jsx", ".tsx",
+    ".json", ".toml", ".yaml", ".yml", ".xml", ".md",
+    ".py", ".rb", ".java", ".kt", ".scala", ".c", ".cpp", ".h", ".hpp",
+    ".sh", ".bat", ".ps1", ".cfg", ".ini", ".conf",
+    ".txt", ".html", ".css", ".scss", ".less",
+    ".mod", ".sum", ".lock", ".env", ".properties",
+)
 
 @LLMDescription("Archive inspection tools for ZIP, MSI and installer analysis")
 class ZipArchiveInspector(
@@ -128,13 +138,9 @@ class ZipArchiveInspector(
                     if (canList) "innosetup" else "innosetup_unsupported"
                 }
                 headerContent.contains("Nullsoft", ignoreCase = true) -> {
-                    // Determine NSIS subtype and inner files via 7z list
-                    val nsisInner = try7zNsisContent(file)
-                    if (nsisInner.isNotEmpty()) {
-                        "nsis"
-                    } else {
-                        "nsis"
-                    }
+                    // Determine NSIS subtype via 7z content inspection
+                    try7zNsisContent(file)
+                    "nsis"
                 }
                 else -> "unknown"
             }
@@ -161,6 +167,236 @@ class ZipArchiveInspector(
             return result.toString()
         } catch (e: Exception) {
             buildJsonObject { put("error", "Failed to detect installer type: ${e.message}") }.toString()
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Tool: searchTextInArchive
+    // -----------------------------------------------------------------------
+
+    @Tool
+    @LLMDescription("Search for text patterns inside a source code archive (zip/tar.gz) WITHOUT extracting to disk. Scans only text-like files. Returns JSON with matching files and line snippets.")
+    override suspend fun searchTextInArchive(
+        @LLMDescription("URL of the source code archive (zip/tar.gz)")
+        url: String?,
+        @LLMDescription("Comma-separated regex patterns to search for, e.g. 'XDG_CONFIG_HOME,electron-store,app.getPath'")
+        patterns: String?,
+        @LLMDescription("Comma-separated glob patterns to restrict file types, e.g. '*.json,*.rs,*.go'. Empty = all text files.")
+        includeGlobs: String?,
+        @LLMDescription("Maximum number of match results (default 50)")
+        maxResults: Int,
+        @LLMDescription("Maximum file size to scan in bytes (default 262144 = 256KB)")
+        maxFileSizeBytes: Long,
+    ): String {
+        val urlNotNull = validateNotNull(url) { "Parameter 'url' is required. Provide the URL of a source code archive." }
+        val patternsNotNull = validateNotNull(patterns) { "Parameter 'patterns' is required. Provide comma-separated regex patterns to search for." }
+
+        return try {
+            val patternList = patternsNotNull.split(',').map { it.trim() }.filter { it.isNotBlank() }
+            if (patternList.isEmpty()) {
+                return buildJsonObject { put("error", "No valid patterns provided.") }.toString()
+            }
+
+            val compiledPatterns = patternList.mapNotNull { pat ->
+                try { Regex(pat) to pat } catch (_: Exception) { null }
+            }
+            if (compiledPatterns.isEmpty()) {
+                return buildJsonObject { put("error", "No valid regex patterns in: $patternsNotNull") }.toString()
+            }
+
+            val globList = includeGlobs?.split(',')?.map { it.trim().removePrefix("*.") }?.filter { it.isNotBlank() }?.toSet()
+                ?: emptySet()
+
+            val effectiveMaxResults = if (maxResults <= 0) 50 else maxResults
+            val effectiveMaxFileSize = if (maxFileSizeBytes <= 0) 256 * 1024 else maxFileSizeBytes
+
+            val matches = searchZipForPatterns(
+                url = urlNotNull,
+                patterns = compiledPatterns,
+                extensionFilter = globList,
+                maxResults = effectiveMaxResults,
+                maxFileSizeBytes = effectiveMaxFileSize,
+            )
+            matches.toString()
+        } catch (e: Exception) {
+            buildJsonObject {
+                put("error", "Failed to search archive: ${e.message ?: e.javaClass.name}")
+            }.toString()
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // searchTextInArchive internals
+    // -----------------------------------------------------------------------
+
+    private fun searchZipForPatterns(
+        url: String,
+        patterns: List<Pair<Regex, String>>,
+        extensionFilter: Set<String>,
+        maxResults: Int,
+        maxFileSizeBytes: Long,
+    ): JsonObject {
+        val file = cache.getOrDownload(url)
+        val matches = mutableListOf<JsonObject>()
+        var filesScanned = 0
+        val maxFiles = 500 // Safety limit
+
+        val type = fileType(url)
+        when (type) {
+            "zip" -> searchZipStream(file, patterns, extensionFilter, maxResults, maxFileSizeBytes, maxFiles, matches) { filesScanned = it }
+            "tar" -> searchTarStream(file, patterns, extensionFilter, maxResults, maxFileSizeBytes, maxFiles, matches) { filesScanned = it }
+            else -> {
+                // Try zip as fallback
+                try {
+                    searchZipStream(file, patterns, extensionFilter, maxResults, maxFileSizeBytes, maxFiles, matches) { filesScanned = it }
+                } catch (_: Exception) {
+                    return buildJsonObject {
+                        put("error", "Unsupported archive type: $type")
+                        put("url", url)
+                    }
+                }
+            }
+        }
+
+        return buildJsonObject {
+            put("url", url)
+            put("files_scanned", filesScanned)
+            put("patterns_used", buildJsonArray { patterns.forEach { (_, name) -> add(name) } })
+            put("match_count", matches.size)
+            put("matches", buildJsonArray { matches.forEach { add(it) } })
+        }
+    }
+
+    private fun searchZipStream(
+        file: java.nio.file.Path,
+        patterns: List<Pair<Regex, String>>,
+        extensionFilter: Set<String>,
+        maxResults: Int,
+        maxFileSizeBytes: Long,
+        maxFiles: Int,
+        matches: MutableList<JsonObject>,
+        onScanned: (Int) -> Unit,
+    ) {
+        var scanned = 0
+        Files.newInputStream(file).use { fis ->
+            ZipInputStream(fis).use { zis ->
+                generateSequence { zis.nextEntry }
+                    .takeWhile { matches.size < maxResults && scanned < maxFiles }
+                    .forEach { entry ->
+                        if (entry.isDirectory) {
+                            zis.closeEntry()
+                            return@forEach
+                        }
+                        val name = entry.name
+                        val ext = name.substringAfterLast('.', "")
+                        // Skip binary files
+                        if (ext.isNotEmpty() && ext !in TEXT_EXTENSIONS && "." + ext !in TEXT_EXTENSIONS) {
+                            zis.closeEntry()
+                            return@forEach
+                        }
+                        // Apply extension filter
+                        if (extensionFilter.isNotEmpty() && ext !in extensionFilter) {
+                            zis.closeEntry()
+                            return@forEach
+                        }
+                        // Skip large files
+                        if (entry.size > maxFileSizeBytes && entry.size > 0) {
+                            zis.closeEntry()
+                            return@forEach
+                        }
+
+                        try {
+                            // Read bytes without closing the ZipInputStream
+                            val bytes = zis.readNBytes(maxFileSizeBytes.toInt() + 1)
+                            if (bytes.size > maxFileSizeBytes) {
+                                zis.closeEntry()
+                                return@forEach
+                            }
+                            val content = String(bytes, Charsets.UTF_8)
+                            scanned++
+                            searchContentForPatterns(name, content, patterns, maxResults - matches.size, matches)
+                        } catch (_: Exception) {
+                            // Skip files that can't be read as text
+                        }
+                        zis.closeEntry()
+                    }
+            }
+        }
+        onScanned(scanned)
+    }
+
+    private fun searchTarStream(
+        file: java.nio.file.Path,
+        patterns: List<Pair<Regex, String>>,
+        extensionFilter: Set<String>,
+        maxResults: Int,
+        maxFileSizeBytes: Long,
+        maxFiles: Int,
+        matches: MutableList<JsonObject>,
+        onScanned: (Int) -> Unit,
+    ) {
+        var scanned = 0
+        try {
+            // tar --to-stdout concatenates all files, so we can't separate them.
+            // Fall back to filename-based matching via tar -tzf listing.
+            // TODO: full content search for tar.gz requires per-file extraction support
+            val listProcess = ProcessBuilder("tar", "tzf", file.toAbsolutePath().toString())
+                .redirectErrorStream(true)
+                .start()
+            val listing = listProcess.inputStream.bufferedReader().readText()
+            listProcess.waitFor(30, TimeUnit.SECONDS)
+
+            val filePaths = listing.lines().filter { it.isNotBlank() }.filter { !it.endsWith("/") }
+            for (path in filePaths) {
+                if (scanned >= maxFiles) break
+                val ext = path.substringAfterLast('.', "")
+                if (ext.isNotEmpty() && ext !in TEXT_EXTENSIONS) continue
+                if (extensionFilter.isNotEmpty() && ext !in extensionFilter) continue
+
+                // For tar, we can only do filename-based matching for now
+                for ((regex, patternName) in patterns) {
+                    if (regex.containsMatchIn(path)) {
+                        matches.add(buildJsonObject {
+                            put("file", path)
+                            put("pattern", patternName)
+                            put("match_type", "filename")
+                        })
+                        if (matches.size >= maxResults) break
+                    }
+                }
+                scanned++
+            }
+        } catch (_: Exception) {
+            // tar not available
+        }
+        onScanned(scanned)
+    }
+
+    /** Search text content of a single file against all patterns. */
+    private fun searchContentForPatterns(
+        filePath: String,
+        content: String,
+        patterns: List<Pair<Regex, String>>,
+        remaining: Int,
+        matches: MutableList<JsonObject>,
+    ) {
+        var added = 0
+        val lines = content.lines()
+        for ((regex, patternName) in patterns) {
+            if (added >= remaining) break
+            for ((idx, line) in lines.withIndex()) {
+                if (added >= remaining) break
+                if (regex.containsMatchIn(line)) {
+                    val snippet = line.take(200).trim()
+                    matches.add(buildJsonObject {
+                        put("file", filePath)
+                        put("line", idx + 1)
+                        put("snippet", snippet)
+                        put("pattern", patternName)
+                    })
+                    added++
+                }
+            }
         }
     }
 
@@ -234,13 +470,13 @@ class ZipArchiveInspector(
             val output = proc.inputStream.bufferedReader().readText()
             proc.waitFor(30, TimeUnit.SECONDS)
             if (proc.exitValue() != 0) {
-                nsisLogger.warn { "[7z] exit code ${proc.exitValue()} for ${file.fileName}: ${output.take(300)}" }
+                logger.warn { "[7z] exit code ${proc.exitValue()} for ${file.fileName}: ${output.take(300)}" }
                 emptyList()
             } else {
                 parse7zOutput(output)
             }
         } catch (e: Exception) {
-            nsisLogger.warn { "[7z] execute failed: ${e.message}" }
+            logger.warn { "[7z] execute failed: ${e.message}" }
             emptyList()
         }
     }

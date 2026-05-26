@@ -5,6 +5,8 @@ import ai.koog.agents.core.tools.annotations.InternalAgentToolsApi
 import ai.koog.agents.ext.agent.FinishTool
 import ai.koog.agents.testing.tools.getMockExecutor
 import com.scoopai.core.agent.AnalyzeOutput
+import com.scoopai.core.agent.AnalyzeStatus
+import com.scoopai.core.agent.ResearchStatus
 import com.scoopai.core.agent.AssetEntry
 import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.agent.WindowsAsset
@@ -23,12 +25,12 @@ class ScoopManifestGeneratorMockTest {
     private val analyzeFinishTool = FinishTool<AnalyzeOutput>(typeToken<AnalyzeOutput>())
 
     @OptIn(InternalAgentToolsApi::class)
-    private val generateFinishTool = FinishTool<String>(typeToken<String>())
+    private val refineFinishTool = FinishTool<String>(typeToken<String>())
 
     @Test
     fun `suggestedAppName is populated when research provides it`() = runBlocking {
         val researchResult = ResearchOutput(
-            status = "ok",
+            status = ResearchStatus.OK,
             project = "ggml-org/llama.cpp",
             version = "b9264",
             suggested_app_name = "llama-cpp-sycl",
@@ -42,7 +44,7 @@ class ScoopManifestGeneratorMockTest {
             )
         )
         val analyzeResult = AnalyzeOutput(
-            status = "ok",
+            status = AnalyzeStatus.OK,
             strategy = "portable_zip",
             entries = listOf(
                 AssetEntry(
@@ -56,9 +58,9 @@ class ScoopManifestGeneratorMockTest {
         val manifestJson = """{"version":"b9264","architecture":{"64bit":{"url":"https://example.com/llama-sycl.zip","hash":"abc123"}},"bin":["llama-cli.exe"]}"""
 
         val promptExecutor = getMockExecutor {
-            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "Research the project at"
-            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "Based on the following research"
-            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "generate a complete Scoop manifest"
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(refineFinishTool, manifestJson) onRequestContains "REFINE phase"
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -81,7 +83,7 @@ class ScoopManifestGeneratorMockTest {
     @Test
     fun `full 3-phase flow with mock tool calls`() = runBlocking {
         val researchResult = ResearchOutput(
-            status = "ok",
+            status = ResearchStatus.OK,
             project = "sharkdp/fd",
             version = "10.2.0",
             windows_assets = listOf(
@@ -94,7 +96,7 @@ class ScoopManifestGeneratorMockTest {
             )
         )
         val analyzeResult = AnalyzeOutput(
-            status = "ok",
+            status = AnalyzeStatus.OK,
             strategy = "portable_zip",
             entries = listOf(
                 AssetEntry(
@@ -109,12 +111,9 @@ class ScoopManifestGeneratorMockTest {
         val manifestJson = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip","hash":"abc123","extract_dir":"fd-v10.2.0-x86_64-pc-windows-msvc"}},"bin":["fd.exe"]}"""
 
         val promptExecutor = getMockExecutor {
-            // Research phase: prompt contains "Research the project at"
-            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "Research the project at"
-            // Analyze phase: prompt contains "Based on the following research"
-            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "Based on the following research"
-            // Generate phase: prompt contains "generate a complete Scoop manifest"
-            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "generate a complete Scoop manifest"
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(refineFinishTool, manifestJson) onRequestContains "REFINE phase"
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -134,19 +133,16 @@ class ScoopManifestGeneratorMockTest {
     }
 
     @Test
-    fun `no Windows assets flows through all phases`() = runBlocking {
+    fun `no Windows assets early-finishes via checkNoWindows branch`() = runBlocking {
         val researchResult = ResearchOutput(
-            status = "no_windows_assets",
+            status = ResearchStatus.NO_WINDOWS_ASSETS,
             project = "linux-only/tool",
             alternatives = "Consider using WSL or a Linux VM."
         )
-        val analyzeResult = AnalyzeOutput(status = "ok", strategy = "portable_zip")
-        val generateResult = """{"version":"0.0.0","note":"No Windows assets found."}"""
 
         val promptExecutor = getMockExecutor {
-            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "Research the project at"
-            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "Based on the following research"
-            mockLLMToolCall(generateFinishTool, generateResult) onRequestContains "generate a complete Scoop manifest"
+            // Only research phase; analyze/generate are skipped by checkNoWindows → finishNoAssets branch
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -161,7 +157,7 @@ class ScoopManifestGeneratorMockTest {
 
         val result = generator.generate("https://github.com/linux-only/tool")
 
-        assertTrue(result.manifest.isNotBlank(), "Should return some text, got: $result")
-        assertTrue(result.manifest.contains("0.0.0"), "Should contain version from generate phase, got: $result")
+        assertTrue(result.noAssets, "Should have noAssets=true")
+        assertTrue(result.manifest.isBlank(), "Should return empty manifest, got: ${result.manifest}")
     }
 }

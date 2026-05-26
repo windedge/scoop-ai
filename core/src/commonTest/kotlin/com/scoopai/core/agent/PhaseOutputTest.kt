@@ -43,7 +43,7 @@ class PhaseOutputTest {
     @Test
     fun `ResearchOutput round-trip`() {
         val original = ResearchOutput(
-            status = "ok",
+            status = ResearchStatus.OK,
             project = "sharkdp/fd",
             description = "A simple, fast and user-friendly alternative to find",
             homepage = "https://github.com/sharkdp/fd",
@@ -75,14 +75,14 @@ class PhaseOutputTest {
     @Test
     fun `ResearchOutput with minimal fields round-trip`() {
         val original = ResearchOutput(
-            status = "no_windows_assets",
+            status = ResearchStatus.NO_WINDOWS_ASSETS,
             alternatives = "Consider using WSL or a Linux VM."
         )
 
         val jsonStr = json.encodeToString(ResearchOutput.serializer(), original)
         val restored = json.decodeFromString<ResearchOutput>(jsonStr)
 
-        assertEquals("no_windows_assets", restored.status)
+        assertEquals(ResearchStatus.NO_WINDOWS_ASSETS, restored.status)
         assertTrue(restored.windows_assets.isEmpty())
     }
 
@@ -93,7 +93,7 @@ class PhaseOutputTest {
     @Test
     fun `AnalyzeOutput round-trip with all fields`() {
         val original = AnalyzeOutput(
-            status = "ok",
+            status = AnalyzeStatus.OK,
             strategy = "portable_zip",
             entries = listOf(
                 AssetEntry(
@@ -124,7 +124,7 @@ class PhaseOutputTest {
     @Test
     fun `ResearchOutput with suggested_app_name round-trip`() {
         val original = ResearchOutput(
-            status = "ok",
+            status = ResearchStatus.OK,
             project = "ggml-org/llama.cpp",
             version = "b9264",
             suggested_app_name = "llama-cpp-sycl"
@@ -146,7 +146,7 @@ class PhaseOutputTest {
     @Test
     fun `AnalyzeOutput with suggested_app_name round-trip`() {
         val original = AnalyzeOutput(
-            status = "ok",
+            status = AnalyzeStatus.OK,
             strategy = "portable_zip",
             suggested_app_name = "llama-cpp-sycl"
         )
@@ -213,7 +213,7 @@ class PhaseOutputTest {
     @Test
     fun `ResearchOutput with persist_targets and env_targets round-trip`() {
         val original = ResearchOutput(
-            status = "ok",
+            status = ResearchStatus.OK,
             project = "sharkdp/bat",
             version = "0.26.1",
             persist_targets = listOf("config", "syntaxes", "themes"),
@@ -244,7 +244,7 @@ class PhaseOutputTest {
     @Test
     fun `AnalyzeOutput with env_set round-trip`() {
         val original = AnalyzeOutput(
-            status = "ok",
+            status = AnalyzeStatus.OK,
             strategy = "portable_zip",
             entries = listOf(
                 AssetEntry(

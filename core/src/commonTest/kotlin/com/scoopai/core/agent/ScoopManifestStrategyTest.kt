@@ -10,7 +10,9 @@ import ai.koog.agents.testing.tools.getMockExecutor
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.deepseek.DeepSeekModels
 import ai.koog.serialization.typeToken
-import com.scoopai.core.GenerateResult
+import com.scoopai.core.agent.prompt.buildAnalyzePrompt
+import com.scoopai.core.agent.prompt.buildRefinePrompt
+import com.scoopai.core.agent.prompt.buildResearchPrompt
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -31,26 +33,27 @@ class ScoopManifestStrategyTest {
     private val analyzeFinishTool = FinishTool<AnalyzeOutput>(typeToken<AnalyzeOutput>())
 
     @OptIn(InternalAgentToolsApi::class)
-    private val generateFinishTool = FinishTool<String>(typeToken<String>())
+    private val refineFinishTool = FinishTool<String>(typeToken<String>())
 
     @Test
-    fun `no_windows_assets flows through all phases and returns text`() = runBlocking {
+    fun `no_windows_assets early-finishes without analyze or generate`() = runBlocking {
         val researchResult = ResearchOutput(
-            status = "no_windows_assets",
+            status = ResearchStatus.NO_WINDOWS_ASSETS,
             project = "linux-only/tool",
             alternatives = "Consider using WSL or a Linux VM."
         )
-        val analyzeResult = AnalyzeOutput(status = "ok", strategy = "portable_zip")
-        val generateResult = """{"version":"0.0.0"}"""
 
         val promptExecutor = getMockExecutor {
-            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "https://github.com/linux-only/tool"
-            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "no_windows_assets"
-            mockLLMToolCall(generateFinishTool, generateResult) onRequestContains "portable_zip"
+            // Only research phase is called; analyze and generate are skipped via checkNoWindows branch
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMAnswer("").asDefaultResponse
         }
 
-        val strategy = scoopManifestStrategy()
+        val strategy = scoopManifestStrategy(
+            researchPromptBuilder = { buildResearchPrompt(it, null) },
+            analyzePromptBuilder = { buildAnalyzePrompt(it) },
+            refinePromptBuilder = { skeleton, analyze -> buildRefinePrompt(skeleton, analyze, null) },
+        )
 
         val agent = AIAgent(
             promptExecutor = promptExecutor,
@@ -66,13 +69,14 @@ class ScoopManifestStrategyTest {
         }
 
         val result = agent.run("https://github.com/linux-only/tool")
-        assertTrue(result.manifest.isNotBlank(), "Should return some text, got: $result")
+        assertTrue(result.noAssets, "Should have noAssets=true")
+        assertTrue(result.manifest.isBlank(), "Should return empty manifest, got: ${result.manifest}")
     }
 
     @Test
     fun `full 3-phase flow produces manifest`() = runBlocking {
         val researchResult = ResearchOutput(
-            status = "ok",
+            status = ResearchStatus.OK,
             project = "sharkdp/fd",
             version = "10.2.0",
             windows_assets = listOf(
@@ -85,7 +89,7 @@ class ScoopManifestStrategyTest {
             )
         )
         val analyzeResult = AnalyzeOutput(
-            status = "ok",
+            status = AnalyzeStatus.OK,
             strategy = "portable_zip",
             entries = listOf(
                 AssetEntry(
@@ -97,16 +101,20 @@ class ScoopManifestStrategyTest {
             ),
             bin = emptyList()
         )
-        val generateResult = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://example.com/fd.zip","hash":"abc123"}},"bin":["fd.exe"]}"""
+        val refineResult = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://example.com/fd.zip","hash":"abc123"}},"bin":["fd.exe"]}"""
 
         val promptExecutor = getMockExecutor {
-            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "https://github.com/sharkdp/fd"
-            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "sharkdp/fd"
-            mockLLMToolCall(generateFinishTool, generateResult) onRequestContains "portable_zip"
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(refineFinishTool, refineResult) onRequestContains "REFINE phase"
             mockLLMAnswer("").asDefaultResponse
         }
 
-        val strategy = scoopManifestStrategy()
+        val strategy = scoopManifestStrategy(
+            researchPromptBuilder = { buildResearchPrompt(it, null) },
+            analyzePromptBuilder = { buildAnalyzePrompt(it) },
+            refinePromptBuilder = { skeleton, analyze -> buildRefinePrompt(skeleton, analyze, null) },
+        )
 
         val agent = AIAgent(
             promptExecutor = promptExecutor,
@@ -128,7 +136,7 @@ class ScoopManifestStrategyTest {
     @Test
     fun `suggested_app_name flows from research to GenerateResult`() = runBlocking {
         val researchResult = ResearchOutput(
-            status = "ok",
+            status = ResearchStatus.OK,
             project = "ggml-org/llama.cpp",
             version = "b9264",
             suggested_app_name = "llama-cpp-sycl",
@@ -142,7 +150,7 @@ class ScoopManifestStrategyTest {
             )
         )
         val analyzeResult = AnalyzeOutput(
-            status = "ok",
+            status = AnalyzeStatus.OK,
             strategy = "portable_zip",
             entries = listOf(
                 AssetEntry(
@@ -154,16 +162,20 @@ class ScoopManifestStrategyTest {
             ),
             bin = emptyList()
         )
-        val generateResult = """{"version":"b9264","architecture":{"64bit":{"url":"https://example.com/llama-sycl.zip","hash":"abc123"}},"bin":["llama-cli.exe"]}"""
+        val refineResult = """{"version":"b9264","architecture":{"64bit":{"url":"https://example.com/llama-sycl.zip","hash":"abc123"}},"bin":["llama-cli.exe"]}"""
 
         val promptExecutor = getMockExecutor {
-            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "https://github.com/ggml-org/llama.cpp"
-            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ggml-org/llama.cpp"
-            mockLLMToolCall(generateFinishTool, generateResult) onRequestContains "portable_zip"
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(refineFinishTool, refineResult) onRequestContains "REFINE phase"
             mockLLMAnswer("").asDefaultResponse
         }
 
-        val strategy = scoopManifestStrategy()
+        val strategy = scoopManifestStrategy(
+            researchPromptBuilder = { buildResearchPrompt(it, null) },
+            analyzePromptBuilder = { buildAnalyzePrompt(it) },
+            refinePromptBuilder = { skeleton, analyze -> buildRefinePrompt(skeleton, analyze, null) },
+        )
 
         val agent = AIAgent(
             promptExecutor = promptExecutor,
@@ -186,7 +198,7 @@ class ScoopManifestStrategyTest {
     @Test
     fun `suggested_app_name is null when research does not provide it`() = runBlocking {
         val researchResult = ResearchOutput(
-            status = "ok",
+            status = ResearchStatus.OK,
             project = "sharkdp/fd",
             version = "10.2.0",
             windows_assets = listOf(
@@ -199,7 +211,7 @@ class ScoopManifestStrategyTest {
             )
         )
         val analyzeResult = AnalyzeOutput(
-            status = "ok",
+            status = AnalyzeStatus.OK,
             strategy = "portable_zip",
             entries = listOf(
                 AssetEntry(
@@ -211,16 +223,20 @@ class ScoopManifestStrategyTest {
             ),
             bin = emptyList()
         )
-        val generateResult = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://example.com/fd.zip","hash":"abc123"}},"bin":["fd.exe"]}"""
+        val refineResult = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://example.com/fd.zip","hash":"abc123"}},"bin":["fd.exe"]}"""
 
         val promptExecutor = getMockExecutor {
-            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "https://github.com/sharkdp/fd"
-            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "sharkdp/fd"
-            mockLLMToolCall(generateFinishTool, generateResult) onRequestContains "portable_zip"
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(refineFinishTool, refineResult) onRequestContains "REFINE phase"
             mockLLMAnswer("").asDefaultResponse
         }
 
-        val strategy = scoopManifestStrategy()
+        val strategy = scoopManifestStrategy(
+            researchPromptBuilder = { buildResearchPrompt(it, null) },
+            analyzePromptBuilder = { buildAnalyzePrompt(it) },
+            refinePromptBuilder = { skeleton, analyze -> buildRefinePrompt(skeleton, analyze, null) },
+        )
 
         val agent = AIAgent(
             promptExecutor = promptExecutor,
@@ -241,10 +257,10 @@ class ScoopManifestStrategyTest {
 
     @Test
     fun `parseResearchStatus extracts status from JSON`() {
-        assertEquals("ok", parseResearchStatus("""{"status":"ok"}"""))
-        assertEquals("no_windows_assets", parseResearchStatus("""{"status":"no_windows_assets"}"""))
-        assertEquals("unknown", parseResearchStatus("not json"))
-        assertEquals("unknown", parseResearchStatus("""{"noStatus":true}"""))
-        assertEquals("unknown", parseResearchStatus(""))
+        assertEquals(ResearchStatus.OK, parseResearchStatus("""{"status":"ok"}"""))
+        assertEquals(ResearchStatus.NO_WINDOWS_ASSETS, parseResearchStatus("""{"status":"no_windows_assets"}"""))
+        assertEquals(ResearchStatus.OK, parseResearchStatus("not json"))
+        assertEquals(ResearchStatus.OK, parseResearchStatus("""{"noStatus":true}"""))
+        assertEquals(ResearchStatus.OK, parseResearchStatus(""))
     }
 }

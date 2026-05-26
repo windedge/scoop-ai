@@ -234,12 +234,8 @@ class FileManifestIo(
                     }
                 }
             }
-            else -> warnings(errors, "Field '$fieldPath' has unexpected type")
+            else -> errors.add("Field '$fieldPath' has unexpected type")
         }
-    }
-
-    private fun warnings(errors: MutableList<String>, msg: String) {
-        errors.add(msg)
     }
 
     private fun validateHashes(hashElement: JsonElement, errors: MutableList<String>, fieldPath: String) {

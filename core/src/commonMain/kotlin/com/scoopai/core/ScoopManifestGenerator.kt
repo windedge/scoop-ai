@@ -11,7 +11,7 @@ import com.scoopai.core.agent.AnalyzeOutput
 import com.scoopai.core.agent.PhaseTools
 import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.agent.prompt.buildAnalyzePrompt
-import com.scoopai.core.agent.prompt.buildGeneratePrompt
+import com.scoopai.core.agent.prompt.buildRefinePrompt
 import com.scoopai.core.agent.prompt.buildResearchPrompt
 import com.scoopai.core.agent.scoopManifestStrategy
 import com.scoopai.core.llm.LlmParamsBuilder
@@ -64,10 +64,16 @@ internal fun isSuspiciousManifest(manifest: String): Boolean {
  * Result of a full manifest generation run.
  *
  * @property manifest The final manifest JSON string (after fix loop if applicable).
+ *   Empty when no Windows assets were found ([noAssets] = true).
  * @property suggestedAppName The app name extracted from the write tool's `path` parameter,
  *   or `null` if no write tool call was made.
+ * @property noAssets True when the project has no Windows assets at all.
  */
-data class GenerateResult(val manifest: String, val suggestedAppName: String?)
+data class GenerateResult(
+    val manifest: String,
+    val suggestedAppName: String? = null,
+    val noAssets: Boolean = false,
+)
 
 /**
  * Safely truncate a string for logging, preserving valid Unicode characters.
@@ -79,7 +85,7 @@ internal fun sanitizeForLog(text: String, maxLen: Int = 120): String {
         .replace('\n', ' ')
         .replace('\r', ' ')
         .replace('\t', ' ')
-        .replace(Regex("[\\p{Cntrl}&&[^\n\r\t]]"), "?") // other control chars
+        .replace(Regex("\\p{Cntrl}"), "?")
     // Truncate by code points to avoid breaking multi-byte chars
     val codePoints = sanitized.codePoints().toArray()
     return if (codePoints.size <= maxLen) {
@@ -114,6 +120,11 @@ class ScoopManifestGenerator(
         repeat(MAX_GENERATION_RETRIES + 1) { attempt ->
             try {
                 val result = tryGenerate(url, outputPath, userPrompt)
+
+                if (result.noAssets) {
+                    // No Windows assets found — not an error, not retryable.
+                    return result
+                }
 
                 if (isSuspiciousManifest(result.manifest)) {
                     logger.warn {
@@ -165,8 +176,8 @@ class ScoopManifestGenerator(
             { buildResearchPrompt(it, outputPath, userPrompt) }
         val analyzePrompt: suspend (ResearchOutput) -> String =
             { buildAnalyzePrompt(it, userPrompt) }
-        val generatePrompt: suspend (AnalyzeOutput) -> String =
-            { buildGeneratePrompt(it, outputPath, userPrompt) }
+        val refinePrompt: suspend (String, AnalyzeOutput) -> String =
+            { skeleton, analyze -> buildRefinePrompt(skeleton, analyze, outputPath, userPrompt) }
 
         val llmParams = LlmParamsBuilder.build(model, thinkingLevel)
         val strategy = scoopManifestStrategy(
@@ -176,7 +187,7 @@ class ScoopManifestGenerator(
             llmParams = llmParams,
             researchPromptBuilder = researchPrompt,
             analyzePromptBuilder = analyzePrompt,
-            generatePromptBuilder = generatePrompt,
+            refinePromptBuilder = refinePrompt,
         )
 
         val agentConfig = AIAgentConfig(

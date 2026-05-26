@@ -96,7 +96,15 @@ class RetryingHttpClient(
         val statusCode: Int,
         val url: String,
         val body: String,
-    ) : Exception("HTTP $statusCode for $url: ${body.take(200)}")
+    ) : Exception("HTTP $statusCode for $url: ${body.take(200)}") {
+        /** Whether this is a GitHub API rate limit (403 with rate-limit markers). */
+        val isRateLimited: Boolean
+            get() = statusCode == 403 && (
+                body.contains("rate limit", ignoreCase = true) ||
+                    body.contains("API rate limit exceeded", ignoreCase = true) ||
+                    body.contains("secondary rate limit", ignoreCase = true)
+            )
+    }
 
     private class IOException(message: String) : Exception(message)
 }

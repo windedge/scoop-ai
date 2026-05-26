@@ -169,6 +169,10 @@ fun main(args: Array<String>) {
         }
 
         val manifest = result.manifest
+        if (result.noAssets) {
+            System.err.println("No Windows assets found for the given project.")
+            return
+        }
         if (manifest.isBlank()) {
             System.err.println("Error: no manifest generated")
             return

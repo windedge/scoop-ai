@@ -7,6 +7,7 @@ import ai.koog.agents.core.tools.reflect.ToolSet
 import ai.koog.agents.core.tools.validateNotNull
 import com.scoopai.core.tools.api.GitHubApi
 import com.scoopai.tools.http.RetryingHttpClient
+import com.scoopai.tools.http.RetryingHttpClient.HttpException
 import kotlinx.serialization.json.*
 import java.net.URI
 import java.net.http.HttpClient
@@ -29,6 +30,25 @@ class JdkHttpGitHubApi : GitHubApi, ToolSet {
             "Accept" to "application/vnd.github+json",
         ))
         return response.body()
+    }
+
+    // ---------------------------------------------------------------------------
+    // Structured error helpers
+    // ---------------------------------------------------------------------------
+
+    /** Build a structured error JSON from an exception. Detects rate-limit 403s. */
+    private fun structuredError(operation: String, e: Exception): String {
+        val isRateLimit = e is HttpException && e.isRateLimited
+        val statusCode = (e as? HttpException)?.statusCode
+        return buildJsonObject {
+            put("error", "Failed to $operation: ${e.message}")
+            if (isRateLimit || statusCode == 403) {
+                put("error_type", "rate_limited")
+                put("status", statusCode ?: 403)
+                put("retryable", false)
+                put("action", "STOP all GitHub API calls. Use searchTextInArchive on the source code zip instead. Do NOT retry any GitHub API request.")
+            }
+        }.toString()
     }
 
     // ---------------------------------------------------------------------------
@@ -100,9 +120,7 @@ class JdkHttpGitHubApi : GitHubApi, ToolSet {
                 }
             }.toString()
         } catch (e: Exception) {
-            buildJsonObject {
-                put("error", "Failed to fetch repo info: ${e.message}")
-            }.toString()
+            structuredError("fetch repo info", e)
         }
     }
 
@@ -121,9 +139,7 @@ class JdkHttpGitHubApi : GitHubApi, ToolSet {
             val json = Json.parseToJsonElement(body).jsonObject
             releaseToJson(json).toString()
         } catch (e: Exception) {
-            buildJsonObject {
-                put("error", "Failed to fetch latest release: ${e.message}")
-            }.toString()
+            structuredError("fetch latest release", e)
         }
     }
 
@@ -162,9 +178,7 @@ class JdkHttpGitHubApi : GitHubApi, ToolSet {
                 }
             }.toString()
         } catch (e: Exception) {
-            buildJsonObject {
-                put("error", "Failed to fetch releases: ${e.message}")
-            }.toString()
+            structuredError("fetch releases", e)
         }
     }
 
@@ -191,9 +205,7 @@ class JdkHttpGitHubApi : GitHubApi, ToolSet {
                 }
             }.toString()
         } catch (e: Exception) {
-            buildJsonObject {
-                put("error", "Failed to list release assets: ${e.message}")
-            }.toString()
+            structuredError("list release assets", e)
         }
     }
 
@@ -233,9 +245,7 @@ class JdkHttpGitHubApi : GitHubApi, ToolSet {
                 }.toString()
             }
         } catch (e: Exception) {
-            buildJsonObject {
-                put("error", "Failed to fetch file content: ${e.message}")
-            }.toString()
+            structuredError("fetch file content", e)
         }
     }
 

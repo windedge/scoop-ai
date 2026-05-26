@@ -7,6 +7,7 @@ import ai.koog.agents.core.tools.annotations.InternalAgentToolsApi
 import ai.koog.agents.ext.agent.subgraphWithTask
 import ai.koog.prompt.params.LLMParams
 import com.scoopai.core.GenerateResult
+import com.scoopai.core.agent.nodes.assembleManifestSkeleton
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -21,13 +22,18 @@ internal val phaseJson: Json = Json {
 /**
  * Creates a graph strategy for generating Scoop manifests.
  *
- * Each phase runs as a [subgraphWithTask]: the LLM uses tools to gather data,
+ * Flow:
+ * ```
+ * nodeStart → research(LLM) →
+ *   [no_windows] → finishNoAssets
+ *   [ok] → analyze(LLM) → filterBin(deterministic) → generate(LLM) → wrapResult → nodeFinish
+ * ```
+ *
+ * Each LLM phase runs as a [subgraphWithTask]: the LLM uses tools to gather data,
  * then calls `finalize_task_result` to return a structured result.
  *
- * - research:  String → [ResearchOutput]
- * - analyze:   [ResearchOutput] → [AnalyzeOutput]
- * - generate:  [AnalyzeOutput] → String
- * - wrap:      String → [GenerateResult]
+ * Deterministic nodes:
+ * - filterBin: Removes helper/proxy/updater exe from bin list
  */
 @OptIn(InternalAgentToolsApi::class)
 fun scoopManifestStrategy(
@@ -37,12 +43,16 @@ fun scoopManifestStrategy(
     llmParams: LLMParams? = null,
     researchPromptBuilder: (suspend (String) -> String)? = null,
     analyzePromptBuilder: (suspend (ResearchOutput) -> String)? = null,
-    generatePromptBuilder: (suspend (AnalyzeOutput) -> String)? = null,
+    /** Replaces generatePromptBuilder. Receives (skeleton, analyzeOutput) and returns refine prompt. */
+    refinePromptBuilder: (suspend (String, AnalyzeOutput) -> String)? = null,
 ) = strategy<String, GenerateResult>("scoop_manifest_generator") {
 
-    // Capture suggested_app_name from ResearchOutput for the final wrap node
+    // Capture research data and suggested_app_name across phases
+    var researchData: ResearchOutput? = null
     var suggestedAppName: String? = null
+    var lastAnalyzeOutput: AnalyzeOutput? = null
 
+    // ── Research phase (LLM) ──
     val research by subgraphWithTask<String, ResearchOutput>(
         tools = researchTools,
         llmParams = llmParams,
@@ -50,36 +60,69 @@ fun scoopManifestStrategy(
         researchPromptBuilder?.invoke(input) ?: input.toString()
     }
 
+    // ── Finish when no Windows assets exist ──
+    val finishNoAssets by node<ResearchOutput, GenerateResult>("finishNoAssets") { research ->
+        GenerateResult(
+            manifest = "",
+            suggestedAppName = research.suggested_app_name,
+            noAssets = true,
+        )
+    }
+
+    // ── Analyze phase (LLM) ──
     val analyze by subgraphWithTask<ResearchOutput, AnalyzeOutput>(
         tools = analyzeTools,
         llmParams = llmParams,
     ) { input ->
+        researchData = input
         suggestedAppName = input.suggested_app_name
         analyzePromptBuilder?.invoke(input) ?: input.toString()
     }
 
-    val generate by subgraphWithTask<AnalyzeOutput, String>(
-        tools = generateTools,
-        llmParams = llmParams,
-    ) { input ->
-        generatePromptBuilder?.invoke(input) ?: input.toString()
+    // ── Deterministic: assemble JSON skeleton from research + analyze data ──
+    val prepareManifest by node<AnalyzeOutput, String>("prepareManifest") { analyzeOutput ->
+        lastAnalyzeOutput = analyzeOutput
+        assembleManifestSkeleton(researchData!!, analyzeOutput)
     }
 
-    val wrapResult by node<String, GenerateResult>("wrapResult") { generateOutput ->
-        val manifest = extractJsonBlock(generateOutput) ?: generateOutput
+    // ── Refine phase (LLM): add checkver/autoupdate and validate ──
+    val refine by subgraphWithTask<String, String>(
+        tools = generateTools,
+        llmParams = llmParams,
+    ) { manifestSkeleton ->
+        refinePromptBuilder?.invoke(manifestSkeleton, lastAnalyzeOutput!!) ?: manifestSkeleton
+    }
+
+    // ── Deterministic: extract JSON and wrap result ──
+    val wrapResult by node<String, GenerateResult>("wrapResult") { refineOutput ->
+        val manifest = extractJsonBlock(refineOutput) ?: refineOutput
         GenerateResult(manifest, suggestedAppName)
     }
 
-    // ── Edges: research → analyze → generate → wrap → finish ──
+    // ── Edges ──
     edge(nodeStart forwardTo research)
-    edge(research forwardTo analyze)
-    edge(analyze forwardTo generate)
-    edge(generate forwardTo wrapResult)
+
+    // Conditional: no Windows assets → early finish
+    edge(research forwardTo finishNoAssets onCondition { output ->
+        output.status == ResearchStatus.NO_WINDOWS_ASSETS
+    })
+
+    // Conditional: has Windows assets → analyze
+    edge(research forwardTo analyze onCondition { output ->
+        output.status == ResearchStatus.OK
+    })
+
+    edge(finishNoAssets forwardTo nodeFinish)
+
+    // Main path: analyze → prepareManifest → refine → wrapResult → finish
+    edge(analyze forwardTo prepareManifest)
+    edge(prepareManifest forwardTo refine)
+    edge(refine forwardTo wrapResult)
     edge(wrapResult forwardTo nodeFinish)
 }
 
 // ---------------------------------------------------------------------------
-// JSON helpers (kept for ScoopManifestGenerator's validateAndFix)
+// JSON helpers
 // ---------------------------------------------------------------------------
 
 private val codeBlockRegex = Regex("```(?:json)?\\s*\\n?([\\s\\S]*?)```")
@@ -108,15 +151,19 @@ internal fun isValidJson(text: String): Boolean = try {
 
 /**
  * Extracts the `status` field from a JSON string.
- * Returns "unknown" if the JSON cannot be parsed.
+ * Returns [ResearchStatus.OK] if the JSON cannot be parsed or the field is absent.
  */
-internal fun parseResearchStatus(output: String): String {
+internal fun parseResearchStatus(output: String): ResearchStatus {
     return try {
         val json = kotlinx.serialization.json.Json
             .parseToJsonElement(output)
             .jsonObject
-        json["status"]?.jsonPrimitive?.content ?: "unknown"
+        val statusStr = json["status"]?.jsonPrimitive?.content ?: return ResearchStatus.OK
+        ResearchStatus.entries.find {
+            // Match by @SerialName ("ok", "no_windows_assets")
+            it.name.equals(statusStr.replace('-', '_'), ignoreCase = true)
+        } ?: ResearchStatus.OK
     } catch (_: Exception) {
-        "unknown"
+        ResearchStatus.OK
     }
 }
