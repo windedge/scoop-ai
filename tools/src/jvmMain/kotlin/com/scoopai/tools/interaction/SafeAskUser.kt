@@ -46,6 +46,14 @@ object SafeAskUser : SimpleTool<SafeAskUser.Args>(
     }
 
     override suspend fun execute(args: Args): String {
+        // Non-interactive mode — skip prompts, return default so agent proceeds autonomously
+        val nonInteractive = (System.getProperty("SCOOP_AI_NON_INTERACTIVE") ?: System.getenv("SCOOP_AI_NON_INTERACTIVE"))?.let {
+            it.isNotBlank() && it != "false" && it != "0"
+        } ?: false
+        if (nonInteractive) {
+            return DEFAULT_RESPONSE
+        }
+
         val console = java.lang.System.console()
 
         // Approach 1: System.console() (direct terminal launch)

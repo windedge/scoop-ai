@@ -55,6 +55,11 @@ You are researching a software project to gather information for creating a Scoo
 5. **Identify Windows assets**:
    - Look for .zip, .exe, .msi files in release assets or official download pages.
    - **Prioritize portable ZIP archives over MSI installers**: ZIP is always the preferred format for Scoop. Only fall back to MSI when no suitable ZIP asset exists for Windows.
+   - **Asset variant priority** (when multiple variants exist for the same architecture):
+     1. **"all" or unified variants** over provider-specific sub-variants (e.g. MUST prefer `terraformer-all-windows-amd64` over `terraformer-google-windows-amd64`). This is NOT a suggestion — always prefer the all/unified variant when it exists.
+     2. **Desktop/GUI variants** over CLI-only variants when the project is a desktop application (e.g. MUST prefer `Goose-win32-x64.zip` over `goose-x86_64-pc-windows-msvc.zip` when the project homepage or description indicates a desktop/GUI app). Check the project description and homepage to determine if it's primarily a GUI app.
+     3. **Complete/standard packages** over minimal packages (e.g. prefer `full-portable` over `portable` when both exist)
+     4. When uncertain, prefer the asset whose filename best matches the project name
    - Architecture detection from filename:
      - `x64`, `x86_64`, `amd64`, `win64` → 64bit
      - `x86`, `i686`, `win32`, `i386` → 32bit
@@ -64,17 +69,29 @@ You are researching a software project to gather information for creating a Scoo
    - Exclude source archives containing `source` or `src` with `.tar.gz`
    - If there are ambiguous candidates, use the `__ask_user__` tool to ask which to include.
 
-6. **Stop conditions — end research as soon as any one of these is true**:
-   - You have actual Windows asset URLs from the release API.
-   - You have the latest version plus a deterministic official download URL pattern that yields the Windows assets.
-   - You have identified the preferred Windows assets for the manifest (for example portable zip and/or installer exe for the relevant architectures).
-   - You have enough information for the analyze step to compute hashes without needing more discovery.
+6. **Discover persist targets from source code** — Unless the user requirements explicitly say to skip persist discovery (e.g. "skip persist-related discovery", "do not read source code for persist"), read the source to find what directories/files hold user config/data:
+   - **If user requirements tell you to skip this step**: set `persist_targets: []`, `env_targets: {}`, and skip all source reading for persist purposes. Do NOT spend any steps on this.
+   - Always read the **project manifest** for config clues: `package.json` (Node.js), `Cargo.toml` (Rust), `pyproject.toml`/`setup.py` (Python), `go.mod` (Go), etc.
+   - Look for **config file patterns** in source code comments/docs: `config.yaml`, `config.toml`, `config.json`, `app.conf`, `settings.json`, `.env`, `data/`, `profiles/`, `userdata/`
+   - For **CLI tools**: look for directories like `~/.config/app/`, `%APPDATA%/app/`, `XDG_CONFIG_HOME`, or custom config file paths
+   - For **Electron apps**: check if there is `app.getPath('userData')`, `electron-store`, or `%APPDATA%` mentions. If the app is Electron (check `package.json` for `electron` dependency), the `Data/` directory in the archive is Electron-managed internal data and MUST NOT be added to persist_targets.
+   - For **Tauri apps**: read `tauri.conf.json` `tauri.bundle.identifier` → `%APPDATA%/<identifier>`.
+   - For **runtime-created files**: check source code for patterns like `File.WriteAllText`, `JsonSerializer.Deserialize` + `File.Create`, or `save config` that write config/cookie/state files during app execution.
+   - For **env var overrides**: if source uses an env var to override config path (e.g. `BAT_CONFIG_DIR` sets the config directory, or `XDG_CONFIG_HOME`), record the env var name and the corresponding directory in `env_targets`.
+   - Use `fetchFileContent` to check key files for config/data clues. Read at least the project manifest and main entry file, plus any file that mentions storage paths. Read up to 5 files if needed to find persist clues — do not read the entire codebase.
+   - Record findings (directory names or filenames, not full paths) in `persist_targets`
 
-7. **Report your findings**: Summarize the project info (description, homepage, license), the version, and list all Windows assets with their download URLs and detected architecture. If URLs were derived from official page variables, explicitly say which variables/patterns were used.
+7. **Stop conditions — end research as soon as ALL of these are true**:
+   - You have actual Windows asset URLs from the release API OR a deterministic download URL pattern.
+   - You have identified the preferred Windows assets for the manifest.
+   - You have read the project manifest (package.json, Cargo.toml, etc.) — unless user requirements told you to skip persist discovery, in which case skip this check.
+   - You have enough information for the analyze step.
+
+8. **Report your findings**: Summarize the project info (description, homepage, license), the version, and list all Windows assets with their download URLs and detected architecture. If URLs were derived from official page variables, explicitly say which variables/patterns were used.
 
    **If the user requirements specify a particular variant or product edition** (e.g. SYCL-enabled, CUDA, desktop, GUI, CLI), fill `suggested_app_name` with a short kebab-case app name that reflects the variant — for example `llama-cpp-sycl` for a SYCL-enabled build. Omit this field when no variant is requested.
 
-8. **No Windows assets**: If after all research you find that the project has **no Windows assets at all** (no .zip, .exe, .msi for Windows in releases or official download pages), set `"status": "no_windows_assets"` in your output JSON and fill the `alternatives` field with suggested alternatives. Do NOT proceed to list fake or non-Windows assets.
+9. **No Windows assets**: If after all research you find that the project has **no Windows assets at all** (no .zip, .exe, .msi for Windows in releases or official download pages), set `"status": "no_windows_assets"` in your output JSON and fill the `alternatives` field with suggested alternatives. Do NOT proceed to list fake or non-Windows assets.
 
 ## Output Format
 
@@ -87,6 +104,13 @@ You are researching a software project to gather information for creating a Scoo
 - Do NOT compute hashes or generate manifests — that is done in later steps.
 - Research is complete once analyze can start. Do not spend steps chasing extra confirmation after the stop conditions are met.
 - If there are no Windows assets, set status to "no_windows_assets" in the JSON. Do NOT try to work around this by downloading source archives or inventing compilation steps.
+
+## Thinking Model Rules
+
+- Do NOT get stuck in long reasoning loops. Thinking is for planning only.
+- After any reasoning, you MUST immediately follow it with a tool call or the `finalize_task_result` call.
+- NEVER end your turn with only reasoning text. The framework will crash if no tool call is produced.
+- Keep reasoning concise (under 200 tokens). Save tokens for actual tool calls and JSON output.
 
 ## Tool Call Rules
 
@@ -129,6 +153,7 @@ You are analyzing Windows release assets to prepare data for a Scoop manifest.
 5. **Determine only what is needed for the chosen manifest strategy**:
    - `extract_dir`: Top-level directory inside the archive containing the executable. REQUIRED for MSI when files are inside a subdirectory. Use backslash ONLY: `PFiles\\FFStudio`. **Never use forward slashes**.
    - bin: Executable(s) to add to PATH.
+   - persist and env_set and pre_install: See step 7 below.
    - Installer type: ZIP, MSI, InnoSetup, NSIS, or Portable EXE.
 
 6. **Filter executables aggressively**:
@@ -137,13 +162,33 @@ You are analyzing Windows release assets to prepare data for a Scoop manifest.
    - Usually exclude names containing terms like: `helper`, `proxy`, `updater`, `update`, `uninstall`, `setup`, `crash`, `service`, `broker`, `elevat`, `patch`, `pluginproxy`.
    - For GUI apps, `bin` should usually contain only the main launchable app, not internal support tools.
 
-7. **GUI app packaging heuristics**:
+7. **Set persist, env_set, and pre_install from research findings** (unless user requirements instruct otherwise):
+   - **If user requirements say to NOT include persist or to skip persist** (e.g. "Do NOT include any 'persist' field", "skip persist"): skip this step entirely. Set `persist: []`, `env_set: {}`, `pre_install: []` (or omit the fields). Do NOT spend any steps analyzing persist.
+   - The research JSON may contain `persist_targets` (which dirs/files to persist) and `env_targets` (which env vars point to config dirs).
+   - Use `listArchiveContents` to check which persist targets exist inside the archive.
+   - **Rule A**: If a persist target EXISTS in the archive (e.g. `config/` directory, `settings.json`), add it directly to `persist`.
+   - **Rule B**: If a persist target does NOT exist in the archive but was found through source code analysis (runtime-created files like `Settings.json`, or directories in `%APPDATA%`), still add it to `persist`, AND add `pre_install` code to create the initial file/directory:
+     - Directory: `if (!(Test-Path "\${'$'}persist_dir\\<name>")) { New-Item "\${'$'}dir\\<name>" -ItemType Directory | Out-Null }`
+     - File: `if (!(Test-Path "\${'$'}persist_dir\\<name>")) { New-Item "\${'$'}dir\\<name>" | Out-Null }`
+     - With default content: `if (!(Test-Path "\${'$'}persist_dir\\<name>")) { Set-Content "\${'$'}dir\\<name>" '<default content>' -Encoding ASCII }`
+   - **Rule C**: If `env_targets` is present (e.g. `BAT_CONFIG_DIR`), set `env_set` to map the env var to `\${'$'}dir`, persist the corresponding directory, and add `pre_install` to copy existing config from `%APPDATA%`:
+     ```json
+     "env_set": { "BAT_CONFIG_DIR": "\${'$'}dir" },
+     "pre_install": [
+       "if (!(Test-Path \"\${'$'}persist_dir\\config\")) { Copy-Item -ErrorAction Ignore \"\${'$'}env:APPDATA\\bat\\config\" \"\${'$'}dir\\config\" }",
+       "'syntaxes', 'themes' | ForEach-Object { if (!(Test-Path \"\${'$'}persist_dir\\${'$'}_\")) { Copy-Item -ErrorAction Ignore -Recurse \"\${'$'}env:APPDATA\\bat\\${'$'}_\" \"\${'$'}dir\\${'$'}_\" } }"
+     ],
+     "persist": ["config", "syntaxes", "themes"]
+     ```
+   - **Electron exclusion**: If the research identified this as an Electron app, do NOT add `Data/` or any Electron internal directory to persist, even if they exist in the archive.
+   - If no `persist_targets` were found during research, skip this step — do NOT guess persist entries from the archive alone.
+
+8. **GUI app packaging heuristics**:
    - If a ZIP contains a single versioned primary executable (for example `App-1.2.3-64.exe`), consider using `pre_install` to rename it to a stable filename such as `App.exe`.
    - When a stable renamed executable is used, prefer `bin` and `shortcuts` that reference the stable filename.
    - For GUI apps, add `shortcuts` when appropriate.
-   - Add `persist` when the archive listing shows obvious user config/data directories or files (for example `config/`, `data/`, `settings/`, `*.ini`, `*.txt` config files). Do NOT invent paths that do not exist in the archive.
 
-8. **Stop conditions — finish analysis as soon as these are true**:
+9. **Stop conditions — finish analysis as soon as these are true**:
    - You have hash values for the selected manifest asset URLs.
    - You have the correct extract_dir and bin values for the chosen assets, OR you know the installer handling required for the chosen installer assets.
    - You have enough information for the generate step to build the manifest.
@@ -156,13 +201,25 @@ You are analyzing Windows release assets to prepare data for a Scoop manifest.
 - Alias needed → `"bin": [["app.exe", "alias"]]` (single alias MUST be wrapped in outer array)
 - Alias with args → `"bin": [["app.exe", "alias", "--flag"]]`
 - Do NOT add helper/proxy/internal executables to `bin` just because they are present in the archive
+- **Clean alias is REQUIRED** when the exe name is not a clean command: version numbers (`x86_64-mingw64-app-0.2.3.0.exe`), platform prefixes (`cli-app-windows-amd64.exe`), or any exe name longer than 20 chars — add a short alias
+- **Versioned exe + autoupdate is broken**: if the exe name contains a version number that will change on update, you MUST either use `pre_install` to rename to a stable name, or use alias format `[["versioned-exe-1.2.3.exe", "stable-alias"]]`
 
 ## Installer Type Handling
 
 - ZIP/7z/tar → `url` + `bin` (extract and use)
 - MSI → Treat EXACTLY like ZIP. Scoop auto-extracts MSI internally. Just set `url`, `extract_dir` (backslashes ONLY), and `bin`. Do NOT add `"installer"` block, do NOT write installer scripts, do NOT use `Expand-MsiArchive`, do NOT use GUIDs. Example: `{ "url": "app.msi", "extract_dir": "PFiles\\AppName", "bin": "app.exe" }`
 - InnoSetup → `"innosetup": true` (uses innounp to unpack, NOT silent install)
-- NSIS → Needs `#/dl.7z` + `pre_install`, mark as requiring manual config
+- NSIS → Append `#/dl.7z` to the URL to force 7z extraction. Example: `{ "url": "https://example.com/app-setup.exe#/dl.7z", "bin": "app.exe" }`. Do NOT add `"installer"` block. Do NOT use `${'$'}version` in any non-autoupdate field.
+- **NSIS Electron** (`detectInstallerType` returns `nsis` + `nsis_type: electron`, or `listArchiveContents` shows `${'$'}PLUGINSDIR`): Two-layer extraction pattern:
+  ```json
+  { "url": "...#/dl.7z", "architecture": { "64bit": { "pre_install": [
+    "Expand-7zipArchive \"${'$'}dir\\\`${'$'}PLUGINSDIR\\app-64.7z\" \"${'$'}dir\"",
+    "Remove-Item \"${'$'}dir\\\`${'$'}*\", \"${'$'}dir\\Uninstall*\" -Recurse"
+  ] } } }
+  ```
+  - GUI apps: use `shortcuts` only, no `bin`
+  - The .exe name is likely lowercase (e.g. `twine.exe`), check `inner_exes` from `detectInstallerType`
+  - URL MUST end with `#/dl.7z` for 7z to extract the NSIS shell
 - Portable EXE → `url` with `#/app.exe` fragment to rename
 
 ## Output Format
@@ -175,6 +232,13 @@ You are analyzing Windows release assets to prepare data for a Scoop manifest.
 - Do NOT generate the manifest JSON — that is done in the next step.
 - Prefer the smallest sufficient analysis. Do not perform exhaustive analysis of every candidate.
 - All findings must go into the JSON output block. Do NOT rely on free-text outside the JSON.
+
+## Thinking Model Rules
+
+- Do NOT get stuck in long reasoning loops. Thinking is for planning only.
+- After any reasoning, you MUST immediately follow it with a tool call or the `finalize_task_result` call.
+- NEVER end your turn with only reasoning text. The framework will crash if no tool call is produced.
+- Keep reasoning concise (under 200 tokens). Save tokens for actual tool calls and JSON output.
 
 ## Tool Call Rules
 
@@ -207,11 +271,12 @@ Given the structured research and analysis JSON, generate the Scoop manifest:
    - `"description"`: Brief project description.
    - `"homepage"`: Project homepage URL.
    - `"license"`: Use the most precise SPDX identifier. Prefer `-only` or `-or-later` suffix when the actual license text indicates it (for example `GPL-3.0-or-later` not `GPL-3.0`). For multi-licensed projects, comma-separate identifiers. Trust the license file text over the GitHub API `spdx_id` when they conflict.
-   - `"architecture"`: Always use the `architecture` block with per-arch entries (for example `"64bit"`, `"32bit"`, `"arm64"`) even if only a single architecture exists. Do NOT use flat `"url"`/`"hash"` at the top level.
-   - `"bin"`: Executable(s) to add to PATH.
+   - `"architecture"`: Use the `architecture` block with per-arch entries (`"64bit"`, `"32bit"`, `"arm64"`) ONLY when there are **actually different download assets** for different architectures. When a single asset works on ALL architectures (e.g. a zip with no arch-specific content, a single `.exe`), use a **flat** `"url"`/`"hash"` at the top level — do NOT force it into an architecture block. **CRITICAL WARNING**: A 32-bit-only exe inside a single zip that runs on both 32-bit and 64-bit Windows should use flat `url`, NOT `"32bit"` architecture. Scoop **will NOT install** a manifest that only has a `"32bit"` block on a 64-bit system. Examples where flat is correct: a single zip containing `bin/app.exe`, a Win32 GUI app zip, or a single portable exe.
+   - `"bin"`: Executable(s) to add to PATH. MUST be at the **top level** of the manifest, NEVER inside the `architecture` block.
    - `"extract_dir"`: Directory inside the archive containing the executable. REQUIRED for MSI when files are in a subdirectory. Use backslash ONLY: `PFiles\\FFStudio`. **NEVER use forward slashes** like `PFiles/FFStudio`.
    - `"shortcuts"`: add for GUI apps.
-   - `"persist"`: add for directories or files in the archive that clearly hold user config/data (for example `config`, `data`, `settings`, `*.ini`, `*.txt` config files).
+   - `"persist"`: Use the `persist` value from the Analyze JSON verbatim. Do NOT add or remove entries. If Analyze JSON has no persist, skip this field.
+   - `"env_set"`: If present in Analyze JSON, use verbatim. Maps environment variables to `${'$'}dir` to point config directories to the app directory.
    - `"pre_install"`: add when filename stabilization or initial config creation is needed.
    - `"checkver"`: Use `"github"` for standard semver tags, or `{ "github": "url" }` for special tags. Do NOT generate complex regex.
    - `"autoupdate"`: URL templates using `$`version substitution. Only generate when version replacement in URL is safe.
@@ -232,7 +297,8 @@ Given the structured research and analysis JSON, generate the Scoop manifest:
 - Multiple exes → `"bin": ["app.exe", "helper.exe"]` (only when all are clearly user-facing)
 - Alias needed → `"bin": [["app.exe", "alias"]]` (single alias MUST be wrapped in outer array)
 - Alias with args → `"bin": [["app.exe", "alias", "--flag"]]`
-- **Auto-alias**: When the exe name is not a clean, intuitive command name (for example `localsend_app.exe`, `SumatraPDF-3.6.1-64.exe` after rename), add a short alias. For example `[["localsend_app.exe", "localsend"]]`.
+- **Auto-alias**: When the exe name is not a clean, intuitive command name (for example `localsend_app.exe`, `SumatraPDF-3.6.1-64.exe` after rename, `cli-hasura-windows-amd64.exe`), add a short alias. For example `[["localsend_app.exe", "localsend"]]`.
+- **Versioned exe names**: If the exe contains a version number (e.g. `x86_64-mingw64-ghcup-0.2.3.0.exe`) that will change on update, you MUST add an alias with a stable name: `[["x86_64-mingw64-ghcup-0.2.3.0.exe", "ghcup"]]`. Otherwise autoupdate will break the shim.
 
 ## Script-based Applications (no .exe)
 
@@ -264,7 +330,17 @@ Example for a Node.js app with `extract_dir: "smallcode"` and entry point `bin/s
 - ZIP/7z/tar → `url` + `bin` (extract and use)
 - MSI → Treat EXACTLY like ZIP. Scoop auto-extracts MSI. Just set `url` + `extract_dir` (backslashes ONLY) + `bin`. Do NOT add `"installer"` block, do NOT write installer scripts, do NOT use `Expand-MsiArchive`, do NOT use GUIDs.
 - InnoSetup → `"innosetup": true` (uses innounp to unpack, NOT silent install). **CRITICAL**: Only use when `listArchiveContents` returned actual files. If it returned empty, innounp will fail at install time.
-- NSIS → Needs `#/dl.7z` + `pre_install`, mark as requiring manual config
+- NSIS → Append `#/dl.7z` to the URL to force 7z extraction. Example: `{ "url": "https://example.com/app-setup.exe#/dl.7z", "bin": "app.exe" }`. Do NOT add `"installer"` block. Do NOT use `${'$'}version` in any non-autoupdate field.
+- **NSIS Electron** (`detectInstallerType` returns `nsis` + `nsis_type: electron`, or `listArchiveContents` shows `${'$'}PLUGINSDIR`): Two-layer extraction pattern:
+  ```json
+  { "url": "...#/dl.7z", "architecture": { "64bit": { "pre_install": [
+    "Expand-7zipArchive \"${'$'}dir\\\`${'$'}PLUGINSDIR\\app-64.7z\" \"${'$'}dir\"",
+    "Remove-Item \"${'$'}dir\\\`${'$'}*\", \"${'$'}dir\\Uninstall*\" -Recurse"
+  ] } } }
+  ```
+  - GUI apps: use `shortcuts` only, no `bin`
+  - The .exe name from `findExecutables` / `inner_exes` is the real exe to use
+  - URL MUST end with `#/dl.7z` for 7z to extract the NSIS shell
 - Portable EXE → `url` with `#/app.exe` fragment to rename
 
 ## checkver Rules
@@ -297,6 +373,20 @@ Example for a Node.js app with `extract_dir: "smallcode"` and entry point `bin/s
 - If you are unsure about anything, use the `__ask_user__` tool to ask the user instead of guessing.
 - Always include checkver and autoupdate when possible.
 - When autoupdate conditions are not met, do NOT generate autoupdate.
+
+## Thinking Model Rules
+
+- Do NOT get stuck in long reasoning loops. Thinking is for planning only.
+- After any reasoning, you MUST immediately follow it with a tool call (validate, __ask_user__) or the `finalize_task_result` call.
+- NEVER end your turn with only reasoning text. The framework will crash if no tool call is produced.
+- Keep reasoning concise (under 200 tokens). Save tokens for actual tool calls and JSON output.
+
+## finalize_task_result Rules
+
+- After validate returns `valid:true`, call `finalize_task_result` immediately.
+- The `result` parameter MUST be the **complete manifest JSON string** starting with `{` and ending with `}`.
+- Do NOT pass 'test', placeholders, truncated values, or wrapper objects. Pass the entire validated manifest verbatim.
+- If you forget the manifest content, repeat it in full — do not abbreviate.
 
 ## Tool Call Rules
 

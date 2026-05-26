@@ -168,11 +168,49 @@ object ReferenceManifests {
     }
 }"""
 
+    val BAT_CLI = """{
+    "version": "0.26.1",
+    "description": "A cat(1) clone with syntax highlighting and Git integration",
+    "homepage": "https://github.com/sharkdp/bat",
+    "license": "Apache-2.0",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/sharkdp/bat/releases/download/v0.26.1/bat-v0.26.1-x86_64-pc-windows-msvc.zip",
+            "hash": "0f729b4b6f5f28d395c641eacc2e9ff68d0096b85aa0eec344aa62425144b69b",
+            "extract_dir": "bat-v0.26.1-x86_64-pc-windows-msvc"
+        }
+    },
+    "env_set": { "BAT_CONFIG_DIR": "${'$'}dir" },
+    "pre_install": [
+        "if (!(Test-Path \"${'$'}persist_dir\\config\")) {",
+        "    Copy-Item -ErrorAction Ignore \"${'$'}env:APPDATA\\bat\\config\" \"${'$'}dir\\config\"",
+        "    New-Item -ErrorAction Ignore \"${'$'}dir\\config\" | Out-Null",
+        "}",
+        "'syntaxes', 'themes' | ForEach-Object {",
+        "    if (!(Test-Path \"${'$'}persist_dir\\${'$'}_\")) {",
+        "        Copy-Item -ErrorAction Ignore -Recurse \"${'$'}env:APPDATA\\bat\\${'$'}_\" \"${'$'}dir\\${'$'}_\"",
+        "    }",
+        "}"
+    ],
+    "bin": "bat.exe",
+    "persist": ["config", "syntaxes", "themes"],
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/sharkdp/bat/releases/download/v${'$'}version/bat-v${'$'}version-x86_64-pc-windows-msvc.zip",
+                "extract_dir": "bat-v${'$'}version-x86_64-pc-windows-msvc"
+            }
+        }
+    }
+}"""
+
     val ALL = listOf(
         "### Simple GitHub autoupdate (no checksum)\n$RIPGREP",
         "### GitHub autoupdate + checksums.txt (bundle hash)\n$LAZYGIT",
         "### MSI direct extract + persist\n$SEVEN_ZIP",
         "### GUI zip with single primary executable\n$WINMERGE",
-        "### GUI zip with pre_install rename + persist\n$SUMATRAPDF"
+        "### GUI zip with pre_install rename + persist\n$SUMATRAPDF",
+        "### CLI with env_set + pre_install copy + persist (config from %APPDATA%)\n$BAT_CLI"
     ).joinToString("\n\n---\n\n")
 }

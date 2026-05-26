@@ -19,6 +19,47 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 
 private val logger = KotlinLogging.logger {}
 
+/** Maximum retries when encountering thinking-model recoverable errors or suspicious outputs. */
+private const val MAX_GENERATION_RETRIES = 2
+
+/** Minimum plausible manifest length (shorter = probably garbage like "test"). */
+private const val MIN_VALID_MANIFEST_LENGTH = 20
+
+/**
+ * Checks whether a thrown exception is a known thinking-model quirk that
+ * can be recovered by retrying.
+ *
+ * Covers:
+ * - Pure reasoning without tool calls (thinking model bug)
+ * - JSON decoding errors in LLM response (e.g. invalid escape `\q` in tool call arguments)
+ * - Insufficient tool messages after tool_calls (Koog/DeepSeek conversation history bug)
+ */
+internal fun isRetryableError(e: Throwable): Boolean {
+    val msg = e.message ?: return false
+    // Thinking model: reasoning without tool call
+    if (msg.contains("no Call was generated", ignoreCase = true) ||
+        msg.contains("Subgraph with task must always call tools", ignoreCase = true)
+    ) return true
+    // JSON decoding errors from Koog parsing LLM tool call arguments
+    if (msg.contains("JsonDecodingException", ignoreCase = true) ||
+        msg.contains("Unexpected JSON token", ignoreCase = true) ||
+        msg.contains("Invalid escaped char", ignoreCase = true)
+    ) return true
+    // DeepSeek API: insufficient tool messages following tool_calls message
+    // This happens intermittently with long conversations (20+ tool calls)
+    if (msg.contains("insufficient tool messages", ignoreCase = true)) return true
+    return false
+}
+
+/**
+ * Sanity-check a generated manifest. Returns true if the output looks like
+ * garbage (too short, not JSON, etc.).
+ */
+internal fun isSuspiciousManifest(manifest: String): Boolean {
+    val trimmed = manifest.trim()
+    return trimmed.length < MIN_VALID_MANIFEST_LENGTH || !trimmed.startsWith("{")
+}
+
 /**
  * Result of a full manifest generation run.
  *
@@ -68,6 +109,48 @@ class ScoopManifestGenerator(
     private val thinkingLevel: String? = null,
 ) {
     suspend fun generate(url: String, outputPath: String? = null, userPrompt: String? = null): GenerateResult {
+        var lastException: Throwable? = null
+
+        repeat(MAX_GENERATION_RETRIES + 1) { attempt ->
+            try {
+                val result = tryGenerate(url, outputPath, userPrompt)
+
+                if (isSuspiciousManifest(result.manifest)) {
+                    logger.warn {
+                        "Generated manifest looks suspicious (length=${result.manifest.length}, " +
+                            "preview='${sanitizeForLog(result.manifest, 40)}'). Retrying... (attempt ${attempt + 1})"
+                    }
+                    lastException = IllegalStateException(
+                        "Suspicious manifest output: ${result.manifest.take(40)}"
+                    )
+                    if (attempt < MAX_GENERATION_RETRIES) {
+                        return@repeat
+                    }
+                } else {
+                    return result
+                }
+            } catch (e: Exception) {
+                lastException = e
+                if (isRetryableError(e) && attempt < MAX_GENERATION_RETRIES) {
+                    logger.warn {
+                        "Generation failed with retryable error: ${sanitizeForLog(e.message ?: "unknown")}. " +
+                            "Retrying... (attempt ${attempt + 1})"
+                    }
+                } else {
+                    throw e
+                }
+            }
+        }
+
+        throw lastException
+            ?: IllegalStateException("Generation failed after $MAX_GENERATION_RETRIES retries")
+    }
+
+    private suspend fun tryGenerate(
+        url: String,
+        outputPath: String?,
+        userPrompt: String?,
+    ): GenerateResult {
         // -- Phase-specific tool subsets -----------------------------------
         val allTools = toolRegistry.tools
 
@@ -75,7 +158,7 @@ class ScoopManifestGenerator(
         val analyzeTools = allTools.filter { it.name in PhaseTools.ANALYZE_TOOL_NAMES }
         val generateTools = allTools.filter { it.name in PhaseTools.GENERATE_TOOL_NAMES }
 
-        logger.info { "[tools] Total: ${allTools.size}, Research: ${researchTools.map { it.name }}, Analyze: ${analyzeTools.map { it.name }}, Generate: ${generateTools.map { it.name}}" }
+        logger.info { "[tools] Total: ${allTools.size}, Research: ${researchTools.map { it.name }}, Analyze: ${analyzeTools.map { it.name }}, Generate: ${generateTools.map { it.name }}" }
 
         // -- Build prompt constructors for each phase ----------------------
         val researchPrompt: suspend (String) -> String =

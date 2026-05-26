@@ -205,4 +205,77 @@ class PhaseOutputTest {
         assertEquals(original.architecture, restored.architecture)
         assertEquals(original.extract_dir, restored.extract_dir)
     }
+
+    // ---------------------------------------------------------------
+    // env_set / env_targets fields
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `ResearchOutput with persist_targets and env_targets round-trip`() {
+        val original = ResearchOutput(
+            status = "ok",
+            project = "sharkdp/bat",
+            version = "0.26.1",
+            persist_targets = listOf("config", "syntaxes", "themes"),
+            env_targets = mapOf("BAT_CONFIG_DIR" to "config")
+        )
+
+        val jsonStr = json.encodeToString(ResearchOutput.serializer(), original)
+        val restored = json.decodeFromString<ResearchOutput>(jsonStr)
+
+        assertEquals(listOf("config", "syntaxes", "themes"), restored.persist_targets)
+        assertEquals(mapOf("BAT_CONFIG_DIR" to "config"), restored.env_targets)
+    }
+
+    @Test
+    fun `ResearchOutput env_targets defaults to empty map`() {
+        val input = """{"status":"ok","project":"sharkdp/fd"}"""
+        val output = json.decodeFromString<ResearchOutput>(input)
+        assertTrue(output.env_targets.isEmpty())
+    }
+
+    @Test
+    fun `ResearchOutput persist_targets defaults to empty list`() {
+        val input = """{"status":"ok","project":"sharkdp/fd"}"""
+        val output = json.decodeFromString<ResearchOutput>(input)
+        assertTrue(output.persist_targets.isEmpty())
+    }
+
+    @Test
+    fun `AnalyzeOutput with env_set round-trip`() {
+        val original = AnalyzeOutput(
+            status = "ok",
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://github.com/sharkdp/bat/releases/download/v0.26.1/bat-v0.26.1-x86_64-pc-windows-msvc.zip",
+                    hash = "abc123",
+                    extract_dir = "bat-v0.26.1-x86_64-pc-windows-msvc"
+                )
+            ),
+            bin = listOf("bat.exe"),
+            persist = listOf("config", "syntaxes", "themes"),
+            pre_install = listOf(
+                "if (!(Test-Path \"\$persist_dir\\config\")) { New-Item \"\$dir\\config\" -ItemType Directory | Out-Null }",
+                "if (!(Test-Path \"\$persist_dir\\syntaxes\")) { New-Item \"\$dir\\syntaxes\" -ItemType Directory | Out-Null }",
+                "if (!(Test-Path \"\$persist_dir\\themes\")) { New-Item \"\$dir\\themes\" -ItemType Directory | Out-Null }"
+            ),
+            env_set = mapOf("BAT_CONFIG_DIR" to "\$dir")
+        )
+
+        val jsonStr = json.encodeToString(AnalyzeOutput.serializer(), original)
+        val restored = json.decodeFromString<AnalyzeOutput>(jsonStr)
+
+        assertEquals(original.persist, restored.persist)
+        assertEquals(original.env_set, restored.env_set)
+        assertEquals(3, restored.pre_install.size)
+    }
+
+    @Test
+    fun `AnalyzeOutput env_set defaults to empty map`() {
+        val input = """{"status":"ok","strategy":"portable_zip"}"""
+        val output = json.decodeFromString<AnalyzeOutput>(input)
+        assertTrue(output.env_set.isEmpty())
+    }
 }

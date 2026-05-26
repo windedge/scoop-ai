@@ -54,3 +54,5 @@ coverage/
 nul 
 bucket/
 .verify/
+tests/test_apps.json
+tests/results.json

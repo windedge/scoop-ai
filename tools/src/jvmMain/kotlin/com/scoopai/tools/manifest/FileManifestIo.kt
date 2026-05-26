@@ -12,7 +12,9 @@ import java.nio.file.Path
 
 @LLMDescription("Scoop manifest file I/O and validation tools")
 class FileManifestIo(
-    private val defaultAppName: String? = null
+    private val defaultAppName: String? = null,
+    @LLMDescription("Persist field policy: auto=no validation, force=must have persist, none=must NOT have persist")
+    private val persistMode: String = "auto",
 ) : ManifestIo, ToolSet {
 
     companion object {
@@ -104,6 +106,9 @@ class FileManifestIo(
             validateExtractDir(obj, warnings)
             validateVersion(obj, errors)
             validateUnknownFields(obj, errors)
+            validateTemplateVariablesInStaticFields(obj, errors)
+            validateExeUrlFragment(obj, warnings)
+            validatePersistPolicy(obj, errors)
 
         } catch (e: Exception) {
             errors.add("Invalid JSON: ${e.message}")
@@ -184,7 +189,7 @@ class FileManifestIo(
             val element = Json.parseToJsonElement(json)
             if (element !is JsonObject) return "manifest"
 
-            // Try to get name from bin field
+            // Priority 1: explicit bin field (most reliable)
             val bin = element.jsonObject["bin"]
             val binName = when {
                 bin == null -> null
@@ -199,14 +204,15 @@ class FileManifestIo(
                 }
                 else -> null
             }
+            if (!binName.isNullOrBlank() && binName != "app") return binName.lowercase()
 
-            when {
-                !binName.isNullOrBlank() -> binName
-                else -> {
-                    val homepage = element.jsonObject["homepage"]?.jsonPrimitive?.contentOrNull
-                    homepage?.substringAfterLast("/")?.substringBefore(".") ?: "manifest"
-                }
-            }
+            // Priority 2: homepage → use the LAST path segment (repo name, not org)
+            val homepage = element.jsonObject["homepage"]?.jsonPrimitive?.contentOrNull
+            val repoName = homepage?.substringAfterLast("/")?.substringBefore("?")?.trim()
+            if (!repoName.isNullOrBlank() && repoName.contains(".").not()) return repoName.lowercase()
+
+            // Priority 3: description-based fallback
+            "manifest"
         } catch (_: Exception) {
             "manifest"
         }
@@ -297,7 +303,7 @@ class FileManifestIo(
         }
     }
 
-    /** Validates that each architecture block has both `url` and `hash`. */
+    /** Validates that each architecture block has both `url` and `hash`, and no top-level-only fields. */
     private fun validateArchitectureBlock(obj: JsonObject, errors: MutableList<String>, warnings: MutableList<String>) {
         val arch = obj["architecture"]?.jsonObject ?: return
         for ((archName, archElement) in arch) {
@@ -313,6 +319,13 @@ class FileManifestIo(
             // Validate url and hash inside each arch block
             archElement["url"]?.let { validateUrls(it, errors, "architecture.$archName.url") }
             archElement["hash"]?.let { validateHashes(it, errors, "architecture.$archName.hash") }
+            // Reject top-level-only fields inside architecture blocks
+            val topLevelOnly = setOf("bin", "shortcuts", "persist", "env_set", "checkver", "autoupdate", "notes", "pre_install", "post_install")
+            for (field in topLevelOnly) {
+                if (archElement.containsKey(field)) {
+                    errors.add("Field '$field' MUST be at the top level of the manifest, NOT inside architecture.$archName. Move it out of the architecture block.")
+                }
+            }
         }
     }
 
@@ -361,6 +374,103 @@ class FileManifestIo(
         val unknown = obj.keys.filter { it !in KNOWN_SCOOP_FIELDS }
         for (field in unknown) {
             errors.add("Unknown field '$field' is not a standard Scoop manifest field. Remove it.")
+        }
+    }
+
+    /** Validates persist field against the configured policy (force/none/auto). */
+    private fun validatePersistPolicy(obj: JsonObject, errors: MutableList<String>) {
+        val hasPersist = obj.containsKey("persist")
+        when (persistMode) {
+            "force" -> {
+                if (!hasPersist) {
+                    errors.add("Persist policy is 'force' but the manifest has no 'persist' field. You MUST add a 'persist' field identifying config/data directories or files.")
+                }
+            }
+            "none" -> {
+                if (hasPersist) {
+                    errors.add("Persist policy is 'none' but the manifest contains a 'persist' field. Remove the 'persist' field entirely.")
+                }
+            }
+            // auto: no validation
+        }
+    }
+
+    /**
+     * Warns if a URL ends with .exe but lacks a `#/` fragment (like #/dl.7z or #/app.exe).
+     * Such manifests will fail because Scoop treats raw .exe URLs as portable executables,
+     * not installers, and the "bin" path will point to the wrong filename.
+     */
+    private fun validateExeUrlFragment(obj: JsonObject, warnings: MutableList<String>) {
+        fun checkUrl(urlVal: String, path: String) {
+            // URL already has a fragment → ok
+            if (urlVal.contains("#/")) return
+            if (urlVal.endsWith(".exe", ignoreCase = true)) {
+                // Raw .exe without fragment — could be portable or installer
+                // Only warn if there's no other indication this is intentional
+                if (!obj.containsKey("innosetup") && !obj.containsKey("installer")) {
+                    warnings.add(
+                        "Field '$path' ends with .exe without a #/ fragment. " +
+                            "For NSIS/InnoSetup installers, add #/dl.7z. For portable EXEs, add #/app.exe. " +
+                            "If this is a standalone portable executable, the #/ fragment is recommended for clean shim names."
+                    )
+                }
+            }
+        }
+
+        // Check top-level url
+        obj["url"]?.jsonPrimitive?.contentOrNull?.let { checkUrl(it, "url") }
+        // Check architecture urls
+        obj["architecture"]?.jsonObject?.forEach { (arch, archVal) ->
+            (archVal as? JsonObject)?.get("url")?.jsonPrimitive?.contentOrNull?.let {
+                checkUrl(it, "architecture.$arch.url")
+            }
+        }
+    }
+
+    /**
+     * Detects `$version` / `$matchHead` template variables in static fields
+     * (outside `autoupdate`). These cause install failures because Scoop
+     * only substitutes them during autoupdate, not during normal install.
+     */
+    private fun validateTemplateVariablesInStaticFields(obj: JsonObject, errors: MutableList<String>) {
+        val templateVars = Regex("\\$(?:version|matchHead|matchTail|dotVersion|underscoreVersion)")
+        // Check top-level fields (excluding autoupdate)
+        for ((key, value) in obj) {
+            if (key == "autoupdate") continue
+            checkTemplateVarsRecursive(value, key, templateVars, errors)
+        }
+    }
+
+    private fun checkTemplateVarsRecursive(
+        element: JsonElement,
+        path: String,
+        regex: Regex,
+        errors: MutableList<String>,
+    ) {
+        when (element) {
+            is JsonPrimitive -> {
+                if (element.isString) {
+                    val content = element.content
+                    if (regex.containsMatchIn(content)) {
+                        errors.add(
+                            "Field '$path' contains template variable (\$version/\$matchHead) " +
+                                "outside autoupdate. This will not be substituted at install time and will cause errors. " +
+                                "Use the actual value instead."
+                        )
+                    }
+                }
+            }
+            is JsonObject -> {
+                for ((key, value) in element) {
+                    checkTemplateVarsRecursive(value, "$path.$key", regex, errors)
+                }
+            }
+            is JsonArray -> {
+                element.forEachIndexed { idx, value ->
+                    checkTemplateVarsRecursive(value, "$path[$idx]", regex, errors)
+                }
+            }
+            else -> {}
         }
     }
 

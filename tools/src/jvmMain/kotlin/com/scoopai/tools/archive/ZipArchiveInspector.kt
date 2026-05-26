@@ -11,6 +11,9 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
+import kotlinx.serialization.json.*
+
+private val nsisLogger = io.github.oshai.kotlinlogging.KotlinLogging.logger {}
 
 @LLMDescription("Archive inspection tools for ZIP, MSI and installer analysis")
 class ZipArchiveInspector(
@@ -52,9 +55,10 @@ class ZipArchiveInspector(
         return try {
             when (fileType(urlNotNull)) {
                 "msi" -> listMsi(urlNotNull)
-                "zip", "7z" -> listZip(urlNotNull)
+                "zip" -> listZip(urlNotNull)
+                "7z" -> list7z(urlNotNull)
                 "tar" -> listTar(urlNotNull)
-                "exe" -> listInnosetup(urlNotNull)
+                "exe" -> listExeWithDetection(urlNotNull)
                 else -> listZip(urlNotNull) // try ZIP as fallback
             }
         } catch (e: Exception) {
@@ -79,7 +83,8 @@ class ZipArchiveInspector(
             val files = when (fileType(urlNotNull)) {
                 "msi" -> listMsiPaths(urlNotNull)
                 "tar" -> listTarPaths(urlNotNull)
-                "exe" -> listInnosetupPaths(urlNotNull)
+                "exe" -> listExePathsWithDetection(urlNotNull)
+                "7z" -> list7zPaths(urlNotNull)
                 else -> listZipPaths(urlNotNull)
             }
             val exes = files.filter { it.substringAfterLast('/').endsWith(".exe", ignoreCase = true) }
@@ -122,17 +127,38 @@ class ZipArchiveInspector(
                     val canList = tryInnounpList(file)
                     if (canList) "innosetup" else "innosetup_unsupported"
                 }
-                headerContent.contains("Nullsoft", ignoreCase = true) -> "nsis"
+                headerContent.contains("Nullsoft", ignoreCase = true) -> {
+                    // Determine NSIS subtype and inner files via 7z list
+                    val nsisInner = try7zNsisContent(file)
+                    if (nsisInner.isNotEmpty()) {
+                        "nsis"
+                    } else {
+                        "nsis"
+                    }
+                }
                 else -> "unknown"
             }
 
-            buildJsonObject {
+            val result = buildJsonObject {
                 put("url", urlNotNull)
                 put("installer_type", installerType)
                 if (installerType == "innosetup_unsupported") {
                     put("warning", "Inno Setup version not supported by innounp. Scoop install will fail with 'innosetup: true'. Consider using the .zip asset instead, or ask the user.")
                 }
-            }.toString()
+                // If NSIS, include inner file details for the AI
+                if (installerType == "nsis") {
+                    val innerFiles = try7zNsisContent(file)
+                    if (innerFiles.isNotEmpty()) {
+                        put("nsis_type", if (innerFiles.any { it.contains("\$PLUGINSDIR", ignoreCase = true) }) "electron" else "standard")
+                        put("inner_files", buildJsonArray { for (f in innerFiles) add(f) })
+                        val exes = innerFiles.filter { it.endsWith(".exe", ignoreCase = true) }
+                        if (exes.isNotEmpty()) {
+                            put("inner_exes", buildJsonArray { for (e in exes) add(e) })
+                        }
+                    }
+                }
+            }
+            return result.toString()
         } catch (e: Exception) {
             buildJsonObject { put("error", "Failed to detect installer type: ${e.message}") }.toString()
         }
@@ -189,6 +215,181 @@ class ZipArchiveInspector(
         } catch (_: Exception) {
             false
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // NSIS listing (via 7z — reads NSIS installer internals)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Run `7z l` on a file and return the list of file paths inside it.
+     * 7z can read NSIS, InnoSetup, and many other archive formats.
+     * Returns empty list if 7z is not available or the file is not readable.
+     */
+    private fun run7zList(file: Path): List<String> {
+        return try {
+            val proc = ProcessBuilder("7z", "l", file.toAbsolutePath().toString())
+                .redirectErrorStream(true)
+                .start()
+            val output = proc.inputStream.bufferedReader().readText()
+            proc.waitFor(30, TimeUnit.SECONDS)
+            if (proc.exitValue() != 0) {
+                nsisLogger.warn { "[7z] exit code ${proc.exitValue()} for ${file.fileName}: ${output.take(300)}" }
+                emptyList()
+            } else {
+                parse7zOutput(output)
+            }
+        } catch (e: Exception) {
+            nsisLogger.warn { "[7z] execute failed: ${e.message}" }
+            emptyList()
+        }
+    }
+
+    /**
+     * Parse the output of `7z l` to extract file paths.
+     *
+     * 7z listing output format:
+     * ```
+     *    Date      Time    Attr         Size   Compressed  Name
+     * ------------------- ----- ------------ ------------  ------------------------
+     * 2024-01-01 12:00:00 .....         1234         5678  twine.exe
+     * 2024-01-01 12:00:00 D....            0            0  \$PLUGINSDIR
+     * 2024-01-01 12:00:00 .....       987654       123456  \$PLUGINSDIR/app-64.7z
+     * ```
+     */
+    private fun parse7zOutput(output: String): List<String> {
+        val files = mutableListOf<String>()
+        var inFileSection = false
+
+        for (line in output.lines()) {
+            when {
+                line.trimStart().startsWith("---") && line.contains("-------") -> {
+                    inFileSection = !inFileSection
+                }
+                inFileSection -> {
+                    if (line.isBlank()) continue
+                    // Skip the column header line
+                    if (line.contains("Name") && !line.contains("---")) continue
+
+                    // 7z output format:
+                    //    Date      Time    Attr         Size   Compressed  Name
+                    //  2024-01-01 12:00:00 .....         1234         5678  dir/path
+                    //  2024-01-01 12:00:00 D....            0            0  dir/
+                    //                     .....                      6931  \$PLUGINSDIR\System.dll
+                    //
+                    // Extract path: find the LAST sequence "digits + 2+spaces" then take
+                    // everything after it. This works even when date/time are absent.
+                    val match = Regex("""(\d+)\s{2,}(.+)$""").findAll(line).lastOrNull()
+                    if (match != null) {
+                        val path = match.groupValues[2].trim()
+                        if (path.isNotBlank()) {
+                            // Normalize backslashes to forward slashes for consistency
+                            files.add(path.replace('\\', '/'))
+                        }
+                    }
+                }
+            }
+        }
+        return files
+    }
+
+    /**
+     * Try to list contents of a file using 7z (works for NSIS installers).
+     * Returns empty list if 7z cannot read the file.
+     */
+    private fun try7zNsisContent(file: Path): List<String> =
+        run7zList(file)
+
+    /**
+     * List an .exe file by detecting its installer type first.
+     * Returns JSON with file list and installer type info.
+     */
+    private suspend fun listExeWithDetection(url: String): String {
+        // Try detectInstallerType content-scanning first
+        val file = cache.getOrDownload(url)
+        val headerBytes = Files.newInputStream(file).use { it.readNBytes(1024 * 1024) }
+        val headerContent = String(headerBytes, Charsets.ISO_8859_1)
+
+        return when {
+            headerContent.contains("Inno Setup", ignoreCase = true) -> listInnosetup(url)
+            headerContent.contains("Nullsoft", ignoreCase = true) -> listNsis(url)
+            else -> {
+                // Fallback: try 7z listing, then innounp
+                val n7z = run7zList(file)
+                if (n7z.isNotEmpty()) {
+                    buildJsonObject {
+                        put("url", url)
+                        put("files", buildJsonArray { for (f in n7z) add(f) })
+                        put("note", "Detected via 7z fallback")
+                    }.toString()
+                } else {
+                    listInnosetup(url)
+                }
+            }
+        }
+    }
+
+    /**
+     * Same as [listExeWithDetection] but returns flat path list for findExecutables.
+     */
+    private suspend fun listExePathsWithDetection(url: String): List<String> {
+        val file = cache.getOrDownload(url)
+        val headerBytes = Files.newInputStream(file).use { it.readNBytes(1024 * 1024) }
+        val headerContent = String(headerBytes, Charsets.ISO_8859_1)
+
+        return when {
+            headerContent.contains("Inno Setup", ignoreCase = true) -> listInnosetupPaths(url)
+            headerContent.contains("Nullsoft", ignoreCase = true) -> listNsisPaths(url)
+            else -> {
+                val n7z = run7zList(file)
+                if (n7z.isNotEmpty()) n7z else listInnosetupPaths(url)
+            }
+        }
+    }
+
+    /**
+     * List files inside a NSIS installer using 7z.
+     */
+    private suspend fun listNsis(url: String): String {
+        val file = cache.getOrDownload(url)
+        val files = run7zList(file)
+        val hasPluginsdir = files.any { it.contains("\$PLUGINSDIR", ignoreCase = true) }
+
+        return buildJsonObject {
+            put("url", url)
+            put("installer_type", "nsis")
+            put("nsis_type", if (hasPluginsdir) "electron" else "standard")
+            put("files", buildJsonArray { for (f in files) add(f) })
+            if (hasPluginsdir) {
+                put("hint", "Electron NSIS installer: the actual .exe is inside \$PLUGINSDIR/*.7z. " +
+                    "Use 'url#/dl.7z' + Expand-7zipArchive in pre_install to extract it.")
+            }
+        }.toString()
+    }
+
+    /**
+     * Same as [listNsis] but returns flat path list for findExecutables.
+     */
+    private suspend fun listNsisPaths(url: String): List<String> {
+        val file = cache.getOrDownload(url)
+        return run7zList(file)
+    }
+
+    // -----------------------------------------------------------------------
+    // 7z listing (uses system 7z command)
+    // -----------------------------------------------------------------------
+
+    private fun list7z(url: String): String {
+        val files = list7zPaths(url)
+        return buildJsonObject {
+            put("url", url)
+            put("files", buildJsonArray { for (f in files) add(f) })
+        }.toString()
+    }
+
+    private fun list7zPaths(url: String): List<String> {
+        val file = cache.getOrDownload(url)
+        return run7zList(file)
     }
 
     // -----------------------------------------------------------------------
