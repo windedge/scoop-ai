@@ -25,7 +25,7 @@ import kotlinx.serialization.json.put
  * url/hash/bin/extract_dir from analyze entries/executables, and optional
  * persist/shortcuts/pre_install/env_set from analyze data.
  *
- * Does NOT add checkver/autoupdate (handled by refine LLM phase).
+ * Does NOT add checkver/autoupdate (handled by generate LLM phase).
  */
 fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): String {
     val effectiveBin = filterExecutables(analyze.bin)

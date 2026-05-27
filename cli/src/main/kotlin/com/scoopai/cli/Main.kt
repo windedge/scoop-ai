@@ -1,6 +1,6 @@
 package com.scoopai.cli
 
-import com.scoopai.core.GenerateResult
+import com.scoopai.core.ManifestResult
 import com.scoopai.core.ScoopManifestGenerator
 import com.scoopai.tools.cache.ScoopCacheManager
 import com.scoopai.tools.config.ProviderConfigResolver
@@ -147,7 +147,7 @@ fun main(args: Array<String>) {
     )
 
     try {
-        val result: GenerateResult = runBlocking {
+        val result: ManifestResult = runBlocking {
             val generator = ScoopManifestGenerator(
                 promptExecutor = config.createExecutor(),
                 model = config.model,

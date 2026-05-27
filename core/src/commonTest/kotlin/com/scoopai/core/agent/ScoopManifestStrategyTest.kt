@@ -11,9 +11,9 @@ import ai.koog.agents.testing.feature.withTesting
 import ai.koog.agents.testing.tools.getMockExecutor
 import ai.koog.prompt.executor.model.PromptExecutor
 import ai.koog.serialization.typeToken
-import com.scoopai.core.GenerateResult
+import com.scoopai.core.ManifestResult
 import com.scoopai.core.agent.prompt.buildAnalyzePrompt
-import com.scoopai.core.agent.prompt.buildRefinePrompt
+import com.scoopai.core.agent.prompt.buildGeneratePrompt
 import com.scoopai.core.agent.prompt.buildResearchPrompt
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -35,16 +35,16 @@ class ScoopManifestStrategyTest {
     private val analyzeFinishTool = FinishTool<AnalyzeOutput>(typeToken<AnalyzeOutput>())
 
     @OptIn(InternalAgentToolsApi::class)
-    private val refineFinishTool = FinishTool<String>(typeToken<String>())
+    private val generateFinishTool = FinishTool<String>(typeToken<String>())
 
     private fun createTestAgent(
         promptExecutor: PromptExecutor,
         maxIterations: Int = 50,
-    ): AIAgent<String, GenerateResult> {
+    ): AIAgent<String, ManifestResult> {
         val strategy = scoopManifestStrategy(
             researchPromptBuilder = { buildResearchPrompt(it, null) },
             analyzePromptBuilder = { buildAnalyzePrompt(it) },
-            refinePromptBuilder = { skeleton, analyze, _ -> buildRefinePrompt(skeleton, analyze, null) },
+            generatePromptBuilder = { skeleton, analyze, _ -> buildGeneratePrompt(skeleton, analyze, null) },
         )
         return AIAgent(
             promptExecutor = promptExecutor,
@@ -107,12 +107,12 @@ class ScoopManifestStrategyTest {
             ),
             bin = emptyList()
         )
-        val refineResult = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://example.com/fd.zip","hash":"abc123"}},"bin":["fd.exe"]}"""
+        val generateResult = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://example.com/fd.zip","hash":"abc123"}},"bin":["fd.exe"]}"""
 
         val promptExecutor = getMockExecutor {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
-            mockLLMToolCall(refineFinishTool, refineResult) onRequestContains "REFINE phase"
+            mockLLMToolCall(generateFinishTool, generateResult) onRequestContains "GENERATE phase"
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -122,7 +122,7 @@ class ScoopManifestStrategyTest {
     }
 
     @Test
-    fun `suggested_app_name flows from research to GenerateResult`() = runBlocking {
+    fun `suggested_app_name flows from research to ManifestResult`() = runBlocking {
         val researchResult = ResearchOutput(
             status = ResearchStatus.OK,
             project = "ggml-org/llama.cpp",
@@ -150,12 +150,12 @@ class ScoopManifestStrategyTest {
             ),
             bin = emptyList()
         )
-        val refineResult = """{"version":"b9264","architecture":{"64bit":{"url":"https://example.com/llama-sycl.zip","hash":"abc123"}},"bin":["llama-cli.exe"]}"""
+        val generateResult = """{"version":"b9264","architecture":{"64bit":{"url":"https://example.com/llama-sycl.zip","hash":"abc123"}},"bin":["llama-cli.exe"]}"""
 
         val promptExecutor = getMockExecutor {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
-            mockLLMToolCall(refineFinishTool, refineResult) onRequestContains "REFINE phase"
+            mockLLMToolCall(generateFinishTool, generateResult) onRequestContains "GENERATE phase"
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -193,12 +193,12 @@ class ScoopManifestStrategyTest {
             ),
             bin = emptyList()
         )
-        val refineResult = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://example.com/fd.zip","hash":"abc123"}},"bin":["fd.exe"]}"""
+        val generateResult = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://example.com/fd.zip","hash":"abc123"}},"bin":["fd.exe"]}"""
 
         val promptExecutor = getMockExecutor {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
-            mockLLMToolCall(refineFinishTool, refineResult) onRequestContains "REFINE phase"
+            mockLLMToolCall(generateFinishTool, generateResult) onRequestContains "GENERATE phase"
             mockLLMAnswer("").asDefaultResponse
         }
 

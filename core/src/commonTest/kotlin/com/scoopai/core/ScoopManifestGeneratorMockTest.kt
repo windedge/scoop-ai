@@ -25,7 +25,7 @@ class ScoopManifestGeneratorMockTest {
     private val analyzeFinishTool = FinishTool<AnalyzeOutput>(typeToken<AnalyzeOutput>())
 
     @OptIn(InternalAgentToolsApi::class)
-    private val refineFinishTool = FinishTool<String>(typeToken<String>())
+    private val generateFinishTool = FinishTool<String>(typeToken<String>())
 
     @Test
     fun `suggestedAppName is populated when research provides it`() = runBlocking {
@@ -60,7 +60,7 @@ class ScoopManifestGeneratorMockTest {
         val promptExecutor = getMockExecutor {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
-            mockLLMToolCall(refineFinishTool, manifestJson) onRequestContains "REFINE phase"
+            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -113,7 +113,7 @@ class ScoopManifestGeneratorMockTest {
         val promptExecutor = getMockExecutor {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
-            mockLLMToolCall(refineFinishTool, manifestJson) onRequestContains "REFINE phase"
+            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
             mockLLMAnswer("").asDefaultResponse
         }
 

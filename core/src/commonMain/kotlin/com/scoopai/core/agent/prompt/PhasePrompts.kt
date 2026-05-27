@@ -180,7 +180,7 @@ ${PhaseSchemas.ANALYZE_SCHEMA}"""
 }
 
 /**
- * Builds the prompt for the Refine phase (replaces generate).
+ * Builds the prompt for the Generate phase (replaces refine).
  *
  * The skeleton already contains version, description, homepage, license,
  * url, hash, bin, extract_dir, persist, shortcuts, env_set, pre_install.
@@ -197,7 +197,7 @@ ${PhaseSchemas.ANALYZE_SCHEMA}"""
  * @param userPrompt Additional user requirements.
  * @param research The structured output from the Research phase (optional, used for checksums info).
  */
-fun buildRefinePrompt(skeleton: String, analyze: AnalyzeOutput, outputPath: String?, userPrompt: String? = null, research: ResearchOutput? = null): String {
+fun buildGeneratePrompt(skeleton: String, analyze: AnalyzeOutput, outputPath: String?, userPrompt: String? = null, research: ResearchOutput? = null): String {
     val suggestedAppName = analyze.suggested_app_name?.takeIf { it.isNotBlank() }
     val installerTypeNote = when (analyze.installer_type?.lowercase()) {
         "nsis" -> "\n- NSIS installer detected: append `#/dl.7z` to URL. Do NOT add `\"installer\"` block."
@@ -223,7 +223,7 @@ fun buildRefinePrompt(skeleton: String, analyze: AnalyzeOutput, outputPath: Stri
         "1. Reflect the variant in the `description` field.\n" +
         "2. Ensure the chosen assets match the requested variant."
     } else ""
-    return """You are now in the REFINE phase. Your task is to take the pre-assembled manifest skeleton below, apply installer-specific transformations, review the pre-generated checkver/autoupdate, add autoupdate.hash if possible, validate, and finalize.
+    return """You are now in the GENERATE phase. Your task is to take the pre-assembled manifest skeleton below, apply installer-specific transformations, review the pre-generated checkver/autoupdate, add autoupdate.hash if possible, validate, and finalize.
 
 CRITICAL: You can ONLY use these tools: validate, __ask_user__, finalize_task_result. Do NOT call research or analysis tools.
 

@@ -17,7 +17,7 @@ import com.scoopai.core.agent.prompt.REVIEW_AGENT_SYSTEM_PROMPT
 import com.scoopai.core.agent.prompt.REVIEW_TOOL_DESCRIPTION
 import com.scoopai.core.agent.prompt.REVIEW_TOOL_INPUT_DESCRIPTION
 import com.scoopai.core.agent.prompt.buildAnalyzePrompt
-import com.scoopai.core.agent.prompt.buildRefinePrompt
+import com.scoopai.core.agent.prompt.buildGeneratePrompt
 import com.scoopai.core.agent.prompt.buildResearchPrompt
 import com.scoopai.core.agent.scoopManifestStrategy
 import com.scoopai.core.llm.LlmParamsBuilder
@@ -75,7 +75,7 @@ internal fun isSuspiciousManifest(manifest: String): Boolean {
  *   or `null` if no write tool call was made.
  * @property noAssets True when the project has no Windows assets at all.
  */
-data class GenerateResult(
+data class ManifestResult(
     val manifest: String,
     val suggestedAppName: String? = null,
     val noAssets: Boolean = false,
@@ -119,7 +119,7 @@ class ScoopManifestGenerator(
     private val maxIterations: Int,
     private val thinkingLevel: String? = null,
 ) {
-    suspend fun generate(url: String, outputPath: String? = null, userPrompt: String? = null): GenerateResult {
+    suspend fun generate(url: String, outputPath: String? = null, userPrompt: String? = null): ManifestResult {
         var lastException: Throwable? = null
 
         repeat(MAX_GENERATION_RETRIES + 1) { attempt ->
@@ -189,7 +189,7 @@ class ScoopManifestGenerator(
         url: String,
         outputPath: String?,
         userPrompt: String?,
-    ): GenerateResult {
+    ): ManifestResult {
         // -- Phase-specific tool subsets -----------------------------------
         val allTools = toolRegistry.tools
 
@@ -205,8 +205,8 @@ class ScoopManifestGenerator(
             { buildResearchPrompt(it, outputPath, userPrompt) }
         val analyzePrompt: suspend (ResearchOutput) -> String =
             { buildAnalyzePrompt(it, userPrompt) }
-        val refinePrompt: suspend (String, AnalyzeOutput, ResearchOutput?) -> String =
-            { skeleton, analyze, research -> buildRefinePrompt(skeleton, analyze, outputPath, userPrompt, research) }
+        val generatePrompt: suspend (String, AnalyzeOutput, ResearchOutput?) -> String =
+            { skeleton, analyze, research -> buildGeneratePrompt(skeleton, analyze, outputPath, userPrompt, research) }
 
         val llmParams = LlmParamsBuilder.build(model, thinkingLevel)
         val strategy = scoopManifestStrategy(
@@ -216,7 +216,7 @@ class ScoopManifestGenerator(
             llmParams = llmParams,
             researchPromptBuilder = researchPrompt,
             analyzePromptBuilder = analyzePrompt,
-            refinePromptBuilder = refinePrompt,
+            generatePromptBuilder = generatePrompt,
         )
 
         // Create an expanded tool registry that includes the review tool.

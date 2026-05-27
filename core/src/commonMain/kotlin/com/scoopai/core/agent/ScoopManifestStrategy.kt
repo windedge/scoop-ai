@@ -6,7 +6,7 @@ import ai.koog.agents.core.tools.ToolBase
 import ai.koog.agents.core.tools.annotations.InternalAgentToolsApi
 import ai.koog.agents.ext.agent.subgraphWithTask
 import ai.koog.prompt.params.LLMParams
-import com.scoopai.core.GenerateResult
+import com.scoopai.core.ManifestResult
 import com.scoopai.core.agent.nodes.assembleManifestSkeleton
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -27,7 +27,7 @@ internal val phaseJson: Json = Json {
  * ```
  * nodeStart → research(LLM) →
  *   [no_windows] → finishNoAssets
- *   [ok] → analyze(LLM) → filterBin(deterministic) → generate(LLM) → wrapResult → nodeFinish
+ *   [ok] → analyze(LLM) → filterBin(deterministic) → generate(LLM) → nodeFinish
  * ```
  *
  * Each LLM phase runs as a [subgraphWithTask]: the LLM uses tools to gather data,
@@ -44,9 +44,9 @@ fun scoopManifestStrategy(
     llmParams: LLMParams? = null,
     researchPromptBuilder: (suspend (String) -> String)? = null,
     analyzePromptBuilder: (suspend (ResearchOutput) -> String)? = null,
-    /** Replaces generatePromptBuilder. Receives (skeleton, analyzeOutput, researchOutput) and returns refine prompt. */
-    refinePromptBuilder: (suspend (String, AnalyzeOutput, ResearchOutput?) -> String)? = null,
-) = strategy<String, GenerateResult>("scoop_manifest_generator") {
+    /** Replaces generatePromptBuilder. Receives (skeleton, analyzeOutput, researchOutput) and returns generate prompt. */
+    generatePromptBuilder: (suspend (String, AnalyzeOutput, ResearchOutput?) -> String)? = null,
+) = strategy<String, ManifestResult>("scoop_manifest_generator") {
 
     // Capture research data and suggested_app_name across phases
     var researchData: ResearchOutput? = null
@@ -62,8 +62,8 @@ fun scoopManifestStrategy(
     }
 
     // ── Finish when no Windows assets exist ──
-    val finishNoAssets by node<ResearchOutput, GenerateResult>("finishNoAssets") { research ->
-        GenerateResult(
+    val finishNoAssets by node<ResearchOutput, ManifestResult>("finishNoAssets") { research ->
+        ManifestResult(
             manifest = "",
             suggestedAppName = research.suggested_app_name,
             noAssets = true,
@@ -86,18 +86,12 @@ fun scoopManifestStrategy(
         assembleManifestSkeleton(researchData!!, analyzeOutput)
     }
 
-    // ── Refine phase (LLM): add checkver/autoupdate and validate ──
-    val refine by subgraphWithTask<String, String>(
+    // ── Generate phase (LLM): finalize manifest, add checkver/autoupdate and validate ──
+    val generate by subgraphWithTask<String, String>(
         tools = generateTools,
         llmParams = llmParams,
     ) { manifestSkeleton ->
-        refinePromptBuilder?.invoke(manifestSkeleton, lastAnalyzeOutput!!, researchData) ?: manifestSkeleton
-    }
-
-    // ── Deterministic: extract JSON and wrap result ──
-    val wrapResult by node<String, GenerateResult>("wrapResult") { refineOutput ->
-        val manifest = extractJsonBlock(refineOutput) ?: refineOutput
-        GenerateResult(manifest, suggestedAppName)
+        generatePromptBuilder?.invoke(manifestSkeleton, lastAnalyzeOutput!!, researchData) ?: manifestSkeleton
     }
 
     // ── Edges ──
@@ -115,11 +109,13 @@ fun scoopManifestStrategy(
 
     edge(finishNoAssets forwardTo nodeFinish)
 
-    // Main path: analyze → prepareManifest → refine → wrapResult → finish
+    // Main path: analyze → prepareManifest → generate → finish (with JSON extraction)
     edge(analyze forwardTo prepareManifest)
-    edge(prepareManifest forwardTo refine)
-    edge(refine forwardTo wrapResult)
-    edge(wrapResult forwardTo nodeFinish)
+    edge(prepareManifest forwardTo generate)
+    edge(generate forwardTo nodeFinish transformed { generateOutput ->
+        val manifest = extractJsonBlock(generateOutput) ?: generateOutput
+        ManifestResult(manifest, suggestedAppName)
+    })
 }
 
 // ---------------------------------------------------------------------------
