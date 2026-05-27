@@ -35,6 +35,7 @@ object PhaseTools {
 
     // Generate tools
     const val VALIDATE = "validate"
+    const val REVIEW_MANIFEST = "__review_manifest__"
 
     // Shared
     const val ASK_USER = "__ask_user__"
@@ -68,6 +69,7 @@ object PhaseTools {
     /** Tools available during the Generation phase. */
     val GENERATE_TOOL_NAMES: Set<String> = setOf(
         VALIDATE,
+        REVIEW_MANIFEST,
         ASK_USER,
     )
 }

@@ -2,6 +2,7 @@ package com.scoopai.tools
 
 import ai.koog.agents.core.tools.Tool
 import ai.koog.agents.core.tools.ToolRegistry
+import ai.koog.agents.core.tools.ToolRegistryBuilder
 import ai.koog.agents.core.tools.reflect.ToolSet
 import com.scoopai.core.agent.PhaseTools
 import com.scoopai.core.tools.api.ArchiveInspector
@@ -19,12 +20,19 @@ import com.scoopai.tools.interaction.SafeAskUser
 import com.scoopai.tools.verify.ProcessScoopVerifier
 import com.scoopai.tools.web.JdkHttpWebFetcher
 
+/**
+ * Set of tool names that are dynamically created at runtime (not registered in the factory).
+ * These are excluded from [validatePhaseCoverage] to avoid false positives.
+ */
+private val DYNAMIC_TOOL_NAMES: Set<String> = setOf(PhaseTools.REVIEW_MANIFEST)
+
 object DefaultToolRegistryFactory {
     private var cacheManager: ScoopCacheManager? = null
 
     fun create(
         cache: ScoopCacheManager = ScoopCacheManager(),
-        gitHubApi: GitHubApi = JdkHttpGitHubApi(),
+        githubToken: String? = null,
+        gitHubApi: GitHubApi = JdkHttpGitHubApi(githubToken = githubToken),
         webFetcher: WebFetcher = JdkHttpWebFetcher(),
         manifestIo: ManifestIo = FileManifestIo(),
         scoopVerifier: ScoopVerifier? = null,
@@ -35,12 +43,12 @@ object DefaultToolRegistryFactory {
         val archiveInspector = ZipArchiveInspector(cache)
 
         return ToolRegistry {
-            (gitHubApi as? ToolSet)?.let { tools(it.asTools()) }
-            (webFetcher as? ToolSet)?.let { tools(it.asTools()) }
-            (hashComputer as? ToolSet)?.let { tools(it.asTools()) }
-            (archiveInspector as? ToolSet)?.let { tools(it.asTools()) }
-            (manifestIo as? ToolSet)?.let { tools(it.asTools()) }
-            (scoopVerifier as? ToolSet)?.let { tools(it.asTools()) }
+            registerIfToolSet(gitHubApi)
+            registerIfToolSet(webFetcher)
+            registerIfToolSet(hashComputer)
+            registerIfToolSet(archiveInspector)
+            registerIfToolSet(manifestIo)
+            registerIfToolSet(scoopVerifier)
             tool(SafeAskUser)
             extraTools.forEach { tool(it) }
         }
@@ -57,7 +65,7 @@ object DefaultToolRegistryFactory {
     fun validatePhaseCoverage(registry: ToolRegistry): List<String> {
         val allNames = PhaseTools.RESEARCH_TOOL_NAMES +
             PhaseTools.ANALYZE_TOOL_NAMES +
-            PhaseTools.GENERATE_TOOL_NAMES
+            PhaseTools.GENERATE_TOOL_NAMES - DYNAMIC_TOOL_NAMES
         val registeredNames = registry.tools.map { it.name }.toSet()
         return (allNames - registeredNames).toList()
     }
@@ -66,5 +74,9 @@ object DefaultToolRegistryFactory {
     fun cleanup() {
         cacheManager?.cleanup()
         cacheManager = null
+    }
+
+    private fun ToolRegistryBuilder.registerIfToolSet(obj: Any?) {
+        (obj as? ToolSet)?.let { tools(it.asTools()) }
     }
 }

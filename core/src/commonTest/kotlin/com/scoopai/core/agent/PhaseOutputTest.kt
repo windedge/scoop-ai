@@ -73,6 +73,23 @@ class PhaseOutputTest {
     }
 
     @Test
+    fun `ResearchOutput checksums_filename round-trip`() {
+        val original = ResearchOutput(
+            checksums_filename = "checksums.txt",
+        )
+        val jsonStr = json.encodeToString(ResearchOutput.serializer(), original)
+        val restored = json.decodeFromString<ResearchOutput>(jsonStr)
+        assertEquals("checksums.txt", restored.checksums_filename)
+    }
+
+    @Test
+    fun `ResearchOutput checksums_filename defaults to empty when missing from JSON`() {
+        val input = """{"status":"ok","project":"test"}"""
+        val restored = json.decodeFromString<ResearchOutput>(input)
+        assertEquals("", restored.checksums_filename)
+    }
+
+    @Test
     fun `ResearchOutput with minimal fields round-trip`() {
         val original = ResearchOutput(
             status = ResearchStatus.NO_WINDOWS_ASSETS,

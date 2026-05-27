@@ -80,7 +80,7 @@ class ScoopCacheManager(
         .followRedirects(HttpClient.Redirect.NORMAL)
         .build()
 
-    /** URL → cached local file path (populated on download). */
+    /** URL -> cached local file path (populated on download). */
     private val downloadCache = mutableMapOf<String, Path>()
 
     /** Files to delete on cleanup (only when keepCache = false). */
@@ -96,7 +96,7 @@ class ScoopCacheManager(
         // 1. Check in-memory cache (same JVM run)
         downloadCache[url]?.let { cached ->
             if (Files.exists(cached)) {
-                logger.info { "[cache] Memory hit: $url → ${cached.fileName}" }
+                logger.info { "[cache] Memory hit: $url -> ${cached.fileName}" }
                 return cached
             }
             downloadCache.remove(url)
@@ -107,7 +107,7 @@ class ScoopCacheManager(
         val diskCached = cacheDir.resolve(downloadName)
         if (Files.exists(diskCached) && Files.size(diskCached) > 0) {
             downloadCache[url] = diskCached
-            logger.info { "[cache] Disk hit (download): $url → ${diskCached.fileName}" }
+            logger.info { "[cache] Disk hit (download): $url -> ${diskCached.fileName}" }
             return diskCached
         }
 
@@ -122,7 +122,7 @@ class ScoopCacheManager(
             }
             if (existing != null) {
                 downloadCache[url] = existing
-                logger.info { "[cache] Disk hit (finalized): $url → ${existing.fileName}" }
+                logger.info { "[cache] Disk hit (finalized): $url -> ${existing.fileName}" }
                 return existing
             }
         }
@@ -130,7 +130,7 @@ class ScoopCacheManager(
         // 4. Download to cache directory
         Files.createDirectories(cacheDir)
         val targetFile = cacheDir.resolve(downloadName)
-        logger.info { "[cache] Downloading: $url → ${targetFile.fileName}" }
+        logger.info { "[cache] Downloading: $url -> ${targetFile.fileName}" }
         download(url, targetFile)
 
         downloadCache[url] = targetFile
@@ -164,7 +164,7 @@ class ScoopCacheManager(
                 throw IllegalStateException("File too large: $fileSize bytes (max $MAX_DOWNLOAD_BYTES)")
             }
 
-            // Atomic move: .downloading → final name
+            // Atomic move: .downloading -> final name
             Files.move(tmpTarget, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
         } catch (e: Exception) {
             Files.deleteIfExists(tmpTarget)
@@ -208,7 +208,7 @@ class ScoopCacheManager(
         val finalName = scoopCacheName(appName, version, url)
         val finalPath = cacheDir.resolve(finalName)
 
-        logger.info { "[cache] Finalize: ${downloaded.fileName} → $finalName" }
+        logger.info { "[cache] Finalize: ${downloaded.fileName} -> $finalName" }
 
         if (Files.exists(finalPath) && Files.size(finalPath) > 0) {
             logger.info { "[cache] Already finalized: $finalName" }

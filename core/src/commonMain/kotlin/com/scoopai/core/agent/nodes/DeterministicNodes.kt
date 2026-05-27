@@ -1,8 +1,11 @@
 package com.scoopai.core.agent.nodes
 
+import com.scoopai.core.agent.AssetEntry
 import com.scoopai.core.agent.WindowsAsset
 import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.agent.AnalyzeOutput
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -27,6 +30,10 @@ import kotlinx.serialization.json.put
 fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): String {
     val effectiveBin = filterExecutables(analyze.bin)
     val isMultiArch = analyze.entries.size > 1
+
+    // Pre-generate autoupdate and checkver
+    val autoupdateArch = generateAutoupdateArchitectureBlock(analyze.entries, research.version)
+    val checkverValue = generateCheckver(research.homepage)
 
     return buildJsonObject {
         put("version", research.version)
@@ -91,7 +98,71 @@ fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): 
                 analyze.env_set.forEach { (k, v) -> put(k, v) }
             }
         }
+
+        // Embed pre-generated autoupdate and checkver
+        if (checkverValue != null) {
+            put("checkver", checkverValue)
+        }
+        put("autoupdate", autoupdateArch)
     }.toString()
+}
+
+// ---------------------------------------------------------------------------
+// Autoupdate URL template generation
+// ---------------------------------------------------------------------------
+
+/**
+ * Replaces all occurrences of [version] in [text] with `$version`.
+ *
+ * Also tries URL-encoded version (e.g. `%2B` for `+`) so that URL-encoded
+ * versions in download URLs are correctly replaced.
+ * Returns [text] unchanged if no version match is found.
+ */
+internal fun replaceVersionWithTemplate(text: String, version: String): String {
+    if (version.isBlank()) return text
+    // Prefer URL-encoded variant (e.g. %2B for +) when present in the text
+    val encoded = runCatching { java.net.URLEncoder.encode(version, "UTF-8") }.getOrNull()
+    if (encoded != null && encoded != version && text.contains(encoded)) {
+        return text.replace(encoded, "\$version")
+    }
+    if (text.contains(version)) {
+        return text.replace(version, "\$version")
+    }
+    return text
+}
+
+/**
+ * Generates the autoupdate `architecture` block from asset entries and version.
+ *
+ * For each entry, replaces concrete version strings in `url` and `extract_dir`
+ * with `$version`. The output always uses an `architecture` wrapper regardless
+ * of whether the skeleton is flat or multi-arch — this matches Scoop's autoupdate
+ * format requirements.
+ */
+internal fun generateAutoupdateArchitectureBlock(entries: List<AssetEntry>, version: String): JsonObject {
+    return buildJsonObject {
+        putJsonObject("architecture") {
+            entries.forEach { entry ->
+                putJsonObject(entry.architecture) {
+                    put("url", replaceVersionWithTemplate(entry.url, version))
+                    if (entry.extract_dir.isNotBlank()) {
+                        put("extract_dir", replaceVersionWithTemplate(entry.extract_dir, version))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Generates a checkver value based on the homepage URL.
+ *
+ * Returns `JsonPrimitive("github")` for GitHub-hosted projects,
+ * or `null` for non-GitHub projects (LLM should determine appropriate checkver).
+ */
+internal fun generateCheckver(homepage: String): JsonPrimitive? {
+    if (homepage.isBlank()) return null
+    return if ("github.com" in homepage) JsonPrimitive("github") else null
 }
 
 // ---------------------------------------------------------------------------
@@ -281,13 +352,14 @@ fun applyInstallerTransformations(manifest: JsonObject, route: InstallerRoute): 
     if (route == InstallerRoute.ZIP || route == InstallerRoute.INNOSETUP) return manifest
 
     val archMap = manifest["architecture"] as? JsonObject ?: return manifest
-    val newArchEntries = mutableMapOf<String, kotlinx.serialization.json.JsonElement>()
+    val newArchEntries = mutableMapOf<String, JsonElement>()
 
     for ((archKey, archValue) in archMap) {
         val archEntry = (archValue as? JsonObject)?.toMutableMap() ?: continue
         val url = archEntry["url"]?.let { (it as? JsonPrimitive)?.content } ?: continue
 
         when (route) {
+            InstallerRoute.ZIP, InstallerRoute.INNOSETUP -> {}
             InstallerRoute.NSIS, InstallerRoute.NSIS_ELECTRON -> {
                 if (!url.contains("#/")) archEntry["url"] = JsonPrimitive("$url#/dl.7z")
             }
@@ -301,7 +373,6 @@ fun applyInstallerTransformations(manifest: JsonObject, route: InstallerRoute): 
                 val exeName = url.substringAfterLast("/")
                 if (!url.contains("#/")) archEntry["url"] = JsonPrimitive("$url#/$exeName")
             }
-            else -> {}
         }
         newArchEntries[archKey] = JsonObject(archEntry)
     }

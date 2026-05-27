@@ -7,6 +7,7 @@ import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.agent.WindowsAsset
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -366,6 +367,174 @@ class DeterministicNodesTest {
         assertEquals("My App", shortcut?.get(1)?.jsonPrimitive?.content)
         assertEquals("New-Item -Path \"config\" -ItemType File -ErrorAction SilentlyContinue", obj["pre_install"]?.jsonArray?.single()?.jsonPrimitive?.content)
         assertEquals("${'$'}dir", obj["env_set"]?.jsonObject?.get("MY_APP_HOME")?.jsonPrimitive?.content)
+    }
+
+    // ---------------------------------------------------------------
+    // replaceVersionWithTemplate
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `replaceVersionWithTemplate preserves v prefix in both path and filename`() {
+        val url = "https://github.com/JetpackDuba/Gitnuro/releases/download/v1.5.0/Gitnuro_Windows_Portable_v1.5.0.zip"
+        val result = replaceVersionWithTemplate(url, "1.5.0")
+        assertEquals(
+            "https://github.com/JetpackDuba/Gitnuro/releases/download/v\$version/Gitnuro_Windows_Portable_v\$version.zip",
+            result
+        )
+    }
+
+    @Test
+    fun `replaceVersionWithTemplate handles no v prefix`() {
+        val url = "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-x86_64-pc-windows-msvc.zip"
+        val result = replaceVersionWithTemplate(url, "15.1.0")
+        assertEquals(
+            "https://github.com/BurntSushi/ripgrep/releases/download/\$version/ripgrep-\$version-x86_64-pc-windows-msvc.zip",
+            result
+        )
+    }
+
+    @Test
+    fun `replaceVersionWithTemplate handles URL-encoded version`() {
+        val url = "https://github.com/k0sproject/k0s/releases/download/v1.35.4%2Bk0s.0/k0s-v1.35.4%2Bk0s.0-amd64.exe"
+        val result = replaceVersionWithTemplate(url, "1.35.4+k0s.0")
+        assertEquals(
+            "https://github.com/k0sproject/k0s/releases/download/v\$version/k0s-v\$version-amd64.exe",
+            result
+        )
+    }
+
+    @Test
+    fun `replaceVersionWithTemplate preserves fragment suffix`() {
+        val url = "https://github.com/k0sproject/k0s/releases/download/v1.35.4%2Bk0s.0/k0s-v1.35.4%2Bk0s.0-amd64.exe#/k0s.exe"
+        val result = replaceVersionWithTemplate(url, "1.35.4+k0s.0")
+        assertTrue(result.endsWith("#/k0s.exe"), "fragment should be preserved")
+        assertEquals(
+            "https://github.com/k0sproject/k0s/releases/download/v\$version/k0s-v\$version-amd64.exe#/k0s.exe",
+            result
+        )
+    }
+
+    @Test
+    fun `replaceVersionWithTemplate handles extract_dir`() {
+        val extractDir = "bat-v0.26.1-x86_64-pc-windows-msvc"
+        val result = replaceVersionWithTemplate(extractDir, "0.26.1")
+        assertEquals("bat-v\$version-x86_64-pc-windows-msvc", result)
+    }
+
+    @Test
+    fun `replaceVersionWithTemplate returns original when version not found`() {
+        val url = "https://example.com/app.zip"
+        val result = replaceVersionWithTemplate(url, "1.0.0")
+        assertEquals(url, result)
+    }
+
+    @Test
+    fun `replaceVersionWithTemplate with blank version returns original`() {
+        val url = "https://example.com/app.zip"
+        assertEquals(url, replaceVersionWithTemplate(url, ""))
+    }
+
+    @Test
+    fun `replaceVersionWithTemplate replaces version in extract_dir`() {
+        val extractDir = "mask-0.11.7-x86_64-pc-windows-msvc"
+        val result = replaceVersionWithTemplate(extractDir, "0.11.7")
+        assertEquals("mask-\$version-x86_64-pc-windows-msvc", result)
+    }
+
+    // ---------------------------------------------------------------
+    // generateAutoupdateArchitectureBlock
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `generateAutoupdateArchitectureBlock single arch`() {
+        val entries = listOf(
+            AssetEntry(architecture = "64bit", url = "https://github.com/owner/repo/releases/download/v1.0.0/app-v1.0.0.zip", hash = "h", extract_dir = "app-v1.0.0"),
+        )
+        val result = generateAutoupdateArchitectureBlock(entries, "1.0.0")
+        val arch = result["architecture"]!!.jsonObject
+        val arch64 = arch["64bit"]!!.jsonObject
+        assertEquals(
+            "https://github.com/owner/repo/releases/download/v\$version/app-v\$version.zip",
+            arch64["url"]?.jsonPrimitive?.content
+        )
+        assertEquals("app-v\$version", arch64["extract_dir"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `generateAutoupdateArchitectureBlock multi arch`() {
+        val entries = listOf(
+            AssetEntry(architecture = "64bit", url = "https://github.com/owner/repo/releases/download/v1.0.0/app-x64-1.0.0.zip", hash = "h64"),
+            AssetEntry(architecture = "32bit", url = "https://github.com/owner/repo/releases/download/v1.0.0/app-x86-1.0.0.zip", hash = "h32"),
+        )
+        val result = generateAutoupdateArchitectureBlock(entries, "1.0.0")
+        val arch = result["architecture"]!!.jsonObject
+        assertEquals(2, arch.size)
+        val url64 = arch["64bit"]!!.jsonObject["url"]?.jsonPrimitive?.content
+        val url32 = arch["32bit"]!!.jsonObject["url"]?.jsonPrimitive?.content
+        assertTrue(url64!!.contains("\$version"), "64bit URL should have \$version")
+        assertTrue(url32!!.contains("\$version"), "32bit URL should have \$version")
+    }
+
+    // ---------------------------------------------------------------
+    // generateCheckver
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `generateCheckver returns github for github homepage`() {
+        assertEquals(JsonPrimitive("github"), generateCheckver("https://github.com/owner/repo"))
+    }
+
+    @Test
+    fun `generateCheckver returns null for non-github homepage`() {
+        assertEquals(null, generateCheckver("https://example.com"))
+    }
+
+    @Test
+    fun `generateCheckver returns null for blank homepage`() {
+        assertEquals(null, generateCheckver(""))
+    }
+
+    // ---------------------------------------------------------------
+    // assembleManifestSkeleton — autoupdate+checkver presence
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `assembleManifestSkeleton embeds autoupdate and checkver for GitHub project`() {
+        val research = ResearchOutput(
+            version = "1.5.0",
+            homepage = "https://github.com/JetpackDuba/Gitnuro",
+        )
+        val analyze = AnalyzeOutput(
+            entries = listOf(
+                AssetEntry(architecture = "64bit", url = "https://github.com/JetpackDuba/Gitnuro/releases/download/v1.5.0/Gitnuro_Windows_Portable_v1.5.0.zip", hash = "abc123"),
+            ),
+            bin = listOf("Gitnuro.exe"),
+        )
+        val json = parseJsonObject(assembleManifestSkeleton(research, analyze))
+        // checkver present
+        assertEquals("github", json["checkver"]?.jsonPrimitive?.content)
+        // autoupdate present with correct template
+        val autoupdate = json["autoupdate"]!!.jsonObject
+        val arch64 = autoupdate["architecture"]!!.jsonObject["64bit"]!!.jsonObject
+        assertEquals(
+            "https://github.com/JetpackDuba/Gitnuro/releases/download/v\$version/Gitnuro_Windows_Portable_v\$version.zip",
+            arch64["url"]?.jsonPrimitive?.content
+        )
+    }
+
+    @Test
+    fun `assembleManifestSkeleton does not add checkver for non-GitHub project`() {
+        val research = ResearchOutput(
+            version = "1.0.0",
+            homepage = "https://example.com",
+        )
+        val analyze = AnalyzeOutput(
+            entries = listOf(AssetEntry(architecture = "64bit", url = "https://example.com/app.zip", hash = "h")),
+            bin = listOf("app.exe"),
+        )
+        val json = parseJsonObject(assembleManifestSkeleton(research, analyze))
+        assertFalse(json.containsKey("checkver"), "non-GitHub should not have checkver")
+        assertTrue(json.containsKey("autoupdate"), "always has autoupdate block")
     }
 
     @Test

@@ -104,6 +104,7 @@ class FileManifestIo(
             validateBin(obj, errors, warnings)
             validateArchitectureBlock(obj, errors, warnings)
             validateExtractDir(obj, warnings)
+            validateAutoupdateVPrefix(obj, warnings)
             validateVersion(obj, errors)
             validateUnknownFields(obj, errors)
             validateTemplateVariablesInStaticFields(obj, errors)
@@ -172,6 +173,11 @@ class FileManifestIo(
     // Formatting helper
     // ---------------------------------------------------------------------------
 
+    private val prettyJson = kotlinx.serialization.json.Json {
+        prettyPrint = true
+        prettyPrintIndent = "    "
+    }
+
     /** Pretty-print JSON and normalize extract_dir slashes. */
     private fun formatManifest(rawJson: String): String {
         val element = try {
@@ -179,10 +185,7 @@ class FileManifestIo(
         } catch (_: Exception) {
             return rawJson
         }
-        return kotlinx.serialization.json.Json {
-            prettyPrint = true
-            prettyPrintIndent = "    "
-        }.encodeToString(JsonElement.serializer(), element)
+        return prettyJson.encodeToString(JsonElement.serializer(), element)
     }
 
     private fun extractAppName(json: String): String {
@@ -347,6 +350,42 @@ class FileManifestIo(
         }
     }
 
+    /**
+     * Checks that autoupdate URL templates preserve the `v` prefix when
+     * the static download URL contains `v<version>`.
+     *
+     * Common failure: LLM generates `\$version/...` instead of `v\$version/...`
+     * when the actual release URL path uses `v1.2.3/...`.
+     */
+    private fun validateAutoupdateVPrefix(obj: JsonObject, warnings: MutableList<String>) {
+        val version = obj["version"]?.jsonPrimitive?.contentOrNull ?: return
+        val autoupdate = obj["autoupdate"]?.jsonObject ?: return
+
+        val autoupdateArch = autoupdate["architecture"]?.jsonObject
+        val staticArch = obj["architecture"]?.jsonObject
+
+        fun getUrl(archBlock: JsonObject?, archName: String): String? =
+            archBlock?.get(archName)?.jsonObject?.get("url")?.jsonPrimitive?.contentOrNull
+
+        // Kotlin string templates: "v$version" interpolates the local variable,
+        // "v\$version" is the literal string v$version.
+        val vConcrete = "v$version"       // e.g. "v1.47.2"
+        val vTemplate = "v\$version"      // literal "v$version" template
+        val bareTemplate = "\$version"    // literal "$version" template
+        for (archName in listOf("64bit", "32bit", "arm64")) {
+            val staticUrl = getUrl(staticArch, archName) ?: continue
+            val autoupdateUrl = getUrl(autoupdateArch, archName) ?: continue
+
+            if (staticUrl.contains(vConcrete) && !autoupdateUrl.contains(vTemplate)) {
+                warnings.add(
+                    "autoupdate.architecture.$archName.url lost 'v' prefix: " +
+                    "static URL contains '$vConcrete' but autoupdate template has '$bareTemplate' without 'v'. " +
+                    "Fix: change '$bareTemplate' to '$vTemplate' in the autoupdate URL."
+                )
+            }
+        }
+    }
+
     /** Validates version format (no leading 'v'). */
     private fun validateVersion(obj: JsonObject, errors: MutableList<String>) {
         val version = obj["version"]?.jsonPrimitive?.contentOrNull ?: return
@@ -467,7 +506,7 @@ class FileManifestIo(
                     checkTemplateVarsRecursive(value, "$path[$idx]", regex, errors)
                 }
             }
-            else -> {}
+            is JsonNull -> {}
         }
     }
 
@@ -479,14 +518,19 @@ class FileManifestIo(
      * to empty strings, causing "file not found" errors during install.
      */
     private fun validateInstallerScriptEscaping(obj: JsonObject, errors: MutableList<String>) {
-        val psLiteralVars = listOf("\${'$'}PLUGINSDIR")
+        // Literal PowerShell variable names that need backtick escaping
+        val psLiteralVars = listOf("\$PLUGINSDIR")
         fun checkScriptLines(lines: List<String>, path: String) {
             for (line in lines) {
-                for (v in psLiteralVars) {
-                    // Match ${'$'}PLUGINSDIR that is NOT preceded by backtick
-                    val pattern = Regex("(?<!`)(" + Regex.escape(v) + ")")
+                for (varName in psLiteralVars) {
+                    // Match $varName that is NOT preceded by backtick
+                    val pattern = Regex("(?<!`)(" + Regex.escape(varName) + ")")
                     if (pattern.containsMatchIn(line)) {
-                        errors.add("Field '${'$'}path' contains unescaped '${'$'}v'. In PowerShell this will be expanded to empty string. Use backtick: '`${'$'}v' (e.g. \"`${'$'}PLUGINSDIR\")")
+                        errors.add(
+                            "Field '$path' contains unescaped '$varName'. " +
+                            "In PowerShell this will be expanded to empty string. " +
+                            "Use backtick: `$varName (e.g. `\$PLUGINSDIR)"
+                        )
                     }
                 }
             }

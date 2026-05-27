@@ -16,19 +16,24 @@ import java.net.http.HttpResponse
 import java.util.Base64
 
 @LLMDescription("GitHub API tools for gathering project information")
-class JdkHttpGitHubApi : GitHubApi, ToolSet {
-
-    private val httpClient = RetryingHttpClient()
+class JdkHttpGitHubApi(
+    private val githubToken: String? = null,
+    private val httpClient: RetryingHttpClient = RetryingHttpClient(),
+) : GitHubApi, ToolSet {
 
     // ---------------------------------------------------------------------------
     // HTTP helper
     // ---------------------------------------------------------------------------
 
     private fun httpGet(url: String): String {
-        val response = httpClient.get(url, mapOf(
+        val baseHeaders = mutableMapOf(
             "User-Agent" to "scoop-ai/0.1.0",
             "Accept" to "application/vnd.github+json",
-        ))
+        )
+        if (!githubToken.isNullOrBlank()) {
+            baseHeaders["Authorization"] = "Bearer $githubToken"
+        }
+        val response = httpClient.get(url, baseHeaders)
         return response.body()
     }
 
@@ -49,6 +54,23 @@ class JdkHttpGitHubApi : GitHubApi, ToolSet {
                 put("action", "STOP all GitHub API calls. Use searchTextInArchive on the source code zip instead. Do NOT retry any GitHub API request.")
             }
         }.toString()
+    }
+
+    // ---------------------------------------------------------------------------
+    // Parameter validation & API call wrapper
+    // ---------------------------------------------------------------------------
+
+    private fun <T : Any> requireParam(value: T?, name: String, hint: String = ""): T {
+        val desc = if (hint.isNotBlank()) hint else "the $name value"
+        return validateNotNull(value) { "Parameter '$name' is required. Provide $desc." }
+    }
+
+    private inline fun apiCall(operation: String, block: () -> String): String {
+        return try {
+            block()
+        } catch (e: Exception) {
+            structuredError(operation, e)
+        }
     }
 
     // ---------------------------------------------------------------------------
@@ -74,7 +96,7 @@ class JdkHttpGitHubApi : GitHubApi, ToolSet {
         @LLMDescription("A GitHub URL such as https://github.com/owner/repo")
         url: String?
     ): String {
-        val urlNotNull = validateNotNull(url) { "Parameter 'url' is required. Provide a GitHub URL such as https://github.com/owner/repo." }
+        val urlNotNull = requireParam(url, "url", "a GitHub URL such as https://github.com/owner/repo")
         val regex = Regex("""(?:https?://)?github\.com/([^/]+)/([^/]+?)(?:/|$|\?|#)""")
         val match = regex.find(urlNotNull)
         if (match != null) {
@@ -97,31 +119,27 @@ class JdkHttpGitHubApi : GitHubApi, ToolSet {
         owner: String?,
         @LLMDescription("The repository name")
         repo: String?
-    ): String {
-        val ownerNotNull = validateNotNull(owner) { "Parameter 'owner' is required. Provide the repository owner." }
-        val repoNotNull = validateNotNull(repo) { "Parameter 'repo' is required. Provide the repository name." }
-        return try {
-            val body = httpGet("https://api.github.com/repos/$ownerNotNull/$repoNotNull")
-            val json = Json.parseToJsonElement(body).jsonObject
+    ): String = apiCall("fetch repo info") {
+        val ownerNotNull = requireParam(owner, "owner", "the repository owner")
+        val repoNotNull = requireParam(repo, "repo", "the repository name")
+        val body = httpGet("https://api.github.com/repos/$ownerNotNull/$repoNotNull")
+        val json = Json.parseToJsonElement(body).jsonObject
 
-            val license = json["license"]?.jsonObject
-            buildJsonObject {
-                put("full_name", json.getStringOrNull("full_name") ?: "$ownerNotNull/$repoNotNull")
-                put("description", json.getStringOrNull("description"))
-                put("homepage", json.getStringOrNull("homepage"))
-                put("license", license?.getStringOrNull("spdx_id"))
-                put("default_branch", json.getStringOrNull("default_branch"))
-                put("stars", json.getIntOrNull("stargazers_count"))
-                put("forks", json.getIntOrNull("forks_count"))
-                put("open_issues", json.getIntOrNull("open_issues_count"))
-                val topics = json["topics"]?.jsonArray
-                if (topics != null) {
-                    put("topics", topics)
-                }
-            }.toString()
-        } catch (e: Exception) {
-            structuredError("fetch repo info", e)
-        }
+        val license = json["license"]?.jsonObject
+        buildJsonObject {
+            put("full_name", json.getStringOrNull("full_name") ?: "$ownerNotNull/$repoNotNull")
+            put("description", json.getStringOrNull("description"))
+            put("homepage", json.getStringOrNull("homepage"))
+            put("license", license?.getStringOrNull("spdx_id"))
+            put("default_branch", json.getStringOrNull("default_branch"))
+            put("stars", json.getIntOrNull("stargazers_count"))
+            put("forks", json.getIntOrNull("forks_count"))
+            put("open_issues", json.getIntOrNull("open_issues_count"))
+            val topics = json["topics"]?.jsonArray
+            if (topics != null) {
+                put("topics", topics)
+            }
+        }.toString()
     }
 
     @Tool
@@ -131,16 +149,12 @@ class JdkHttpGitHubApi : GitHubApi, ToolSet {
         owner: String?,
         @LLMDescription("The repository name")
         repo: String?
-    ): String {
-        val ownerNotNull = validateNotNull(owner) { "Parameter 'owner' is required. Provide the repository owner." }
-        val repoNotNull = validateNotNull(repo) { "Parameter 'repo' is required. Provide the repository name." }
-        return try {
-            val body = httpGet("https://api.github.com/repos/$ownerNotNull/$repoNotNull/releases/latest")
-            val json = Json.parseToJsonElement(body).jsonObject
-            releaseToJson(json).toString()
-        } catch (e: Exception) {
-            structuredError("fetch latest release", e)
-        }
+    ): String = apiCall("fetch latest release") {
+        val ownerNotNull = requireParam(owner, "owner", "the repository owner")
+        val repoNotNull = requireParam(repo, "repo", "the repository name")
+        val body = httpGet("https://api.github.com/repos/$ownerNotNull/$repoNotNull/releases/latest")
+        val json = Json.parseToJsonElement(body).jsonObject
+        releaseToJson(json).toString()
     }
 
     @Tool
@@ -152,34 +166,30 @@ class JdkHttpGitHubApi : GitHubApi, ToolSet {
         repo: String?,
         @LLMDescription("Number of releases to return (default 5)")
         perPage: Int
-    ): String {
-        val ownerNotNull = validateNotNull(owner) { "Parameter 'owner' is required. Provide the repository owner." }
-        val repoNotNull = validateNotNull(repo) { "Parameter 'repo' is required. Provide the repository name." }
-        return try {
-            val effectivePerPage = if (perPage <= 0) 5 else perPage
-            val body = httpGet("https://api.github.com/repos/$ownerNotNull/$repoNotNull/releases?per_page=$effectivePerPage")
-            val array = Json.parseToJsonElement(body).jsonArray
-            buildJsonArray {
-                for (element in array) {
-                    val release = element.jsonObject
-                    add(buildJsonObject {
-                        put("tag_name", release.getStringOrNull("tag_name"))
-                        put("name", release.getStringOrNull("name"))
-                        put("prerelease", release["prerelease"]?.jsonPrimitive?.booleanOrNull ?: false)
-                        val assets = release["assets"]?.jsonArray
-                        if (assets != null) {
-                            put("assets", buildJsonArray {
-                                for (asset in assets) {
-                                    add(assetToJson(asset.jsonObject))
-                                }
-                            })
-                        }
-                    })
-                }
-            }.toString()
-        } catch (e: Exception) {
-            structuredError("fetch releases", e)
-        }
+    ): String = apiCall("fetch releases") {
+        val ownerNotNull = requireParam(owner, "owner", "the repository owner")
+        val repoNotNull = requireParam(repo, "repo", "the repository name")
+        val effectivePerPage = if (perPage <= 0) 5 else perPage
+        val body = httpGet("https://api.github.com/repos/$ownerNotNull/$repoNotNull/releases?per_page=$effectivePerPage")
+        val array = Json.parseToJsonElement(body).jsonArray
+        buildJsonArray {
+            for (element in array) {
+                val release = element.jsonObject
+                add(buildJsonObject {
+                    put("tag_name", release.getStringOrNull("tag_name"))
+                    put("name", release.getStringOrNull("name"))
+                    put("prerelease", release["prerelease"]?.jsonPrimitive?.booleanOrNull ?: false)
+                    val assets = release["assets"]?.jsonArray
+                    if (assets != null) {
+                        put("assets", buildJsonArray {
+                            for (asset in assets) {
+                                add(assetToJson(asset.jsonObject))
+                            }
+                        })
+                    }
+                })
+            }
+        }.toString()
     }
 
     @Tool
@@ -191,22 +201,18 @@ class JdkHttpGitHubApi : GitHubApi, ToolSet {
         repo: String?,
         @LLMDescription("The release tag (e.g. v1.0.0)")
         tag: String?
-    ): String {
-        val ownerNotNull = validateNotNull(owner) { "Parameter 'owner' is required. Provide the repository owner." }
-        val repoNotNull = validateNotNull(repo) { "Parameter 'repo' is required. Provide the repository name." }
-        val tagNotNull = validateNotNull(tag) { "Parameter 'tag' is required. Provide the release tag (e.g. v1.0.0)." }
-        return try {
-            val body = httpGet("https://api.github.com/repos/$ownerNotNull/$repoNotNull/releases/tags/$tagNotNull")
-            val json = Json.parseToJsonElement(body).jsonObject
-            val assets = json["assets"]?.jsonArray ?: buildJsonArray {}
-            buildJsonArray {
-                for (asset in assets) {
-                    add(assetToJson(asset.jsonObject))
-                }
-            }.toString()
-        } catch (e: Exception) {
-            structuredError("list release assets", e)
-        }
+    ): String = apiCall("list release assets") {
+        val ownerNotNull = requireParam(owner, "owner", "the repository owner")
+        val repoNotNull = requireParam(repo, "repo", "the repository name")
+        val tagNotNull = requireParam(tag, "tag", "the release tag (e.g. v1.0.0)")
+        val body = httpGet("https://api.github.com/repos/$ownerNotNull/$repoNotNull/releases/tags/$tagNotNull")
+        val json = Json.parseToJsonElement(body).jsonObject
+        val assets = json["assets"]?.jsonArray ?: buildJsonArray {}
+        buildJsonArray {
+            for (asset in assets) {
+                add(assetToJson(asset.jsonObject))
+            }
+        }.toString()
     }
 
     @Tool
@@ -218,34 +224,30 @@ class JdkHttpGitHubApi : GitHubApi, ToolSet {
         repo: String?,
         @LLMDescription("The file path within the repository (e.g. README.md)")
         path: String?
-    ): String {
-        val ownerNotNull = validateNotNull(owner) { "Parameter 'owner' is required. Provide the repository owner." }
-        val repoNotNull = validateNotNull(repo) { "Parameter 'repo' is required. Provide the repository name." }
-        val pathNotNull = validateNotNull(path) { "Parameter 'path' is required. Provide the file path within the repository." }
-        return try {
-            val encodedPath = pathNotNull.split("/").joinToString("/") { java.net.URLEncoder.encode(it, "UTF-8") }
-            val body = httpGet("https://api.github.com/repos/$ownerNotNull/$repoNotNull/contents/$encodedPath")
-            val json = Json.parseToJsonElement(body).jsonObject
+    ): String = apiCall("fetch file content") {
+        val ownerNotNull = requireParam(owner, "owner", "the repository owner")
+        val repoNotNull = requireParam(repo, "repo", "the repository name")
+        val pathNotNull = requireParam(path, "path", "the file path within the repository")
+        val encodedPath = pathNotNull.split("/").joinToString("/") { java.net.URLEncoder.encode(it, "UTF-8") }
+        val body = httpGet("https://api.github.com/repos/$ownerNotNull/$repoNotNull/contents/$encodedPath")
+        val json = Json.parseToJsonElement(body).jsonObject
 
-            val encoding = json.getStringOrNull("encoding")
-            val contentB64 = json.getStringOrNull("content")
+        val encoding = json.getStringOrNull("encoding")
+        val contentB64 = json.getStringOrNull("content")
 
-            if (encoding == "base64" && contentB64 != null) {
-                val cleaned = contentB64.replace("\\s".toRegex(), "")
-                val decoded = Base64.getDecoder().decode(cleaned).decodeToString()
-                buildJsonObject {
-                    put("path", pathNotNull)
-                    put("content", decoded)
-                }.toString()
-            } else {
-                buildJsonObject {
-                    put("path", pathNotNull)
-                    put("content", json.getStringOrNull("content") ?: "")
-                    put("encoding", json.getStringOrNull("encoding") ?: "unknown")
-                }.toString()
-            }
-        } catch (e: Exception) {
-            structuredError("fetch file content", e)
+        if (encoding == "base64" && contentB64 != null) {
+            val cleaned = contentB64.replace("\\s".toRegex(), "")
+            val decoded = Base64.getDecoder().decode(cleaned).decodeToString()
+            buildJsonObject {
+                put("path", pathNotNull)
+                put("content", decoded)
+            }.toString()
+        } else {
+            buildJsonObject {
+                put("path", pathNotNull)
+                put("content", json.getStringOrNull("content") ?: "")
+                put("encoding", json.getStringOrNull("encoding") ?: "unknown")
+            }.toString()
         }
     }
 

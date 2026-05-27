@@ -24,7 +24,7 @@ private val logger = KotlinLogging.logger {}
  * @param readTimeout     Timeout for reading the response body
  * @param maxRetries      Maximum number of retry attempts (0 = no retry)
  */
-class RetryingHttpClient(
+open class RetryingHttpClient(
     connectTimeout: Duration = Duration.ofSeconds(30),
     private val readTimeout: Duration = Duration.ofSeconds(60),
     private val maxRetries: Int = 3,
@@ -44,7 +44,7 @@ class RetryingHttpClient(
      *
      * @throws HttpException if all retries are exhausted
      */
-    fun get(url: String, headers: Map<String, String> = emptyMap()): HttpResponse<String> {
+    open fun get(url: String, headers: Map<String, String> = emptyMap()): HttpResponse<String> {
         var lastException: Exception? = null
         var attempt = 0
 
@@ -70,7 +70,7 @@ class RetryingHttpClient(
                     // Client errors (4xx except 429): don't retry
                     throw HttpException(response.statusCode(), url, response.body())
                 }
-            } catch (e: IOException) {
+            } catch (e: java.io.IOException) {
                 lastException = e
                 logger.warn { "[http] Attempt ${attempt + 1}/${maxRetries + 1} failed: ${e.message} for $url" }
             }
@@ -106,5 +106,4 @@ class RetryingHttpClient(
             )
     }
 
-    private class IOException(message: String) : Exception(message)
 }

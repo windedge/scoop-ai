@@ -37,6 +37,7 @@ fun main(args: Array<String>) {
     var userPrompt: String? = null
     var nonInteractive = false
     var persistMode = "auto"
+    var githubToken: String? = null
 
     val i = args.iterator()
     while (i.hasNext()) {
@@ -51,6 +52,7 @@ fun main(args: Array<String>) {
             "--no-cache" -> keepCache = false
             "-p", "--prompt" -> userPrompt = i.next()
             "-n", "--non-interactive" -> nonInteractive = true
+            "--github-token" -> githubToken = i.next()
             "-s", "--persist" -> {
                 val mode = i.next().lowercase()
                 persistMode = when (mode) {
@@ -119,6 +121,11 @@ fun main(args: Array<String>) {
         System.setProperty("SCOOP_AI_NON_INTERACTIVE", "true")
     }
 
+    // ── Resolve GitHub token ───────────────────────────────────────
+    val effectiveGhToken = githubToken
+        ?: env("SCOOP_AI_GITHUB_TOKEN")
+        ?: env("GITHUB_TOKEN")
+
     // ── Resolve app name ───────────────────────────────────────────
     val resolvedAppName = appName ?: inferAppName(url)
 
@@ -128,29 +135,13 @@ fun main(args: Array<String>) {
     val envVerify = env("SCOOP_AI_VERIFY")?.lowercase() == "true"
     val doVerify = verify || envVerify
 
-    val scoopVerifier = if (doVerify) {
-        try {
-            val check = ProcessBuilder("scoop", "--version")
-                .redirectErrorStream(true)
-                .start()
-            check.inputStream.bufferedReader().readText()
-            check.waitFor()
-            if (check.exitValue() != 0) {
-                System.err.println("--verify requires scoop to be installed. Skipping installation verification.")
-                null
-            } else {
-                ProcessScoopVerifier()
-            }
-        } catch (_: Exception) {
-            System.err.println("--verify requires scoop to be installed. Skipping installation verification.")
-            null
-        }
-    } else null
+    val scoopVerifier = createScoopVerifier(doVerify)
 
     val cache = ScoopCacheManager(keepCache = keepCache)
 
     val toolRegistry = DefaultToolRegistryFactory.create(
         cache = cache,
+        githubToken = effectiveGhToken,
         manifestIo = manifestIo,
         scoopVerifier = scoopVerifier,
     )
@@ -191,20 +182,18 @@ fun main(args: Array<String>) {
         
         // ── Finalize cache entries ─────────────────────────────────
         if (keepCache) {
-            val version = Regex(""""version"\s*:\s*"([^"]+)"""").find(manifest)?.groupValues?.get(1)
-            val mainUrl = Regex(""""url"\s*:\s*"(https?://[^"]+)"""").find(manifest)?.groupValues?.get(1)
-        
-            logger.info { "[cache] Finalizing: app=$appNameForOutput version=$version url=$mainUrl" }
-            if (version != null && mainUrl != null) {
-                val finalized = cache.finalizeCacheEntry(mainUrl, appNameForOutput, version)
+            val parsed = parseManifestMeta(manifest)
+            logger.info { "[cache] Finalizing: app=$appNameForOutput version=${parsed.version} url=${parsed.url}" }
+            if (parsed.version != null && parsed.url != null) {
+                val finalized = cache.finalizeCacheEntry(parsed.url, appNameForOutput, parsed.version)
                 if (finalized != null) {
                     println("Cache: ${finalized.toAbsolutePath()}")
                     println("scoop install $appNameForOutput will reuse this file.")
                 } else {
-                    logger.warn { "[cache] No cached file found for $mainUrl" }
+                    logger.warn { "[cache] No cached file found for ${parsed.url}" }
                 }
             } else {
-                logger.warn { "[cache] Could not parse manifest: version=$version url=$mainUrl" }
+                logger.warn { "[cache] Could not parse manifest: version=${parsed.version} url=${parsed.url}" }
             }
         }
     } catch (e: Exception) {
@@ -213,6 +202,28 @@ fun main(args: Array<String>) {
         DefaultToolRegistryFactory.cleanup()
     }
 
+}
+
+private fun createScoopVerifier(doVerify: Boolean): ProcessScoopVerifier? {
+    if (!doVerify) return null
+    return try {
+        val check = ProcessBuilder("scoop", "--version")
+            .redirectErrorStream(true)
+            .start()
+        check.inputStream.bufferedReader().readText()
+        check.waitFor()
+        if (check.exitValue() == 0) ProcessScoopVerifier() else null
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private data class ManifestMeta(val version: String?, val url: String?)
+
+private fun parseManifestMeta(manifest: String): ManifestMeta {
+    val version = Regex(""""version"\s*:\s*"([^"]+)"""").find(manifest)?.groupValues?.get(1)
+    val url = Regex(""""url"\s*:\s*"(https?://[^"]+)"""").find(manifest)?.groupValues?.get(1)
+    return ManifestMeta(version, url)
 }
 
 private val HELP_TEXT = """
@@ -227,6 +238,7 @@ private val HELP_TEXT = """
       -m, --model <name>           LLM model name (overrides default for provider)
           --base-url <url>         Custom API base URL (required for openai-compatible)
           --api-key <key>          API key
+          --github-token <token>   GitHub personal access token (avoids rate limits)
       -p, --prompt <text>          Additional requirements for manifest generation
       -s, --persist <mode>        Persist field policy: auto|force|none (default: auto)
           --app-name <name>        App name for cache (default: inferred from URL)
@@ -241,6 +253,7 @@ private val HELP_TEXT = """
       SCOOP_AI_BASE_URL            Custom API base URL
       SCOOP_AI_MODEL               LLM model name
       SCOOP_AI_OUTPUT              Default output file path
+      SCOOP_AI_GITHUB_TOKEN        GitHub personal access token (fallback for --github-token)
 
     Cache:
       Downloaded files are stored in the Scoop cache directory (~/scoop/cache/)

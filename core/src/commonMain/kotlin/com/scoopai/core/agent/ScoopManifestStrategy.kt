@@ -9,6 +9,7 @@ import ai.koog.prompt.params.LLMParams
 import com.scoopai.core.GenerateResult
 import com.scoopai.core.agent.nodes.assembleManifestSkeleton
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -43,8 +44,8 @@ fun scoopManifestStrategy(
     llmParams: LLMParams? = null,
     researchPromptBuilder: (suspend (String) -> String)? = null,
     analyzePromptBuilder: (suspend (ResearchOutput) -> String)? = null,
-    /** Replaces generatePromptBuilder. Receives (skeleton, analyzeOutput) and returns refine prompt. */
-    refinePromptBuilder: (suspend (String, AnalyzeOutput) -> String)? = null,
+    /** Replaces generatePromptBuilder. Receives (skeleton, analyzeOutput, researchOutput) and returns refine prompt. */
+    refinePromptBuilder: (suspend (String, AnalyzeOutput, ResearchOutput?) -> String)? = null,
 ) = strategy<String, GenerateResult>("scoop_manifest_generator") {
 
     // Capture research data and suggested_app_name across phases
@@ -90,7 +91,7 @@ fun scoopManifestStrategy(
         tools = generateTools,
         llmParams = llmParams,
     ) { manifestSkeleton ->
-        refinePromptBuilder?.invoke(manifestSkeleton, lastAnalyzeOutput!!) ?: manifestSkeleton
+        refinePromptBuilder?.invoke(manifestSkeleton, lastAnalyzeOutput!!, researchData) ?: manifestSkeleton
     }
 
     // ── Deterministic: extract JSON and wrap result ──
@@ -144,10 +145,13 @@ internal fun extractJsonBlock(text: String): String? {
 }
 
 internal fun isValidJson(text: String): Boolean = try {
-    kotlinx.serialization.json.Json.parseToJsonElement(text) is kotlinx.serialization.json.JsonObject
+    Json.parseToJsonElement(text) is JsonObject
 } catch (_: Exception) {
     false
 }
+
+@kotlinx.serialization.Serializable
+private data class StatusWrapper(val status: ResearchStatus = ResearchStatus.OK)
 
 /**
  * Extracts the `status` field from a JSON string.
@@ -155,14 +159,7 @@ internal fun isValidJson(text: String): Boolean = try {
  */
 internal fun parseResearchStatus(output: String): ResearchStatus {
     return try {
-        val json = kotlinx.serialization.json.Json
-            .parseToJsonElement(output)
-            .jsonObject
-        val statusStr = json["status"]?.jsonPrimitive?.content ?: return ResearchStatus.OK
-        ResearchStatus.entries.find {
-            // Match by @SerialName ("ok", "no_windows_assets")
-            it.name.equals(statusStr.replace('-', '_'), ignoreCase = true)
-        } ?: ResearchStatus.OK
+        phaseJson.decodeFromString(StatusWrapper.serializer(), output).status
     } catch (_: Exception) {
         ResearchStatus.OK
     }

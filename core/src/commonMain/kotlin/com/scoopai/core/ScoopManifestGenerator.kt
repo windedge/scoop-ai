@@ -1,6 +1,9 @@
 package com.scoopai.core
 
 import ai.koog.agents.core.agent.AIAgent
+import ai.koog.agents.core.agent.AIAgentService
+import ai.koog.agents.core.agent.GraphAIAgent
+import ai.koog.agents.core.agent.createAgentTool
 import ai.koog.agents.core.agent.config.AIAgentConfig
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.features.eventHandler.feature.handleEvents
@@ -10,6 +13,9 @@ import ai.koog.prompt.llm.LLModel
 import com.scoopai.core.agent.AnalyzeOutput
 import com.scoopai.core.agent.PhaseTools
 import com.scoopai.core.agent.ResearchOutput
+import com.scoopai.core.agent.prompt.REVIEW_AGENT_SYSTEM_PROMPT
+import com.scoopai.core.agent.prompt.REVIEW_TOOL_DESCRIPTION
+import com.scoopai.core.agent.prompt.REVIEW_TOOL_INPUT_DESCRIPTION
 import com.scoopai.core.agent.prompt.buildAnalyzePrompt
 import com.scoopai.core.agent.prompt.buildRefinePrompt
 import com.scoopai.core.agent.prompt.buildResearchPrompt
@@ -76,17 +82,16 @@ data class GenerateResult(
 )
 
 /**
- * Safely truncate a string for logging, preserving valid Unicode characters.
- * Replaces non-ASCII control characters and truncates to [maxLen] code points.
+ * Safely truncate a string for logging, replacing non-printable and non-ASCII
+ * characters to avoid garbled output on non-UTF-8 consoles.
+ * Truncates to [maxLen] code points.
  */
 internal fun sanitizeForLog(text: String, maxLen: Int = 120): String {
-    // Replace problematic characters
     val sanitized = text
         .replace('\n', ' ')
         .replace('\r', ' ')
         .replace('\t', ' ')
-        .replace(Regex("\\p{Cntrl}"), "?")
-    // Truncate by code points to avoid breaking multi-byte chars
+        .replace(Regex("[^\\x20-\\x7E]"), "?")
     val codePoints = sanitized.codePoints().toArray()
     return if (codePoints.size <= maxLen) {
         sanitized
@@ -157,6 +162,29 @@ class ScoopManifestGenerator(
             ?: IllegalStateException("Generation failed after $MAX_GENERATION_RETRIES retries")
     }
 
+    /**
+     * Creates an independent review agent wrapped as a tool for the refine phase.
+     * The review agent is a pure text reasoning agent with NO tools and NO shared context.
+     */
+    private fun createReviewTool(): ai.koog.agents.core.tools.ToolBase<*, *> {
+        val reviewAgent = AIAgent(
+            promptExecutor = promptExecutor,
+            llmModel = model,
+            toolRegistry = ToolRegistry.EMPTY,
+            systemPrompt = REVIEW_AGENT_SYSTEM_PROMPT,
+            maxIterations = 5,
+        )
+
+        @Suppress("UNCHECKED_CAST")
+        return AIAgentService
+            .fromAgent(reviewAgent as GraphAIAgent<String, String>)
+            .createAgentTool<String, String>(
+                agentName = PhaseTools.REVIEW_MANIFEST,
+                agentDescription = REVIEW_TOOL_DESCRIPTION,
+                inputDescription = REVIEW_TOOL_INPUT_DESCRIPTION,
+            )
+    }
+
     private suspend fun tryGenerate(
         url: String,
         outputPath: String?,
@@ -167,7 +195,8 @@ class ScoopManifestGenerator(
 
         val researchTools = allTools.filter { it.name in PhaseTools.RESEARCH_TOOL_NAMES }
         val analyzeTools = allTools.filter { it.name in PhaseTools.ANALYZE_TOOL_NAMES }
-        val generateTools = allTools.filter { it.name in PhaseTools.GENERATE_TOOL_NAMES }
+        val reviewTool = createReviewTool()
+        val generateTools = allTools.filter { it.name in PhaseTools.GENERATE_TOOL_NAMES } + reviewTool
 
         logger.info { "[tools] Total: ${allTools.size}, Research: ${researchTools.map { it.name }}, Analyze: ${analyzeTools.map { it.name }}, Generate: ${generateTools.map { it.name }}" }
 
@@ -176,8 +205,8 @@ class ScoopManifestGenerator(
             { buildResearchPrompt(it, outputPath, userPrompt) }
         val analyzePrompt: suspend (ResearchOutput) -> String =
             { buildAnalyzePrompt(it, userPrompt) }
-        val refinePrompt: suspend (String, AnalyzeOutput) -> String =
-            { skeleton, analyze -> buildRefinePrompt(skeleton, analyze, outputPath, userPrompt) }
+        val refinePrompt: suspend (String, AnalyzeOutput, ResearchOutput?) -> String =
+            { skeleton, analyze, research -> buildRefinePrompt(skeleton, analyze, outputPath, userPrompt, research) }
 
         val llmParams = LlmParamsBuilder.build(model, thinkingLevel)
         val strategy = scoopManifestStrategy(
@@ -189,6 +218,14 @@ class ScoopManifestGenerator(
             analyzePromptBuilder = analyzePrompt,
             refinePromptBuilder = refinePrompt,
         )
+
+        // Create an expanded tool registry that includes the review tool.
+        // The review tool must be in the parent agent's registry for Koog to
+        // find its implementation when the subgraph LLM calls it.
+        val expandedToolRegistry = ToolRegistry {
+            tools(toolRegistry.tools)
+            tool(reviewTool)
+        }
 
         val agentConfig = AIAgentConfig(
             prompt = prompt("chat") {
@@ -202,7 +239,7 @@ class ScoopManifestGenerator(
             promptExecutor = promptExecutor,
             agentConfig = agentConfig,
             strategy = strategy,
-            toolRegistry = toolRegistry,
+            toolRegistry = expandedToolRegistry,
         ) {
             handleEvents {
                 onToolCallStarting { ctx ->

@@ -26,8 +26,9 @@ $task
 
 2. **Gather project information**:
    - Use fetchRepoInfo to get description, license, homepage.
-   - **License precision**: If the GitHub API returns a short SPDX id (for example `GPL-3.0`, `GPL-2.0`), use fetchFileContent to read the `LICENSE` / `COPYING` / `LICENSE.md` file to determine the correct `-only` or `-or-later` suffix. For multi-licensed projects, list all identifiers comma-separated.
+   - **License precision**: If the GitHub API returns a short SPDX id (for example `GPL-3.0`, `GPL-2.0`), use `fetchJson` to list the repository root directory (`https://api.github.com/repos/{owner}/{repo}/contents`) — this returns all top-level files in ONE call. Find the actual license filename from the listing (e.g. `LICENSE`, `LICENSE.txt`, `COPYING`, `COPYRIGHT`), then use `fetchFileContent` to read exactly that file to determine the correct `-only` or `-or-later` suffix. For multi-licensed projects, list all identifiers comma-separated.
    - Use fetchLatestRelease to find the latest version and assets.
+   - **Important**: If the release assets contain checksums files (e.g. `checksums.txt`, `sha256sums.txt`, or files ending with `.sha256`), record the exact filename in the `checksums_filename` field. This will be used later to add an `autoupdate.hash` block.
    - If fetchLatestRelease returns empty, use fetchAllReleases as fallback.
    - For non-GitHub projects, use fetchWebPage to read the project page.
 
@@ -69,11 +70,7 @@ $task
 
    **Strategy (follow this order, minimize API calls):**
 
-   a. **Read the project manifest** (ONE fetchFileContent call): Read the main manifest file:
-      - Node.js → `package.json`
-      - Rust → `Cargo.toml`
-      - Python → `pyproject.toml` or `setup.py`
-      - Go → `go.mod`
+   a. **List root directory** (ONE fetchJson call): Use `fetchJson` to list the repository root directory (`https://api.github.com/repos/{owner}/{repo}/contents`). The response shows all top-level files, telling you exactly which manifest/project files exist (e.g. `package.json`, `Cargo.toml`, `go.mod`, `README.md`). Pick the correct manifest file based on the listing and read it with ONE `fetchFileContent` call. Do NOT guess filenames — the listing already tells you what exists.
       If this single file reveals framework info (Electron, Tauri) or config patterns, note them in persist_targets/env_targets.
 
    b. **Search the source code archive** (ONE searchTextInArchive call):
@@ -96,6 +93,8 @@ $task
 - You can ONLY use these tools: parseGitHubUrl, fetchRepoInfo, fetchLatestRelease, fetchAllReleases, listReleaseAssets, fetchFileContent, fetchWebPage, resolveRedirect, fetchJson, searchTextInArchive, __ask_user__.
 - **Rate limit rule**: After receiving a `rate_limited` error or 403, you MUST NOT make any more GitHub API calls. Use searchTextInArchive on the source code zip, or proceed to finalize immediately with available data.
 - **Persist discovery rule**: Prefer searchTextInArchive (1 call) over multiple fetchFileContent calls for source code analysis.
+- **Stop guessing filenames**: Before reading any file, first list the root directory with `fetchJson("https://api.github.com/repos/{owner}/{repo}/contents")` to see what files actually exist. This replaces multiple wild guesses with one deterministic call.
+- **Do NOT re-fetch files you already fetched**: If you already read a file earlier in the session (e.g. `LICENSE` at step 2, `README.md` at step 4), do NOT fetch it again later. Use the content you already have.
 - Do NOT call any other tool names.
 
 ${PhaseSchemas.RESEARCH_SCHEMA}"""
@@ -188,48 +187,43 @@ ${PhaseSchemas.ANALYZE_SCHEMA}"""
  * This prompt asks the LLM to:
  * 1. Apply installer-type transformations (NSIS→#/dl.7z, InnoSetup→innosetup:true, portable→#/app.exe)
  * 2. Add checkver and autoupdate
- * 3. Validate and fix any errors
- * 4. Output the final manifest via finalize_task_result
+ * 3. Self-review via __review_manifest__ tool, fixing issues found
+ * 4. Validate and fix any errors
+ * 5. Output the final manifest via finalize_task_result
  *
  * @param skeleton Pre-assembled manifest JSON skeleton from prepareManifest.
  * @param analyze The structured output from the Analysis phase (used for installer_type, entries, etc.).
  * @param outputPath Optional output file path for the manifest.
+ * @param userPrompt Additional user requirements.
+ * @param research The structured output from the Research phase (optional, used for checksums info).
  */
-fun buildRefinePrompt(skeleton: String, analyze: AnalyzeOutput, outputPath: String?, userPrompt: String? = null): String {
-    val outputPart = if (outputPath != null) "\nOutput file: $outputPath" else ""
+fun buildRefinePrompt(skeleton: String, analyze: AnalyzeOutput, outputPath: String?, userPrompt: String? = null, research: ResearchOutput? = null): String {
     val suggestedAppName = analyze.suggested_app_name?.takeIf { it.isNotBlank() }
-    val suggestedPathGuidance = if (suggestedAppName != null) {
-
-"""
-
-## Suggested App Name
-
-The analysis suggests app name: `$suggestedAppName`.
-When calling `writeManifestToFile`, pass `"bucket/$suggestedAppName.json"` as the `path` parameter so the manifest is saved with the correct variant-specific filename.
-"""
+    val installerTypeNote = when (analyze.installer_type?.lowercase()) {
+        "nsis" -> "\n- NSIS installer detected: append `#/dl.7z` to URL. Do NOT add `\"installer\"` block."
+        "nsis_electron" -> "\n- NSIS Electron detected: skeleton contains per-arch `installer.script` with Expand-7zipArchive commands. Review and preserve them. GUI app: use `shortcuts` only, no `bin`."
+        "innosetup" -> "\n- InnoSetup detected: set `\"innosetup\": true` (ONLY if `listArchiveContents` returned files; otherwise skip and prefer ZIP)."
+        "portable_exe" -> "\n- Portable EXE detected: append `#/app.exe` to URL for rename."
+        "msi" -> "\n- MSI detected: set `extract_dir` (backslashes ONLY) alongside `url` and `bin`. Do NOT add `\"installer\"` block."
+        else -> ""
+    }
+    val checksumsNote = research?.checksums_filename?.takeIf { it.isNotBlank() }?.let { filename ->
+        "\n\n## Checksums Available\n" +
+        "The research phase found a checksums file in the release assets: `$filename`.\n" +
+        "You MUST add an `autoupdate.hash` block pointing to this file (see step 3 below).\n"
+    } ?: ""
+    val outputPart = if (outputPath != null) "\nOutput file: $outputPath" else ""
+    val suggestedPart = if (suggestedAppName != null) {
+        "\n\n## Suggested App Name\n\nThe analysis suggests app name: `$suggestedAppName`.\n" +
+        "When calling `writeManifestToFile`, pass `\"bucket/$suggestedAppName.json\"` as the `path` parameter.\n"
     } else ""
     val userReq = if (!userPrompt.isNullOrBlank()) {
-
-"""
-
-## Additional User Requirements
-$userPrompt
-
-When user requirements specify a particular variant or edition (e.g. SYCL-enabled, CUDA, Vulkan, desktop, GUI, CLI), you MUST:
-1. Reflect the variant in the `description` field.
-2. Ensure the chosen assets match the requested variant."""
+        "\n\n## Additional User Requirements\n$userPrompt\n\n" +
+        "When user requirements specify a particular variant or edition (e.g. SYCL-enabled, CUDA, Vulkan, desktop, GUI, CLI), you MUST:\n" +
+        "1. Reflect the variant in the `description` field.\n" +
+        "2. Ensure the chosen assets match the requested variant."
     } else ""
-    val installerTypeNote = analyze.installer_type?.let { type ->
-        when (type.lowercase()) {
-            "nsis" -> "\n- NSIS installer detected: append `#/dl.7z` to URL. Do NOT add `\"installer\"` block."
-            "nsis_electron" -> "\n- NSIS Electron detected: skeleton contains per-arch `installer.script` with Expand-7zipArchive commands. Review and preserve them. GUI app: use `shortcuts` only, no `bin`."
-            "innosetup" -> "\n- InnoSetup detected: set `\"innosetup\": true` (ONLY if `listArchiveContents` returned files; otherwise skip and prefer ZIP)."
-            "portable_exe" -> "\n- Portable EXE detected: append `#/app.exe` to URL for rename."
-            "msi" -> "\n- MSI detected: set `extract_dir` (backslashes ONLY) alongside `url` and `bin`. Do NOT add `\"installer\"` block."
-            else -> ""
-        }
-    } ?: ""
-    return """You are now in the REFINE phase. Your task is to take the pre-assembled manifest skeleton below, apply installer-specific transformations, add checkver/autoupdate, validate, and finalize.
+    return """You are now in the REFINE phase. Your task is to take the pre-assembled manifest skeleton below, apply installer-specific transformations, review the pre-generated checkver/autoupdate, add autoupdate.hash if possible, validate, and finalize.
 
 CRITICAL: You can ONLY use these tools: validate, __ask_user__, finalize_task_result. Do NOT call research or analysis tools.
 
@@ -241,7 +235,7 @@ ${ReferenceManifests.ALL}
 ```json
 $skeleton
 ```
-$outputPart$suggestedPathGuidance$userReq
+$outputPart$suggestedPart$userReq$checksumsNote
 
 ## Installer Type Hints
 - `extract_dir`: ONLY when the executable is inside a NAMED subdirectory. If exe is at archive root, OMIT `extract_dir` entirely — do NOT use `"."` or `""`.
@@ -255,14 +249,34 @@ $installerTypeNote
    - Apply installer-type URL fragments (NSIS `#/dl.7z`, portable `#/app.exe`).
    - Add `innosetup: true` ONLY when installer_type is `innosetup` and analysis confirmed unpackable files.
 
-2. **Add checkver and autoupdate**:
-   - GitHub-hosted projects MUST include both.
-   - `"checkver": "github"` for standard semver releases; `{ "github": "url" }` for custom tags.
-   - `"autoupdate"` URL template MUST preserve any `v` prefix that exists in the original URL before `${'$'}version`.
+2. **PRESERVE the skeleton's autoupdate URLs — DO NOT regenerate them**:
+   - The `autoupdate.architecture.<arch>.url` fields were **pre-generated deterministically** from the actual download URLs by replacing the concrete version string with `\${'$'}version`. This correctly preserves `v` prefixes and all other URL patterns.
+   - Your task is to **keep them as-is** — just verify they look correct.
+   - **CRITICAL**: Do NOT regenerate the autoupdate URL templates from scratch. If you regenerate, you will likely drop the `v` prefix before `\${'$'}version` or make other mistakes.
+   - Only fix the pre-generated templates if you can clearly see they are wrong (e.g., URL-encoded chars like `%2B` need special handling).
+   - For non-standard GitHub release tags (e.g. `mask/0.11.7` instead of `v0.11.7`), add an appropriate `regex` to `checkver`.
 
-3. **Validate**: Call `validate` on the complete manifest JSON. Fix any errors found.
+3. **Add autoupdate.hash if checksums are available**:
+   - Many GitHub projects publish checksums alongside release assets. The `hash` part of `autoupdate` is NOT pre-generated — you must add it manually.
+   - Common patterns (choose the one that matches the project's checksums file):
+     * `"hash": { "url": "\${'$'}baseurl/checksums.txt" }` — for `checksums.txt` at the release base URL
+     * `"hash": { "url": "\${'$'}baseurl/sha256sums.txt" }` — for `sha256sums.txt` at the release base URL
+     * `"hash": { "url": "\${'$'}baseurl/sha256sums.txt", "regex": "\${'$'}sha256\\\\s+\\\\*\${'$'}basename" }` — for hash in `sha256 *filename` format
+     * `"hash": { "url": "\${'$'}url.sha256" }` — for per-file `.sha256` files
+   - If the research section above says checksums are available, follow it.
+   - When in doubt, use the first pattern (`checksums.txt`). An incorrect hash URL will NOT cause install errors — Scoop simply skips hash verification on update if the URL returns 404.
 
-4. **Finalize**: After validate returns `valid:true`, call `finalize_task_result` with the **complete manifest JSON string** starting with `{` and ending with `}`.
+4. **Self-Review**: Call `__review_manifest__` with your complete manifest JSON (as a string).
+   The review agent is an **independent reviewer** with NO generation context — it will catch issues
+   like unnecessary persist/env_set, inaccurate license, wrong bin, or missing autoupdate.hash.
+   - If the review returns `"approved": false`, read the `issues` array, apply each fix to your manifest,
+     then proceed to step 5 (validate).
+   - If the review returns `"approved": true`, proceed to step 5 (validate) as well.
+
+5. **Validate**: Call `validate` on the complete manifest JSON. Fix any errors found.
+
+6. **Finalize**: After step 5 returns `valid:true`, call `finalize_task_result` with the
+   **complete manifest JSON string** starting with `{` and ending with `}`.
 
 ## Thinking Model Rules
 

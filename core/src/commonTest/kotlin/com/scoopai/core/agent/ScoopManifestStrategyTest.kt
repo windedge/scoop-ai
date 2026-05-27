@@ -4,12 +4,14 @@ import ai.koog.agents.core.agent.AIAgent
 import ai.koog.agents.core.agent.config.AIAgentConfig
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.core.tools.annotations.InternalAgentToolsApi
+import ai.koog.prompt.dsl.prompt
+import ai.koog.prompt.executor.clients.deepseek.DeepSeekModels
 import ai.koog.agents.ext.agent.FinishTool
 import ai.koog.agents.testing.feature.withTesting
 import ai.koog.agents.testing.tools.getMockExecutor
-import ai.koog.prompt.dsl.prompt
-import ai.koog.prompt.executor.clients.deepseek.DeepSeekModels
+import ai.koog.prompt.executor.model.PromptExecutor
 import ai.koog.serialization.typeToken
+import com.scoopai.core.GenerateResult
 import com.scoopai.core.agent.prompt.buildAnalyzePrompt
 import com.scoopai.core.agent.prompt.buildRefinePrompt
 import com.scoopai.core.agent.prompt.buildResearchPrompt
@@ -35,6 +37,29 @@ class ScoopManifestStrategyTest {
     @OptIn(InternalAgentToolsApi::class)
     private val refineFinishTool = FinishTool<String>(typeToken<String>())
 
+    private fun createTestAgent(
+        promptExecutor: PromptExecutor,
+        maxIterations: Int = 50,
+    ): AIAgent<String, GenerateResult> {
+        val strategy = scoopManifestStrategy(
+            researchPromptBuilder = { buildResearchPrompt(it, null) },
+            analyzePromptBuilder = { buildAnalyzePrompt(it) },
+            refinePromptBuilder = { skeleton, analyze, _ -> buildRefinePrompt(skeleton, analyze, null) },
+        )
+        return AIAgent(
+            promptExecutor = promptExecutor,
+            toolRegistry = ToolRegistry.EMPTY,
+            strategy = strategy,
+            agentConfig = AIAgentConfig(
+                prompt = prompt("test") { system("You are a helpful assistant.") },
+                model = DeepSeekModels.DeepSeekV4Flash,
+                maxAgentIterations = maxIterations,
+            ),
+        ) {
+            withTesting()
+        }
+    }
+
     @Test
     fun `no_windows_assets early-finishes without analyze or generate`() = runBlocking {
         val researchResult = ResearchOutput(
@@ -44,31 +69,12 @@ class ScoopManifestStrategyTest {
         )
 
         val promptExecutor = getMockExecutor {
-            // Only research phase is called; analyze and generate are skipped via checkNoWindows branch
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMAnswer("").asDefaultResponse
         }
 
-        val strategy = scoopManifestStrategy(
-            researchPromptBuilder = { buildResearchPrompt(it, null) },
-            analyzePromptBuilder = { buildAnalyzePrompt(it) },
-            refinePromptBuilder = { skeleton, analyze -> buildRefinePrompt(skeleton, analyze, null) },
-        )
-
-        val agent = AIAgent(
-            promptExecutor = promptExecutor,
-            toolRegistry = ToolRegistry.EMPTY,
-            strategy = strategy,
-            agentConfig = AIAgentConfig(
-                prompt = prompt("test") { system("You are a helpful assistant.") },
-                model = DeepSeekModels.DeepSeekV4Flash,
-                maxAgentIterations = 30,
-            ),
-        ) {
-            withTesting()
-        }
-
-        val result = agent.run("https://github.com/linux-only/tool")
+        val result = createTestAgent(promptExecutor, maxIterations = 30)
+            .run("https://github.com/linux-only/tool")
         assertTrue(result.noAssets, "Should have noAssets=true")
         assertTrue(result.manifest.isBlank(), "Should return empty manifest, got: ${result.manifest}")
     }
@@ -110,26 +116,8 @@ class ScoopManifestStrategyTest {
             mockLLMAnswer("").asDefaultResponse
         }
 
-        val strategy = scoopManifestStrategy(
-            researchPromptBuilder = { buildResearchPrompt(it, null) },
-            analyzePromptBuilder = { buildAnalyzePrompt(it) },
-            refinePromptBuilder = { skeleton, analyze -> buildRefinePrompt(skeleton, analyze, null) },
-        )
-
-        val agent = AIAgent(
-            promptExecutor = promptExecutor,
-            toolRegistry = ToolRegistry.EMPTY,
-            strategy = strategy,
-            agentConfig = AIAgentConfig(
-                prompt = prompt("test") { system("You are a helpful assistant.") },
-                model = DeepSeekModels.DeepSeekV4Flash,
-                maxAgentIterations = 50,
-            ),
-        ) {
-            withTesting()
-        }
-
-        val result = agent.run("https://github.com/sharkdp/fd")
+        val result = createTestAgent(promptExecutor)
+            .run("https://github.com/sharkdp/fd")
         assertTrue(result.manifest.contains("10.2.0"), "Result should contain version, got: $result")
     }
 
@@ -171,26 +159,8 @@ class ScoopManifestStrategyTest {
             mockLLMAnswer("").asDefaultResponse
         }
 
-        val strategy = scoopManifestStrategy(
-            researchPromptBuilder = { buildResearchPrompt(it, null) },
-            analyzePromptBuilder = { buildAnalyzePrompt(it) },
-            refinePromptBuilder = { skeleton, analyze -> buildRefinePrompt(skeleton, analyze, null) },
-        )
-
-        val agent = AIAgent(
-            promptExecutor = promptExecutor,
-            toolRegistry = ToolRegistry.EMPTY,
-            strategy = strategy,
-            agentConfig = AIAgentConfig(
-                prompt = prompt("test") { system("You are a helpful assistant.") },
-                model = DeepSeekModels.DeepSeekV4Flash,
-                maxAgentIterations = 50,
-            ),
-        ) {
-            withTesting()
-        }
-
-        val result = agent.run("https://github.com/ggml-org/llama.cpp")
+        val result = createTestAgent(promptExecutor)
+            .run("https://github.com/ggml-org/llama.cpp")
         assertEquals("llama-cpp-sycl", result.suggestedAppName)
         assertTrue(result.manifest.contains("b9264"), "Result should contain version, got: ${result.manifest}")
     }
@@ -232,26 +202,8 @@ class ScoopManifestStrategyTest {
             mockLLMAnswer("").asDefaultResponse
         }
 
-        val strategy = scoopManifestStrategy(
-            researchPromptBuilder = { buildResearchPrompt(it, null) },
-            analyzePromptBuilder = { buildAnalyzePrompt(it) },
-            refinePromptBuilder = { skeleton, analyze -> buildRefinePrompt(skeleton, analyze, null) },
-        )
-
-        val agent = AIAgent(
-            promptExecutor = promptExecutor,
-            toolRegistry = ToolRegistry.EMPTY,
-            strategy = strategy,
-            agentConfig = AIAgentConfig(
-                prompt = prompt("test") { system("You are a helpful assistant.") },
-                model = DeepSeekModels.DeepSeekV4Flash,
-                maxAgentIterations = 50,
-            ),
-        ) {
-            withTesting()
-        }
-
-        val result = agent.run("https://github.com/sharkdp/fd")
+        val result = createTestAgent(promptExecutor)
+            .run("https://github.com/sharkdp/fd")
         assertEquals(null, result.suggestedAppName)
     }
 
