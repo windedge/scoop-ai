@@ -381,6 +381,96 @@ class DeterministicNodesTest {
         assertFalse(obj.containsKey("pre_install"))
         assertFalse(obj.containsKey("env_set"))
     }
+
+    // ---------------------------------------------------------------
+    // Per-arch installer_scripts (NSIS Electron)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `assembleManifestSkeleton embeds per-arch installer scripts inside architecture block`() {
+        val research = ResearchOutput(version = "1.0.1")
+        val analyze = AnalyzeOutput(
+            entries = listOf(
+                AssetEntry(architecture = "64bit", url = "https://example.com/app-setup-1.0.1.exe#/dl.7z", hash = "h1"),
+                AssetEntry(architecture = "32bit", url = "https://example.com/app-setup-1.0.1.exe#/dl.7z", hash = "h1"),
+            ),
+            bin = emptyList(),
+            shortcuts = listOf(listOf("App.exe", "App")),
+            pre_install = listOf("Remove-Item \"${'$'}dir\\Uninstall*\" -Force -Recurse"),
+            installer_scripts = mapOf(
+                "64bit" to listOf(
+                    "Expand-7zipArchive \"${'$'}dir\\`${'$'}PLUGINSDIR\\app-64.7z\" \"${'$'}dir\"",
+                    "Remove-Item \"${'$'}dir\\`${'$'}PLUGINSDIR\" -Force -Recurse",
+                ),
+                "32bit" to listOf(
+                    "Expand-7zipArchive \"${'$'}dir\\`${'$'}PLUGINSDIR\\app-32.7z\" \"${'$'}dir\"",
+                    "Remove-Item \"${'$'}dir\\`${'$'}PLUGINSDIR\" -Force -Recurse",
+                ),
+            ),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+        val arch = obj["architecture"]!!.jsonObject
+
+        // 64bit installer.script
+        val installer64 = arch["64bit"]!!.jsonObject["installer"]!!.jsonObject
+        val script64 = installer64["script"]!!.jsonArray
+        assertEquals(2, script64.size)
+        assertTrue(script64[0].jsonPrimitive.content.contains("app-64.7z"))
+        assertTrue(script64[1].jsonPrimitive.content.contains("PLUGINSDIR"))
+
+        // 32bit installer.script
+        val installer32 = arch["32bit"]!!.jsonObject["installer"]!!.jsonObject
+        val script32 = installer32["script"]!!.jsonArray
+        assertEquals(2, script32.size)
+        assertTrue(script32[0].jsonPrimitive.content.contains("app-32.7z"))
+        assertTrue(script32[1].jsonPrimitive.content.contains("PLUGINSDIR"))
+
+        // Global pre_install still present
+        val preInstall = obj["pre_install"]!!.jsonArray
+        assertEquals(1, preInstall.size)
+        assertTrue(preInstall[0].jsonPrimitive.content.contains("Uninstall"))
+    }
+
+    @Test
+    fun `assembleManifestSkeleton with empty installer_scripts omits installer block`() {
+        val research = ResearchOutput(version = "1.0.0")
+        val analyze = AnalyzeOutput(
+            entries = listOf(
+                AssetEntry(architecture = "64bit", url = "u", hash = "h"),
+                AssetEntry(architecture = "32bit", url = "u2", hash = "h2"),
+            ),
+            bin = listOf("app.exe"),
+            installer_scripts = emptyMap(),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+        val arch64 = obj["architecture"]!!.jsonObject["64bit"]!!.jsonObject
+        assertFalse(arch64.containsKey("installer"))
+        val arch32 = obj["architecture"]!!.jsonObject["32bit"]!!.jsonObject
+        assertFalse(arch32.containsKey("installer"))
+    }
+
+    @Test
+    fun `assembleManifestSkeleton with partial installer_scripts only adds to matching architectures`() {
+        val research = ResearchOutput(version = "1.0.0")
+        val analyze = AnalyzeOutput(
+            entries = listOf(
+                AssetEntry(architecture = "64bit", url = "u", hash = "h"),
+                AssetEntry(architecture = "32bit", url = "u2", hash = "h2"),
+            ),
+            bin = listOf("app.exe"),
+            installer_scripts = mapOf(
+                "64bit" to listOf("Expand-7zipArchive \"app-64.7z\" \"${'$'}dir\""),
+            ),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+        val arch = obj["architecture"]!!.jsonObject
+
+        // 64bit has installer
+        assertTrue(arch["64bit"]!!.jsonObject.containsKey("installer"))
+
+        // 32bit does NOT have installer
+        assertFalse(arch["32bit"]!!.jsonObject.containsKey("installer"))
+    }
 }
 
 private fun parseJsonObject(json: String): JsonObject =

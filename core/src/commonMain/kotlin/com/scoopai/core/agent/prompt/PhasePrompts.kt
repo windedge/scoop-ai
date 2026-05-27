@@ -172,7 +172,7 @@ If the research output contains a `suggested_app_name`, include it unchanged in 
 - MSI → Treat EXACTLY like ZIP. Scoop auto-extracts MSI internally. Just set `url`, `extract_dir` (backslashes ONLY), and `bin`. Do NOT add `"installer"` block.
 - InnoSetup → `"innosetup": true` (uses innounp to unpack, NOT silent install)
 - NSIS → Append `#/dl.7z` to the URL to force 7z extraction. Do NOT add `"installer"` block.
-- **NSIS Electron** (`detectInstallerType` returns `nsis` + `nsis_type: electron`): Two-layer extraction pattern with pre_install using `Expand-7zipArchive`. GUI apps: use `shortcuts` only, no `bin`.
+- **NSIS Electron** (`detectInstallerType` returns `nsis` + `nsis_type: electron`): Two-layer extraction pattern. Use `installer_scripts` (per-architecture) for `Expand-7zipArchive` commands — each arch targets its own inner 7z (e.g. `` `${'$'}PLUGINSDIR/app-64.7z `` for 64bit, `` `${'$'}PLUGINSDIR/app-32.7z `` for 32bit). **CRITICAL**: In PowerShell script lines, you MUST escape the dollar sign: use `` `${'$'}PLUGINSDIR `` (backtick-dollar) NOT `${'$'}PLUGINSDIR` — without the backtick, PowerShell treats `${'$'}PLUGINSDIR` as an undefined variable and expands it to empty string. Common cleanup goes inside each architecture's script too. GUI apps: use `shortcuts` only, no `bin`.
 - Portable EXE → `url` with `#/app.exe` fragment to rename
 
 IMPORTANT: You MUST call the analysis tools (computeSha256FromUrl, listArchiveContents, findExecutables) to compute real values. Do not guess or estimate hashes.
@@ -222,7 +222,7 @@ When user requirements specify a particular variant or edition (e.g. SYCL-enable
     val installerTypeNote = analyze.installer_type?.let { type ->
         when (type.lowercase()) {
             "nsis" -> "\n- NSIS installer detected: append `#/dl.7z` to URL. Do NOT add `\"installer\"` block."
-            "nsis_electron" -> "\n- NSIS Electron detected: set `pre_install` using `Expand-7zipArchive`. GUI app: use `shortcuts` only, no `bin`."
+            "nsis_electron" -> "\n- NSIS Electron detected: skeleton contains per-arch `installer.script` with Expand-7zipArchive commands. Review and preserve them. GUI app: use `shortcuts` only, no `bin`."
             "innosetup" -> "\n- InnoSetup detected: set `\"innosetup\": true` (ONLY if `listArchiveContents` returned files; otherwise skip and prefer ZIP)."
             "portable_exe" -> "\n- Portable EXE detected: append `#/app.exe` to URL for rename."
             "msi" -> "\n- MSI detected: set `extract_dir` (backslashes ONLY) alongside `url` and `bin`. Do NOT add `\"installer\"` block."

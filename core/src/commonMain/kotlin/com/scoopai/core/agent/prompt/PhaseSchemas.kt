@@ -73,6 +73,10 @@ When you have finished analyzing, call the `finalize_task_result` tool with your
   "persist": ["config", "data"],
   "shortcuts": [["app.exe", "App Name"]],
   "pre_install": ["script line 1", "script line 2"],
+  "installer_scripts": {
+    "64bit": ["Expand-7zipArchive ... app-64.7z ...", "Remove-Item ..."],
+    "32bit": ["Expand-7zipArchive ... app-32.7z ...", "Remove-Item ..."]
+  },
   "env_set": { "ENV_VAR_NAME": "${'$'}dir" },
   "installer_type": "zip or msi or innosetup or nsis",
   "notes": "Any additional context for the generate phase"
@@ -83,6 +87,7 @@ Rules:
 - bin should only contain user-facing executables, NOT helper/proxy/internal tools.
 - shortcuts format: [executable, shortcut_name] or [executable, shortcut_name, start_dir].
 - pre_install lines are PowerShell statements.
+- **NSIS Electron per-arch scripts**: When detectInstallerType returns nsis + nsis_type:electron AND the archive contains per-architecture inner archives (e.g. `` `${'$'}PLUGINSDIR/app-64.7z `` and `` `${'$'}PLUGINSDIR/app-32.7z ``), use `installer_scripts` (map of architecture → script lines) instead of putting Expand-7zipArchive into `pre_install`. Each architecture gets its own Expand-7zipArchive command targeting the matching inner archive. **CRITICAL**: In PowerShell script lines, you MUST escape the dollar sign: use `` `${'$'}PLUGINSDIR `` (backtick-dollar) NOT `${'$'}PLUGINSDIR` — without the backtick, PowerShell treats `${'$'}PLUGINSDIR` as an undefined variable and expands it to empty string, causing "file not found" errors. Common cleanup (Remove-Item `` `${'$'}PLUGINSDIR ``, `Uninstall*`) should also go inside each architecture's script. Non-architecture-specific scripts (persist init, config copy) still go into global `pre_install`.
 - If a persist target was found by reading source code but does NOT exist in the archive (runtime-created files like Settings.json, or directories in %APPDATA%), still include it in persist and add pre_install to create the initial file/directory.
 - ONLY CALL TOOLS. Do NOT output text responses. When done, call finalize_task_result.
 """.trimIndent()

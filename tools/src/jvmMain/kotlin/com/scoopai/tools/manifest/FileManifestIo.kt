@@ -108,6 +108,7 @@ class FileManifestIo(
             validateUnknownFields(obj, errors)
             validateTemplateVariablesInStaticFields(obj, errors)
             validateExeUrlFragment(obj, warnings)
+            validateInstallerScriptEscaping(obj, errors)
             validatePersistPolicy(obj, errors)
 
         } catch (e: Exception) {
@@ -467,6 +468,40 @@ class FileManifestIo(
                 }
             }
             else -> {}
+        }
+    }
+
+    /**
+     * Validates that PowerShell variables inside installer.script are properly escaped.
+     *
+     * `$PLUGINSDIR` (and similar NSIS-internal names) are literal directory names,
+     * not PowerShell variables. Without backtick escaping, PowerShell expands them
+     * to empty strings, causing "file not found" errors during install.
+     */
+    private fun validateInstallerScriptEscaping(obj: JsonObject, errors: MutableList<String>) {
+        val psLiteralVars = listOf("\${'$'}PLUGINSDIR")
+        fun checkScriptLines(lines: List<String>, path: String) {
+            for (line in lines) {
+                for (v in psLiteralVars) {
+                    // Match ${'$'}PLUGINSDIR that is NOT preceded by backtick
+                    val pattern = Regex("(?<!`)(" + Regex.escape(v) + ")")
+                    if (pattern.containsMatchIn(line)) {
+                        errors.add("Field '${'$'}path' contains unescaped '${'$'}v'. In PowerShell this will be expanded to empty string. Use backtick: '`${'$'}v' (e.g. \"`${'$'}PLUGINSDIR\")")
+                    }
+                }
+            }
+        }
+        // Check architecture.*.installer.script
+        obj["architecture"]?.jsonObject?.forEach { (archName, archVal) ->
+            val installer = (archVal as? JsonObject)?.get("installer")?.jsonObject ?: return@forEach
+            val script = installer["script"]?.jsonArray ?: return@forEach
+            val lines = script.mapNotNull { it.jsonPrimitive.contentOrNull }
+            checkScriptLines(lines, "architecture.$archName.installer.script")
+        }
+        // Also check top-level pre_install
+        obj["pre_install"]?.jsonArray?.let { arr ->
+            val lines = arr.mapNotNull { it.jsonPrimitive.contentOrNull }
+            checkScriptLines(lines, "pre_install")
         }
     }
 

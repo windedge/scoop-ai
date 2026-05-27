@@ -41,6 +41,15 @@ fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): 
                         put("url", entry.url)
                         put("hash", entry.hash)
                         if (entry.extract_dir.isNotBlank()) put("extract_dir", entry.extract_dir)
+                        // Per-arch installer scripts (NSIS Electron)
+                        val scripts = analyze.installer_scripts[entry.architecture]
+                        if (!scripts.isNullOrEmpty()) {
+                            putJsonObject("installer") {
+                                putJsonArray("script") {
+                                    scripts.forEach { add(JsonPrimitive(fixPowerShellEscaping(it))) }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -300,4 +309,33 @@ fun applyInstallerTransformations(manifest: JsonObject, route: InstallerRoute): 
     return JsonObject(manifest.toMutableMap().apply {
         put("architecture", JsonObject(newArchEntries))
     })
+}
+
+// ---------------------------------------------------------------------------
+// PowerShell script fixing
+// ---------------------------------------------------------------------------
+
+/**
+ * PowerShell variables inside Scoop installer scripts that need backtick escaping.
+ *
+ * In Scoop manifests, `$dir` and `$original_dir` are substituted by Scoop itself.
+ * But `$PLUGINSDIR` and similar NSIS-internal variables are NOT Scoop variables —
+ * they are literal directory names inside the extracted archive.
+ * Without a backtick, PowerShell treats them as undefined variables and expands
+ * them to empty strings, causing "file not found" errors.
+ */
+private val PS_VARS_TO_ESCAPE = listOf("${'$'}PLUGINSDIR")
+
+/**
+ * Fixes common PowerShell escaping issues in Scoop script lines.
+ *
+ * Specifically, ensures `${'$'}PLUGINSDIR` is escaped as `` `${'$'}PLUGINSDIR ``
+ * (backtick-dollar) so PowerShell treats it as a literal string.
+ */
+fun fixPowerShellEscaping(scriptLine: String): String {
+    val target = "${'$'}PLUGINSDIR"
+    val escaped = "`${'$'}PLUGINSDIR"
+    // If already escaped, do nothing
+    if (scriptLine.contains(escaped)) return scriptLine
+    return scriptLine.replace(target, escaped)
 }

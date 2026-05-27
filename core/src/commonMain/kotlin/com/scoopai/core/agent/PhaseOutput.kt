@@ -98,6 +98,8 @@ data class AnalyzeOutput(
     val env_set: Map<String, String> = emptyMap(),
     /** "zip", "msi", "innosetup", "nsis", or "" */
     val installer_type: String = "",
+    /** Per-architecture installer scripts (NSIS Electron). Key = architecture ("64bit"/"32bit"), value = PS script lines */
+    val installer_scripts: Map<String, List<String>> = emptyMap(),
     /** Free-text notes for the generate phase */
     val notes: String = "",
     /** Passed through from Research phase; suggested kebab-case app name */
