@@ -180,6 +180,11 @@ fun main(args: Array<String>) {
         manifestIo.write(manifest, writePath)
         println("Written to $writePath")
         
+        // ── Print token usage ────────────────────────────────────────
+        result.tokenUsage?.let { usage ->
+            println("Token usage: input=${usage.totalInputTokens} output=${usage.totalOutputTokens} total=${usage.totalTokens}")
+        }
+        
         // ── Finalize cache entries ─────────────────────────────────
         if (keepCache) {
             val parsed = parseManifestMeta(manifest)
