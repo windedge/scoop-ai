@@ -7,6 +7,7 @@ out/
 
 # Kotlin
 *.kotlin_module
+.kotlin/
 
 # IDE - IntelliJ
 .idea/
@@ -51,8 +52,12 @@ logs/
 test-results/
 test-reports/
 coverage/
-nul 
+nul
 bucket/
 .verify/
 tests/test_apps.json
 tests/results.json
+
+
+# Agent
+.pi/APPEND_SYSTEM.md
