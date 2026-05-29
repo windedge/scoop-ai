@@ -213,7 +213,8 @@ exit 1
 if ($Force) {
 if (Test-Path $ResultsFile) {
 try {
-$OldResults = @(Get-Content $ResultsFile -Raw | ConvertFrom-Json)
+$OldLoaded = Get-Content $ResultsFile -Raw | ConvertFrom-Json
+$OldResults = if ($OldLoaded -is [array]) { $OldLoaded } else { @($OldLoaded) }
 $OldResults | Where-Object { $_.install_status -eq "SUCCESS" } | ForEach-Object {
 $appName = if ($_.installed_app_name) { $_.installed_app_name } else { $_.app }
 Write-Host "[force] Uninstalling $appName..." -ForegroundColor Yellow; & scoop uninstall $appName 2>&1 | Out-Null
@@ -263,16 +264,17 @@ Write-Host "ERROR: No apps found in Scoop buckets" -ForegroundColor Red
 return @()
 }
 Write-Host "Found $($Apps.Count) apps with GitHub URLs" -ForegroundColor Gray
-$Picked = $Apps | Get-Random -Count ([Math]::Min($TargetCount, $Apps.Count))
+$Picked = @($Apps | Get-Random -Count ([Math]::Min($TargetCount, $Apps.Count)))
 return $Picked | Sort-Object name
 }
 # Generate app config file if missing or requested
 if ($RegenerateApps -or -not (Test-Path $AppConfig)) {
 Write-Host "Picking $Count random apps from Scoop main/extras buckets..." -ForegroundColor Yellow
 $Generated = New-TestApps $Count
-if ($Generated.Count -gt 0) {
+$GenCount = @($Generated).Count
+if ($GenCount -gt 0) {
 $Generated | ConvertTo-Json -Depth 2 | Set-Content $AppConfig
-Write-Host "Wrote $($Generated.Count) apps to $AppConfig" -ForegroundColor Green
+Write-Host "Wrote $GenCount apps to $AppConfig" -ForegroundColor Green
 } else {
 Write-Host "ERROR: Could not generate app list" -ForegroundColor Red
 exit 1
@@ -283,7 +285,8 @@ if (-not (Test-Path $AppConfig)) {
 Write-Host "ERROR: App config not found: $AppConfig" -ForegroundColor Red
 exit 1
 }
-$Apps = Get-Content $AppConfig -Raw | ConvertFrom-Json
+$Loaded = Get-Content $AppConfig -Raw | ConvertFrom-Json
+$Apps = if ($Loaded -is [array]) { $Loaded } else { @($Loaded) }
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 # Load existing results to support resume
 $Results = @()
@@ -291,7 +294,7 @@ if (Test-Path $ResultsFile) {
 try {
 $Loaded = Get-Content $ResultsFile -Raw | ConvertFrom-Json
 # Ensure it's always a list (ConvertFrom-Json may return single PSObject)
-$Results = @($Loaded)
+$Results = if ($Loaded -is [array]) { $Loaded } else { @($Loaded) }
 } catch { $Results = @() }
 }
 # Detect unchanged: app+url combo already tested

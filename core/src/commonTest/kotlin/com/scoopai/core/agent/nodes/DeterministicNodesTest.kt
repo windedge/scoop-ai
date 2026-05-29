@@ -16,6 +16,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class DeterministicNodesTest {
@@ -451,13 +452,13 @@ class DeterministicNodesTest {
             AssetEntry(architecture = "64bit", url = "https://github.com/owner/repo/releases/download/v1.0.0/app-v1.0.0.zip", hash = "h", extract_dir = "app-v1.0.0"),
         )
         val result = generateAutoupdateArchitectureBlock(entries, "1.0.0")
-        val arch = result["architecture"]!!.jsonObject
-        val arch64 = arch["64bit"]!!.jsonObject
+        // Single entry: flat format, no architecture wrapper
+        assertFalse(result.containsKey("architecture"))
         assertEquals(
             "https://github.com/owner/repo/releases/download/v\$version/app-v\$version.zip",
-            arch64["url"]?.jsonPrimitive?.content
+            result["url"]?.jsonPrimitive?.content
         )
-        assertEquals("app-v\$version", arch64["extract_dir"]?.jsonPrimitive?.content)
+        assertEquals("app-v\$version", result["extract_dir"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -480,18 +481,34 @@ class DeterministicNodesTest {
     // ---------------------------------------------------------------
 
     @Test
-    fun `generateCheckver returns github for github homepage`() {
-        assertEquals(JsonPrimitive("github"), generateCheckver("https://github.com/owner/repo"))
+    fun `generateCheckver with project returns full github URL`() {
+        val result = generateCheckver("https://laragon.org", "leokhoa/laragon")
+        assertNotNull(result)
+        assertEquals("https://github.com/leokhoa/laragon", result!!["github"]!!.jsonPrimitive.content)
     }
 
     @Test
-    fun `generateCheckver returns null for non-github homepage`() {
+    fun `generateCheckver with github homepage and no project infers URL`() {
+        val result = generateCheckver("https://github.com/owner/repo")
+        assertNotNull(result)
+        assertEquals("https://github.com/owner/repo", result!!["github"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `generateCheckver with non-github homepage and no project returns null`() {
         assertEquals(null, generateCheckver("https://example.com"))
     }
 
     @Test
-    fun `generateCheckver returns null for blank homepage`() {
+    fun `generateCheckver with blank homepage and blank project returns null`() {
         assertEquals(null, generateCheckver(""))
+    }
+
+    @Test
+    fun `generateCheckver project takes priority over homepage`() {
+        val result = generateCheckver("https://laragon.org", "leokhoa/laragon")
+        assertNotNull(result)
+        assertEquals("https://github.com/leokhoa/laragon", result!!["github"]!!.jsonPrimitive.content)
     }
 
     // ---------------------------------------------------------------
@@ -511,14 +528,15 @@ class DeterministicNodesTest {
             bin = listOf("Gitnuro.exe"),
         )
         val json = parseJsonObject(assembleManifestSkeleton(research, analyze))
-        // checkver present
-        assertEquals("github", json["checkver"]?.jsonPrimitive?.content)
-        // autoupdate present with correct template
+        // checkver present with full github URL
+        val checkver = json["checkver"]!!.jsonObject
+        assertEquals("https://github.com/JetpackDuba/Gitnuro", checkver["github"]!!.jsonPrimitive.content)
+        // autoupdate present with correct template (flat format for single entry)
         val autoupdate = json["autoupdate"]!!.jsonObject
-        val arch64 = autoupdate["architecture"]!!.jsonObject["64bit"]!!.jsonObject
+        assertFalse(autoupdate.containsKey("architecture"), "single entry autoupdate should be flat")
         assertEquals(
             "https://github.com/JetpackDuba/Gitnuro/releases/download/v\$version/Gitnuro_Windows_Portable_v\$version.zip",
-            arch64["url"]?.jsonPrimitive?.content
+            autoupdate["url"]?.jsonPrimitive?.content
         )
     }
 
@@ -601,6 +619,48 @@ class DeterministicNodesTest {
     }
 
     @Test
+    fun `assembleManifestSkeleton with env_add_path emits env_add_path field`() {
+        val research = ResearchOutput(version = "3.1.1")
+        val analyze = AnalyzeOutput(
+            entries = listOf(
+                AssetEntry(architecture = "64bit", url = "https://github.com/pyenv-win/pyenv-win/archive/v3.1.1.zip", hash = "abc123", extract_dir = "pyenv-win-3.1.1"),
+            ),
+            bin = emptyList(),
+            env_add_path = listOf("pyenv-win\\bin", "pyenv-win\\shims"),
+            env_set = mapOf(
+                "PYENV" to "\${'$'}dir\\pyenv-win",
+                "PYENV_ROOT" to "\${'$'}dir\\pyenv-win",
+            ),
+            persist = listOf("pyenv-win\\version", "pyenv-win\\shims"),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+
+        // env_add_path present with correct values
+        val envAddPath = obj["env_add_path"]?.jsonArray
+        assertNotNull(envAddPath)
+        assertEquals(2, envAddPath.size)
+        assertEquals("pyenv-win\\bin", envAddPath[0].jsonPrimitive.content)
+        assertEquals("pyenv-win\\shims", envAddPath[1].jsonPrimitive.content)
+
+        // env_set also present
+        assertEquals("\${'$'}dir\\pyenv-win", obj["env_set"]?.jsonObject?.get("PYENV")?.jsonPrimitive?.content)
+
+        // bin should be absent since empty
+        assertFalse(obj.containsKey("bin"))
+    }
+
+    @Test
+    fun `assembleManifestSkeleton omits env_add_path when empty`() {
+        val research = ResearchOutput(version = "1.0.0")
+        val analyze = AnalyzeOutput(
+            entries = listOf(AssetEntry(architecture = "64bit", url = "u", hash = "h")),
+            bin = listOf("app.exe"),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+        assertFalse(obj.containsKey("env_add_path"))
+    }
+
+    @Test
     fun `assembleManifestSkeleton with empty installer_scripts omits installer block`() {
         val research = ResearchOutput(version = "1.0.0")
         val analyze = AnalyzeOutput(
@@ -639,6 +699,159 @@ class DeterministicNodesTest {
 
         // 32bit does NOT have installer
         assertFalse(arch["32bit"]!!.jsonObject.containsKey("installer"))
+    }
+
+    // ---------------------------------------------------------------
+    // extract_dir: shared across all architectures → lifted to top level
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `assembleManifestSkeleton lifts shared extract_dir out of architecture block`() {
+        val research = ResearchOutput(version = "1.4")
+        val analyze = AnalyzeOutput(
+            entries = listOf(
+                AssetEntry(architecture = "64bit", url = "https://example.com/SuperF4-1.4-64bit.zip", hash = "h64", extract_dir = "SuperF4"),
+                AssetEntry(architecture = "32bit", url = "https://example.com/SuperF4-1.4-32bit.zip", hash = "h32", extract_dir = "SuperF4"),
+            ),
+            bin = listOf("SuperF4.exe"),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+
+        // extract_dir should be at top level, NOT inside architecture block
+        assertEquals("SuperF4", obj["extract_dir"]?.jsonPrimitive?.content)
+        val arch64 = obj["architecture"]!!.jsonObject["64bit"]!!.jsonObject
+        val arch32 = obj["architecture"]!!.jsonObject["32bit"]!!.jsonObject
+        assertFalse(arch64.containsKey("extract_dir"), "64bit should not have extract_dir when shared")
+        assertFalse(arch32.containsKey("extract_dir"), "32bit should not have extract_dir when shared")
+    }
+
+    @Test
+    fun `assembleManifestSkeleton keeps extract_dir inside arch block when different`() {
+        val research = ResearchOutput(version = "1.0.0")
+        val analyze = AnalyzeOutput(
+            entries = listOf(
+                AssetEntry(architecture = "64bit", url = "u64", hash = "h64", extract_dir = "app-64"),
+                AssetEntry(architecture = "32bit", url = "u32", hash = "h32", extract_dir = "app-32"),
+            ),
+            bin = listOf("app.exe"),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+
+        // extract_dir should NOT be at top level when different
+        assertFalse(obj.containsKey("extract_dir"))
+        val arch64 = obj["architecture"]!!.jsonObject["64bit"]!!.jsonObject
+        val arch32 = obj["architecture"]!!.jsonObject["32bit"]!!.jsonObject
+        assertEquals("app-64", arch64["extract_dir"]?.jsonPrimitive?.content)
+        assertEquals("app-32", arch32["extract_dir"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `assembleManifestSkeleton does not lift extract_dir when only some entries have it`() {
+        val research = ResearchOutput(version = "1.0.0")
+        val analyze = AnalyzeOutput(
+            entries = listOf(
+                AssetEntry(architecture = "64bit", url = "u64", hash = "h64", extract_dir = "app"),
+                AssetEntry(architecture = "32bit", url = "u32", hash = "h32"),
+            ),
+            bin = listOf("app.exe"),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+
+        // Mixed: some have extract_dir, some don't → keep inside arch blocks
+        assertFalse(obj.containsKey("extract_dir"))
+        val arch64 = obj["architecture"]!!.jsonObject["64bit"]!!.jsonObject
+        val arch32 = obj["architecture"]!!.jsonObject["32bit"]!!.jsonObject
+        assertEquals("app", arch64["extract_dir"]?.jsonPrimitive?.content)
+        assertFalse(arch32.containsKey("extract_dir"))
+    }
+
+    // ---------------------------------------------------------------
+    // autoupdate: single entry → flat url, not architecture wrapper
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `generateAutoupdateArchitectureBlock single entry produces flat url`() {
+        val entries = listOf(
+            AssetEntry(architecture = "64bit", url = "https://github.com/leokhoa/laragon/releases/download/8.6.1/laragon-wamp.exe", hash = "h"),
+        )
+        val result = generateAutoupdateArchitectureBlock(entries, "8.6.1")
+        // Should be flat { "url": "..." }, NOT { "architecture": { "64bit": { "url": "..." } } }
+        assertEquals("https://github.com/leokhoa/laragon/releases/download/\$version/laragon-wamp.exe",
+            result["url"]?.jsonPrimitive?.content)
+        assertFalse(result.containsKey("architecture"), "single entry should not have architecture wrapper in autoupdate")
+    }
+
+    @Test
+    fun `generateAutoupdateArchitectureBlock single entry with extract_dir produces flat fields`() {
+        val entries = listOf(
+            AssetEntry(architecture = "64bit", url = "https://example.com/app-1.0.zip", hash = "h", extract_dir = "app-1.0"),
+        )
+        val result = generateAutoupdateArchitectureBlock(entries, "1.0")
+        assertEquals("https://example.com/app-\$version.zip", result["url"]?.jsonPrimitive?.content)
+        assertEquals("app-\$version", result["extract_dir"]?.jsonPrimitive?.content)
+        assertFalse(result.containsKey("architecture"))
+    }
+
+    // ---------------------------------------------------------------
+    // Versioned bin: per-arch bin with aliases when exe contains version
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `assembleManifestSkeleton with versioned bin puts bin inside architecture block`() {
+        val research = ResearchOutput(version = "3.1.0")
+        val analyze = AnalyzeOutput(
+            entries = listOf(
+                AssetEntry(architecture = "64bit", url = "https://example.com/xdelta3-3.1.0-x86_64.exe.zip", hash = "h64", filename = "xdelta3-3.1.0-x86_64.exe.zip"),
+                AssetEntry(architecture = "32bit", url = "https://example.com/xdelta3-3.1.0-i686.exe.zip", hash = "h32", filename = "xdelta3-3.1.0-i686.exe.zip"),
+            ),
+            bin = listOf("xdelta3-3.1.0-x86_64.exe"),
+            versioned_bin = true,
+            bin_aliases = listOf("xdelta3"),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+
+        // No top-level bin
+        assertFalse(obj.containsKey("bin"), "versioned bin should NOT be at top level")
+        // No pre_install
+        assertFalse(obj.containsKey("pre_install"), "versioned bin should NOT generate pre_install")
+
+        // Bin is inside each arch block with alias
+        val arch64 = obj["architecture"]!!.jsonObject["64bit"]!!.jsonObject
+        val arch32 = obj["architecture"]!!.jsonObject["32bit"]!!.jsonObject
+        assertTrue(arch64.containsKey("bin"), "64bit arch should have bin")
+        assertTrue(arch32.containsKey("bin"), "32bit arch should have bin")
+
+        // Bin format: [["versioned.exe", "alias"]]
+        val bin64 = arch64["bin"]!!.jsonArray
+        assertEquals(1, bin64.size)
+        val binEntry = bin64[0].jsonArray
+        assertEquals("xdelta3-3.1.0-x86_64.exe", binEntry[0].jsonPrimitive.content)
+        assertEquals("xdelta3", binEntry[1].jsonPrimitive.content)
+    }
+
+    @Test
+    fun `generateAutoupdateArchitectureBlock with versioned bin includes bin in autoupdate`() {
+        val entries = listOf(
+            AssetEntry(architecture = "64bit", url = "https://example.com/xdelta3-3.1.0-x86_64.exe.zip", hash = "h64", filename = "xdelta3-3.1.0-x86_64.exe.zip"),
+            AssetEntry(architecture = "32bit", url = "https://example.com/xdelta3-3.1.0-i686.exe.zip", hash = "h32", filename = "xdelta3-3.1.0-i686.exe.zip"),
+        )
+        val result = generateAutoupdateArchitectureBlock(entries, "3.1.0", versionedBin = true, binAliases = listOf("xdelta3"))
+
+        val arch = result["architecture"]!!.jsonObject
+        val arch64 = arch["64bit"]!!.jsonObject
+        val arch32 = arch["32bit"]!!.jsonObject
+
+        // 64bit autoupdate should have bin with $version template
+        assertTrue(arch64.containsKey("bin"))
+        val bin64 = arch64["bin"]!!.jsonArray
+        assertEquals(1, bin64.size)
+        val binEntry = bin64[0].jsonArray
+        val binExe = binEntry[0].jsonPrimitive.content
+        assertTrue(binExe.contains("\$version"), "autoupdate bin should use \$version: $binExe")
+        assertEquals("xdelta3", binEntry[1].jsonPrimitive.content)
+
+        // 32bit also
+        assertTrue(arch32.containsKey("bin"))
     }
 }
 

@@ -78,6 +78,9 @@ When you have finished analyzing, call the `finalize_task_result` tool with your
     "32bit": ["Expand-7zipArchive ... app-32.7z ...", "Remove-Item ..."]
   },
   "env_set": { "ENV_VAR_NAME": "${'$'}dir" },
+  "env_add_path": ["subdir\\bin", "subdir\\shims"],
+  "versioned_bin": true or false (default false),
+  "bin_aliases": ["alias1", "alias2"],
   "installer_type": "zip or msi or innosetup or nsis",
   "notes": "Any additional context for the generate phase"
 }
@@ -89,6 +92,13 @@ Rules:
 - pre_install lines are PowerShell statements.
 - **NSIS Electron per-arch scripts**: When detectInstallerType returns nsis + nsis_type:electron AND the archive contains per-architecture inner archives (e.g. `` `${'$'}PLUGINSDIR/app-64.7z `` and `` `${'$'}PLUGINSDIR/app-32.7z ``), use `installer_scripts` (map of architecture → script lines) instead of putting Expand-7zipArchive into `pre_install`. Each architecture gets its own Expand-7zipArchive command targeting the matching inner archive. **CRITICAL**: In PowerShell script lines, you MUST escape the dollar sign: use `` `${'$'}PLUGINSDIR `` (backtick-dollar) NOT `${'$'}PLUGINSDIR` — without the backtick, PowerShell treats `${'$'}PLUGINSDIR` as an undefined variable and expands it to empty string, causing "file not found" errors. Common cleanup (Remove-Item `` `${'$'}PLUGINSDIR ``, `Uninstall*`) should also go inside each architecture's script. Non-architecture-specific scripts (persist init, config copy) still go into global `pre_install`.
 - If a persist target was found by reading source code but does NOT exist in the archive (runtime-created files like Settings.json, or directories in %APPDATA%), still include it in persist and add pre_install to create the initial file/directory.
+- **env_add_path**: Use instead of `bin` when the app has multiple batch/cmd scripts that all need to be on PATH, or when it manages a shims directory at runtime (e.g. version managers like pyenv, nvm). Do NOT use both `bin` and `env_add_path` — choose one.
+- **extract_dir**: Only strip the top-level version directory (e.g. `project-1.2.3`). If the executable is inside a nested subdirectory, do NOT go deeper — use `env_add_path` and subdirectory-prefixed paths in persist/env_set instead. The extract_dir should have AT MOST one path separator.
+- **versioned_bin**: MUST be set to `true` when the exe filename contains a version number (e.g. `xdelta3-3.1.0-x86_64.exe`). In this case:
+  * Set `bin` to the versioned exe names as found in the archive (one per architecture, matching `entries` order).
+  * Set `bin_aliases` to short command names (e.g. `["xdelta3"]`).
+  * The skeleton will generate per-architecture `bin` with `[versioned.exe, alias]` format.
+  * Do NOT use `pre_install` to rename versioned executables.
 - ONLY CALL TOOLS. Do NOT output text responses. When done, call finalize_task_result.
 """.trimIndent()
 }

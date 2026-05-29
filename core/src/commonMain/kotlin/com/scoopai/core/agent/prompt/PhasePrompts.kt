@@ -76,8 +76,9 @@ $task
    b. **Search the source code archive** (ONE searchTextInArchive call):
       - Source zip URL pattern: `https://github.com/{owner}/{repo}/archive/refs/tags/{tag}.zip`
       - If the tag starts with `v`, include the `v` prefix in the URL (e.g. `v1.2.3`).
-      - Search patterns: `XDG_CONFIG_HOME,electron-store,app.getPath,APPDATA,LOCALAPPDATA,config_dir,getConfigDir`
+      - Search patterns: `XDG_CONFIG_HOME,electron-store,app.getPath,APPDATA,LOCALAPPDATA,config_dir,getConfigDir,www,htdocs,logs,tmp,temp,data,storage,media,uploads`
       - This single call replaces reading 5-10 individual files via fetchFileContent.
+      - **Extra persist targets for server/dev environment apps**: If the project is a web server, database, or development environment (WAMP, LAMP, etc.), additionally check if directories like `www`, `tmp`, `logs`, `data` exist in the archive. These are user-data directories that should typically be persisted.
 
    c. **Stop after step (a) and (b)**. Do NOT make additional fetchFileContent calls for source files unless you have zero matches and need to check one specific config file.
 
@@ -135,14 +136,14 @@ $researchJson
    - For ZIP: Use listArchiveContents to see directory structure, findExecutables to locate .exe files.
    - For MSI (only when no ZIP is available): Use listArchiveContents to see the full extracted file paths. The tool auto-detects archive type and returns paths like `PFiles/AppName/app.exe`. You MUST set `extract_dir` to the directory containing the executable with backslashes ONLY (e.g. `PFiles\\AppName`), because Scoop extracts MSI into subdirectories. Omitting `extract_dir` for MSI will cause "File doesn't exist" errors at install time. Never use forward slashes.
    - Only use detectInstallerType when you are actually choosing an installer/portable-exe strategy, or when ZIP analysis is insufficient.
-   - **CRITICAL**: If `detectInstallerType` returns `innosetup` but `listArchiveContents` returns empty (`"files":[]`), it means Scoop's innounp tool cannot unpack this InnoSetup version. Do NOT use `"innosetup": true`. Check if a .zip asset exists instead.
+   - **InnoSetup handling**: If `detectInstallerType` returns `innosetup`, set `"installer_type": "innosetup"` regardless. If `listArchiveContents` returns files, use them to set `bin`. If `listArchiveContents` returns empty (innounp cannot list this version), still report `innosetup` — Scoop may still be able to extract. In this case, set `bin` based on common InnoSetup conventions (main exe usually named after the app), or omit `bin` if uncertain. Check if a .zip asset exists as a better alternative.
 
 4. **Filter executables aggressively**:
    - Prefer the main end-user executable for the app.
    - Exclude names containing terms like: `helper`, `proxy`, `updater`, `update`, `uninstall`, `setup`, `crash`, `service`, `broker`, `elevat`, `patch`, `pluginproxy`.
    - For GUI apps, `bin` should usually contain only the main launchable app, not internal support tools.
 
-5. **Set persist, env_set, and pre_install from research findings**:
+5. **Set persist, env_set, env_add_path, and pre_install from research findings**:
    - The research JSON may contain `persist_targets` and `env_targets`.
    - Use `listArchiveContents` to check which persist targets exist inside the archive.
    - **Rule A**: If a persist target EXISTS in the archive, add it directly to `persist`.
@@ -150,7 +151,22 @@ $researchJson
    - **Rule C**: If `env_targets` is present (e.g. `BAT_CONFIG_DIR`), set `env_set` to map the env var to `${'$'}dir`, persist the corresponding directory, and add `pre_install` to copy existing config from `%APPDATA%`.
    - **Electron exclusion**: If the research identified this as an Electron app, do NOT add `Data/` or any Electron internal directory to persist.
 
-6. **GUI app packaging**:
+6. **extract_dir strategy — only strip the top-level version directory**:
+   - Most GitHub release archives have a single top-level directory like `project-1.2.3/` containing the actual files.
+   - Set `extract_dir` to ONLY this top-level directory (e.g. `pyenv-win-3.1.1`), never deeper.
+   - If the executable is inside a nested subdirectory (e.g. `project-1.2.3/tools/bin/app.exe`), do NOT set `extract_dir` to the nested path. Instead:
+     * Use `env_add_path` to add the nested `bin` directory to PATH.
+     * Use subdirectory-prefixed paths in `persist` and `env_set` (e.g. `tools\\version`, `${'$'}dir\\tools`).
+   - **Why**: Going deeper than the top-level directory discards sibling files (config, version files, resources) that the application may need at runtime. Scripts often compute paths relative to their own location by going up parent directories — if `extract_dir` strips too many levels, these relative paths break.
+   - **Rule of thumb**: `extract_dir` should have AT MOST one path separator. If it needs two or more, use `env_add_path` + subdirectory prefixes instead.
+
+7. **When to use env_add_path instead of bin**:
+   - Use `env_add_path` (NOT `bin`) when:
+     * The app has multiple batch/cmd scripts in a `bin/` directory that all need to be on PATH (e.g. `pyenv.bat`, `pyenv-global.bat`, `pyenv-install.bat`).
+     * The app manages a `shims/` directory at runtime that must be on PATH (e.g. version managers like pyenv, nvm).
+     * The app is primarily driven through wrapper scripts, not a single exe.
+   - Use `bin` when there is a clear single (or few) user-facing executable(s).
+   - Do NOT use both `bin` and `env_add_path` for the same tool — choose one.
    - If a ZIP contains a single versioned primary executable (for example `App-1.2.3-64.exe`), consider using `pre_install` to rename it to a stable filename such as `App.exe`.
    - For GUI apps, add `shortcuts` when appropriate.
 
@@ -163,7 +179,16 @@ If the research output contains a `suggested_app_name`, include it unchanged in 
 - Single exe → `"bin": "app.exe"`
 - Multiple exes → only include multiple entries when they are all clearly user-facing commands
 - **Clean alias is REQUIRED** when the exe name is not a clean command: version numbers (`x86_64-mingw64-app-0.2.3.0.exe`), platform prefixes (`cli-app-windows-amd64.exe`), or any exe name longer than 20 chars — add a short alias
-- **Versioned exe + autoupdate is broken**: if the exe name contains a version number, you MUST either use `pre_install` to rename to a stable name, or use alias format
+- **Versioned exe handling** (exe name contains a version number):
+  * **MANDATORY**: Set `versioned_bin: true` and provide `bin_aliases` with short command names.
+  * Set `bin` to the versioned exe names as found in the archive (one per architecture).
+  * **NEVER** use `pre_install` with `Rename-Item` for versioned exes — this breaks on autoupdate because the pre_install script hardcodes the version in the filename.
+  * Example:
+    ```json
+    "bin": ["xdelta3-3.1.0-x86_64.exe"],
+    "versioned_bin": true,
+    "bin_aliases": ["xdelta3"]
+    ```
 
 ## Installer Type Handling
 
@@ -202,7 +227,7 @@ fun buildGeneratePrompt(skeleton: String, analyze: AnalyzeOutput, outputPath: St
     val installerTypeNote = when (analyze.installer_type?.lowercase()) {
         "nsis" -> "\n- NSIS installer detected: append `#/dl.7z` to URL. Do NOT add `\"installer\"` block."
         "nsis_electron" -> "\n- NSIS Electron detected: skeleton contains per-arch `installer.script` with Expand-7zipArchive commands. Review and preserve them. GUI app: use `shortcuts` only, no `bin`."
-        "innosetup" -> "\n- InnoSetup detected: set `\"innosetup\": true` (ONLY if `listArchiveContents` returned files; otherwise skip and prefer ZIP)."
+        "innosetup" -> "\n- InnoSetup detected: set `\"innosetup\": true`. Scoop uses innounp to unpack, NOT silent install."
         "portable_exe" -> "\n- Portable EXE detected: append `#/app.exe` to URL for rename."
         "msi" -> "\n- MSI detected: set `extract_dir` (backslashes ONLY) alongside `url` and `bin`. Do NOT add `\"installer\"` block."
         else -> ""
@@ -247,13 +272,14 @@ $installerTypeNote
    - Correct `bin` alias format when exe names are versioned or platform-prefixed.
    - Ensure `extract_dir` uses backslashes ONLY (MSI/7z).
    - Apply installer-type URL fragments (NSIS `#/dl.7z`, portable `#/app.exe`).
-   - Add `innosetup: true` ONLY when installer_type is `innosetup` and analysis confirmed unpackable files.
+   - Add `innosetup: true` when installer_type is `innosetup`.
 
-2. **PRESERVE the skeleton's autoupdate URLs — DO NOT regenerate them**:
-   - The `autoupdate.architecture.<arch>.url` fields were **pre-generated deterministically** from the actual download URLs by replacing the concrete version string with `\${'$'}version`. This correctly preserves `v` prefixes and all other URL patterns.
-   - Your task is to **keep them as-is** — just verify they look correct.
-   - **CRITICAL**: Do NOT regenerate the autoupdate URL templates from scratch. If you regenerate, you will likely drop the `v` prefix before `\${'$'}version` or make other mistakes.
-   - Only fix the pre-generated templates if you can clearly see they are wrong (e.g., URL-encoded chars like `%2B` need special handling).
+2. **PRESERVE the skeleton's structural choices — do NOT reorganize or regenerate**:
+   - `autoupdate` format and URLs were **pre-generated deterministically**. Single-entry manifests use flat `{"url":"..."}`; multi-entry use `{"architecture":{"64bit":{...}}}`. **Keep this structure as-is.**
+   - `extract_dir` position was **pre-determined**: shared extract_dir is at top level; different per-arch extract_dir stays inside architecture blocks. **Do NOT move it.**
+   - `checkver` value was **pre-generated** (`"github"` for GitHub projects, omitted for non-GitHub). **Keep it as-is** — do NOT remove it.
+   - The autoupdate URL templates were generated by replacing concrete version strings with `${'$'}version`, correctly preserving `v` prefixes. **Do NOT regenerate them from scratch** — you will likely introduce errors.
+   - Only fix pre-generated values if you can clearly see they are wrong (e.g., URL-encoded chars like `%2B` need special handling).
    - For non-standard GitHub release tags (e.g. `mask/0.11.7` instead of `v0.11.7`), add an appropriate `regex` to `checkver`.
 
 3. **Add autoupdate.hash if checksums are available**:

@@ -31,9 +31,16 @@ fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): 
     val effectiveBin = filterExecutables(analyze.bin)
     val isMultiArch = analyze.entries.size > 1
 
+    // Check if all multi-arch entries share the same extract_dir
+    val sharedExtractDir = if (isMultiArch && analyze.entries.all { it.extract_dir.isNotBlank() } && analyze.entries.map { it.extract_dir }.distinct().size == 1) {
+        analyze.entries.first().extract_dir
+    } else {
+        null
+    }
+
     // Pre-generate autoupdate and checkver
-    val autoupdateArch = generateAutoupdateArchitectureBlock(analyze.entries, research.version)
-    val checkverValue = generateCheckver(research.homepage)
+    val autoupdateArch = generateAutoupdateArchitectureBlock(analyze.entries, research.version, analyze.versioned_bin, analyze.bin_aliases)
+    val checkverValue = generateCheckver(research.homepage, research.project)
 
     return buildJsonObject {
         put("version", research.version)
@@ -47,7 +54,24 @@ fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): 
                     putJsonObject(entry.architecture) {
                         put("url", entry.url)
                         put("hash", entry.hash)
-                        if (entry.extract_dir.isNotBlank()) put("extract_dir", entry.extract_dir)
+                        // Only put extract_dir inside arch block if not shared
+                        if (sharedExtractDir == null && entry.extract_dir.isNotBlank()) {
+                            put("extract_dir", entry.extract_dir)
+                        }
+                        // Per-arch bin for versioned executables
+                        if (analyze.versioned_bin && analyze.bin.isNotEmpty()) {
+                            val entryIdx = analyze.entries.indexOf(entry)
+                            val versionedExe = analyze.bin.getOrElse(entryIdx) { analyze.bin.first() }
+                            val aliases = if (analyze.bin_aliases.isNotEmpty()) analyze.bin_aliases else listOf(versionedExe.removeSuffix(".exe"))
+                            putJsonArray("bin") {
+                                aliases.forEach { alias ->
+                                    addJsonArray {
+                                        add(JsonPrimitive(versionedExe))
+                                        add(JsonPrimitive(alias))
+                                    }
+                                }
+                            }
+                        }
                         // Per-arch installer scripts (NSIS Electron)
                         val scripts = analyze.installer_scripts[entry.architecture]
                         if (!scripts.isNullOrEmpty()) {
@@ -60,6 +84,10 @@ fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): 
                     }
                 }
             }
+            // Lift shared extract_dir to top level
+            if (sharedExtractDir != null) {
+                put("extract_dir", sharedExtractDir)
+            }
         } else {
             analyze.entries.firstOrNull()?.let { entry ->
                 put("url", entry.url)
@@ -68,7 +96,8 @@ fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): 
             }
         }
 
-        if (effectiveBin.isNotEmpty()) {
+        // Versioned bin: skip top-level bin (will be inside arch blocks)
+        if (effectiveBin.isNotEmpty() && !analyze.versioned_bin) {
             putJsonArray("bin") {
                 effectiveBin.forEach { add(JsonPrimitive(it)) }
             }
@@ -96,6 +125,11 @@ fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): 
         if (analyze.env_set.isNotEmpty()) {
             putJsonObject("env_set") {
                 analyze.env_set.forEach { (k, v) -> put(k, v) }
+            }
+        }
+        if (analyze.env_add_path.isNotEmpty()) {
+            putJsonArray("env_add_path") {
+                analyze.env_add_path.forEach { add(JsonPrimitive(it)) }
             }
         }
 
@@ -139,7 +173,35 @@ internal fun replaceVersionWithTemplate(text: String, version: String): String {
  * of whether the skeleton is flat or multi-arch — this matches Scoop's autoupdate
  * format requirements.
  */
-internal fun generateAutoupdateArchitectureBlock(entries: List<AssetEntry>, version: String): JsonObject {
+internal fun generateAutoupdateArchitectureBlock(
+    entries: List<AssetEntry>,
+    version: String,
+    versionedBin: Boolean = false,
+    binAliases: List<String> = emptyList()
+): JsonObject {
+    // Single entry: flat { "url": "..." } instead of { "architecture": { "64bit": { "url": "..." } } }
+    if (entries.size == 1) {
+        val entry = entries.first()
+        return buildJsonObject {
+            put("url", replaceVersionWithTemplate(entry.url, version))
+            if (entry.extract_dir.isNotBlank()) {
+                put("extract_dir", replaceVersionWithTemplate(entry.extract_dir, version))
+            }
+            // Versioned bin in autoupdate
+            if (versionedBin && binAliases.isNotEmpty()) {
+                putJsonArray("bin") {
+                    binAliases.forEach { alias ->
+                        addJsonArray {
+                            add(JsonPrimitive(replaceVersionWithTemplate(entry.filename.removeSuffix(".zip"), version)))
+                            add(JsonPrimitive(alias))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Multi-entry: architecture wrapper
     return buildJsonObject {
         putJsonObject("architecture") {
             entries.forEach { entry ->
@@ -147,6 +209,18 @@ internal fun generateAutoupdateArchitectureBlock(entries: List<AssetEntry>, vers
                     put("url", replaceVersionWithTemplate(entry.url, version))
                     if (entry.extract_dir.isNotBlank()) {
                         put("extract_dir", replaceVersionWithTemplate(entry.extract_dir, version))
+                    }
+                    // Versioned bin in autoupdate
+                    if (versionedBin && binAliases.isNotEmpty()) {
+                        putJsonArray("bin") {
+                            val versionedExe = replaceVersionWithTemplate(entry.filename.ifBlank { entry.url.substringAfterLast("/").removeSuffix(".zip") }, version)
+                            binAliases.forEach { alias ->
+                                addJsonArray {
+                                    add(JsonPrimitive(versionedExe))
+                                    add(JsonPrimitive(alias))
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -160,9 +234,23 @@ internal fun generateAutoupdateArchitectureBlock(entries: List<AssetEntry>, vers
  * Returns `JsonPrimitive("github")` for GitHub-hosted projects,
  * or `null` for non-GitHub projects (LLM should determine appropriate checkver).
  */
-internal fun generateCheckver(homepage: String): JsonPrimitive? {
+internal fun generateCheckver(homepage: String, project: String = ""): JsonObject? {
+    // Prefer project (owner/repo) to build the full github URL — this works
+    // even when homepage is not a GitHub URL (e.g. laragon.org).
+    if (project.contains("/")) {
+        return buildJsonObject {
+            put("github", "https://github.com/$project")
+        }
+    }
+    // Fallback: infer from homepage
     if (homepage.isBlank()) return null
-    return if ("github.com" in homepage) JsonPrimitive("github") else null
+    return if ("github.com" in homepage) {
+        buildJsonObject {
+            put("github", homepage)
+        }
+    } else {
+        null
+    }
 }
 
 // ---------------------------------------------------------------------------

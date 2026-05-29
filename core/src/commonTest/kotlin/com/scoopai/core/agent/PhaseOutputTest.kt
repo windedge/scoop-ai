@@ -295,4 +295,59 @@ class PhaseOutputTest {
         val output = json.decodeFromString<AnalyzeOutput>(input)
         assertTrue(output.env_set.isEmpty())
     }
+
+    // ---------------------------------------------------------------
+    // env_add_path field
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `AnalyzeOutput with env_add_path round-trip`() {
+        val original = AnalyzeOutput(
+            status = AnalyzeStatus.OK,
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://github.com/pyenv-win/pyenv-win/archive/v3.1.1.zip",
+                    hash = "abc123",
+                    extract_dir = "pyenv-win-3.1.1"
+                )
+            ),
+            bin = emptyList(),
+            env_add_path = listOf("pyenv-win\\bin", "pyenv-win\\shims"),
+            env_set = mapOf(
+                "PYENV" to "\$dir\\pyenv-win",
+                "PYENV_ROOT" to "\$dir\\pyenv-win",
+                "PYENV_HOME" to "\$dir\\pyenv-win"
+            ),
+            persist = listOf(
+                "pyenv-win\\version",
+                "pyenv-win\\shims",
+                "pyenv-win\\versions",
+                "pyenv-win\\install_cache"
+            ),
+        )
+
+        val jsonStr = json.encodeToString(AnalyzeOutput.serializer(), original)
+        val restored = json.decodeFromString<AnalyzeOutput>(jsonStr)
+
+        assertEquals(listOf("pyenv-win\\bin", "pyenv-win\\shims"), restored.env_add_path)
+        assertEquals(emptyList<String>(), restored.bin)
+        assertEquals(4, restored.persist.size)
+    }
+
+    @Test
+    fun `AnalyzeOutput env_add_path defaults to empty list`() {
+        val input = """{"status":"ok","strategy":"portable_zip"}"""
+        val output = json.decodeFromString<AnalyzeOutput>(input)
+        assertTrue(output.env_add_path.isEmpty())
+    }
+
+    @Test
+    fun `AnalyzeOutput env_add_path absent from JSON`() {
+        val input = """{"status":"ok","strategy":"portable_zip","bin":["app.exe"]}"""
+        val output = json.decodeFromString<AnalyzeOutput>(input)
+        assertTrue(output.env_add_path.isEmpty())
+        assertEquals(listOf("app.exe"), output.bin)
+    }
 }

@@ -103,6 +103,8 @@ class FileManifestIo(
             // ── Semantic validation ───────────────────────────────
             validateBin(obj, errors, warnings)
             validateArchitectureBlock(obj, errors, warnings)
+            validatePreInstallRename(obj, errors)
+            validateGuiBin(obj, errors, warnings)
             validateExtractDir(obj, warnings)
             validateAutoupdateVPrefix(obj, warnings)
             validateVersion(obj, errors)
@@ -183,6 +185,18 @@ class FileManifestIo(
         val element = try {
             Json.parseToJsonElement(rawJson)
         } catch (_: Exception) {
+            // LLM output may be truncated — try auto-fixing missing closing braces
+            val openCount = rawJson.count { it == '{' }
+            val closeCount = rawJson.count { it == '}' }
+            if (openCount > closeCount) {
+                val fixed = rawJson.trimEnd() + "}".repeat(openCount - closeCount)
+                try {
+                    val fixedElement = Json.parseToJsonElement(fixed)
+                    return prettyJson.encodeToString(JsonElement.serializer(), fixedElement)
+                } catch (_: Exception) {
+                    // Auto-fix didn't help, return original
+                }
+            }
             return rawJson
         }
         return prettyJson.encodeToString(JsonElement.serializer(), element)
@@ -265,6 +279,126 @@ class FileManifestIo(
     // ---------------------------------------------------------------------------
     // Semantic validation
     // ---------------------------------------------------------------------------
+
+    /**
+     * Flags pre_install scripts that use Rename-Item to rename versioned executables.
+     * Also detects top-level bin with architecture-specific executable names.
+     */
+    private fun validatePreInstallRename(obj: JsonObject, errors: MutableList<String>) {
+        // First check: pre_install with Rename-Item for versioned exe
+        val preInstall = obj["pre_install"]
+        if (preInstall != null) {
+            val preInstallTexts = when (preInstall) {
+                is JsonPrimitive -> listOf(preInstall.content)
+                is JsonArray -> preInstall.mapNotNull { (it as? JsonPrimitive)?.content }
+                else -> emptyList()
+            }
+            for (script in preInstallTexts) {
+                if ("Rename-Item" in script && ("*.exe" in script || "-*.exe" in script)) {
+                    errors.add(
+                        "pre_install uses Rename-Item to rename a versioned exe. " +
+                        "Put bin INSIDE each architecture.{64bit|32bit} block instead, " +
+                        "e.g. \"architecture\": { \"64bit\": { \"bin\": [[\"app-${'$'}version-x86_64.exe\", \"app\"]] } }. " +
+                        "Do NOT use a top-level bin list with per-architecture exe names -- " +
+                        "Scoop only downloads the current system's architecture, " +
+                        "so the other architecture's exe will not exist."
+                    )
+                    return
+                }
+            }
+        }
+
+        // Second check: top-level bin with architecture-specific exe names
+        // while manifest has multiple architecture blocks (wrong placement).
+        val archObj = obj["architecture"]?.jsonObject ?: return
+        if (archObj.keys.count { it.endsWith("bit") } < 2) return
+        val bin = obj["bin"] ?: return
+        val archHints = setOf("x86_64", "i686", "amd64", "win32", "win64", "aarch64", "arm64", "i386", "x64")
+        val binNames = mutableListOf<String>()
+        when (bin) {
+            is JsonPrimitive -> binNames.add(bin.content.lowercase())
+            is JsonArray -> {
+                for (entry in bin) {
+                    when (entry) {
+                        is JsonPrimitive -> binNames.add(entry.content.lowercase())
+                        is JsonArray -> entry.firstOrNull()?.jsonPrimitive?.contentOrNull?.let {
+                            binNames.add(it.lowercase())
+                        }
+                        else -> {}
+                    }
+                }
+            }
+            else -> {}
+        }
+        for (name in binNames) {
+            if (archHints.any { name.contains(it) }) {
+                errors.add(
+                    "Top-level bin contains architecture-specific exe names (e.g. '$name'). " +
+                    "Put bin INSIDE each architecture block (architecture.64bit.bin), not at the top level."
+                )
+                return
+            }
+        }
+    }
+
+    /**
+     * Warns when `bin` references the same executable as `shortcuts`.
+     * GUI applications launched via shortcut typically don't need `bin`.
+     */
+    private fun validateGuiBin(obj: JsonObject, errors: MutableList<String>, warnings: MutableList<String>) {
+        val shortcuts = obj["shortcuts"]?.jsonArray ?: return
+        val bin = obj["bin"] ?: return
+
+        // Collect exe names from shortcuts (first element of each entry)
+        val shortcutExes = mutableSetOf<String>()
+        for (entry in shortcuts) {
+            val arr = entry.jsonArray
+            val exe = arr.firstOrNull()?.jsonPrimitive?.contentOrNull?.substringAfterLast('\\')?.substringAfterLast('/')?.lowercase()
+            if (!exe.isNullOrBlank()) shortcutExes.add(exe)
+        }
+
+        // Collect exe names from bin
+        val binExes = mutableSetOf<String>()
+        when (bin) {
+            is JsonPrimitive -> {
+                val name = bin.content.substringAfterLast('\\').substringAfterLast('/').lowercase()
+                if (name.isNotBlank()) binExes.add(name)
+            }
+            is JsonArray -> {
+                for (entry in bin) {
+                    when (entry) {
+                        is JsonPrimitive -> {
+                            val name = entry.content.substringAfterLast('\\').substringAfterLast('/').lowercase()
+                            if (name.isNotBlank()) binExes.add(name)
+                        }
+                        is JsonArray -> {
+                            val name = entry.firstOrNull()?.jsonPrimitive?.contentOrNull?.substringAfterLast('\\')?.substringAfterLast('/')?.lowercase()
+                            if (!name.isNullOrBlank()) binExes.add(name)
+                        }
+                        else -> {} // ignore
+                    }
+                }
+            }
+            else -> {} // ignore
+        }
+
+        val overlap = binExes.intersect(shortcutExes)
+        if (overlap.isNotEmpty()) {
+            // If every bin entry is also in shortcuts with no extra CLI-only exe,
+            // this is likely a GUI-only app and bin is unnecessary.
+            if (overlap.size == binExes.size) {
+                errors.add(
+                    "bin references ${overlap.joinToString()} which is also in shortcuts. " +
+                    "GUI applications typically don't need 'bin' — remove it."
+                )
+            } else {
+                warnings.add(
+                    "bin references ${overlap.joinToString()} which is also in shortcuts. " +
+                    "GUI applications typically don't need 'bin' — consider removing it."
+                )
+            }
+        }
+    }
 
     /** Validates `bin` field structure. */
     private fun validateBin(obj: JsonObject, errors: MutableList<String>, warnings: MutableList<String>) {

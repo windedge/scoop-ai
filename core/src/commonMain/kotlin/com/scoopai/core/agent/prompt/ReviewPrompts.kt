@@ -43,6 +43,30 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
 - If `autoupdate` exists but is missing `hash`, flag it as a warning.
 - If `autoupdate` has `hash`, verify the URL pattern looks reasonable.
 
+### 6. extract_dir depth
+- If `extract_dir` contains two or more path separators (backslashes), it is likely too deep.
+  The `extract_dir` should typically only strip the top-level version directory (e.g. `project-1.2.3`).
+  Going deeper (e.g. `project-1.2.3\\subproject`) discards sibling files and may break the application's
+  relative path calculations at runtime.
+- If the exe is inside a nested subdirectory, the correct approach is to keep `extract_dir` shallow
+  and use `env_add_path` with the nested `bin` path instead.
+- Flag as error if extract_dir goes more than one level deep.
+
+### 7. env_add_path vs bin
+- If `env_add_path` and `bin` are both present for the same tool, flag it — only one should be used.
+- If the manifest has `env_add_path` but no `bin`, that is acceptable (e.g. version managers).
+
+### 8. GUI vs CLI: unnecessary fields
+- A **GUI application** (launched via shortcut, tray icon, or window) should NOT have `bin`, `env_set`, or `env_add_path`. These are only for CLI tools that run from the terminal.
+- Clues that an app is GUI-only: it has `shortcuts` but the executable is NOT a console tool (e.g. editors, IDEs, browsers, dev environments like Laragon, system tray utilities like SuperF4).
+- If the manifest has both `shortcuts` AND `bin`/`env_set`/`env_add_path` for the same executable, this MUST be flagged as ERROR (severity: "error") — unless the app is intentionally dual-mode (both GUI and CLI, like WezTerm or electerm). The reviewer can distinguish: single-exe GUI apps (SuperF4, Laragon) get ERROR; terminal/shell apps (WezTerm, electerm) are acceptable.
+- `env_set` is especially suspicious for GUI apps — it is almost never needed.
+
+### 9. checkver presence
+- Every Scoop manifest MUST have a `checkver` field to enable automatic version detection.
+- If `checkver` is missing entirely, flag it as an error.
+- If `checkver` is present but uses the shorthand `"github"` instead of the full URL form `{"github":"https://..."}`, that is acceptable but worth a note (not an error).
+
 ## Output Format
 
 Return ONLY a JSON object with no markdown formatting:

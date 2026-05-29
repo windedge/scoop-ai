@@ -98,6 +98,18 @@ data class AnalyzeOutput(
     val pre_install: List<String> = emptyList(),
     /** Environment variables to set, pointing to $dir (e.g. {"BAT_CONFIG_DIR": "$dir"}) */
     val env_set: Map<String, String> = emptyMap(),
+    /** Subdirectory paths to add to PATH (e.g. ["pyenv-win\\bin", "pyenv-win\\shims"]).
+     * Use this instead of bin when the app needs multiple batch scripts in PATH, not just a single exe. */
+    val env_add_path: List<String> = emptyList(),
+    /** True when exe filenames contain version numbers (e.g. xdelta3-3.1.0-x86_64.exe).
+     * When true, the skeleton puts per-arch bin aliases inside architecture blocks
+     * instead of top-level bin + pre_install rename. The `bin` field should contain
+     * the versioned exe names as found in the archive (one per arch, matching entries order). */
+    val versioned_bin: Boolean = false,
+    /** Alias names for versioned bin (e.g. ["xdelta3", "xdelta"]).
+     * Only used when versioned_bin = true. Each alias creates a [versioned.exe, alias] entry
+     * inside each architecture block. */
+    val bin_aliases: List<String> = emptyList(),
     /** "zip", "msi", "innosetup", "nsis", or "" */
     val installer_type: String = "",
     /** Per-architecture installer scripts (NSIS Electron). Key = architecture ("64bit"/"32bit"), value = PS script lines */
