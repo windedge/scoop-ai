@@ -205,7 +205,10 @@ $researchJson
    - Use `listArchiveContents` to check which persist targets exist inside the archive.
    - **Rule A**: If a persist target EXISTS in the archive, add it directly to `persist`.
    - **Rule B**: If a persist target does NOT exist in the archive but was found through source code analysis (runtime-created files), still add it to `persist`, AND add `pre_install` code to create the initial file/directory.
-   - **Rule C**: If `env_targets` is present (e.g. `BAT_CONFIG_DIR`), set `env_set` to map the env var to `${'$'}dir`, persist the corresponding directory, and add `pre_install` to copy existing config from `%APPDATA%`.
+   - **env_set rule (IMPORTANT — follow ALL sub-steps)**: If `env_targets` is present in the research output (e.g. `{"KOMGA_CONFIG_DIR": "config"}`), you MUST:
+     1. **env_set mapping**: Set `env_set` to map each env var to `\${'$'}dir\` followed by the target directory. For `{"KOMGA_CONFIG_DIR": "config"}`, produce `{"KOMGA_CONFIG_DIR": "\${'$'}dir\\config"}`. Do NOT map to just `\${'$'}dir` — always append the subdirectory.
+     2. **persist the directory**: Add the corresponding directory (e.g. `"config"`) to `persist` if not already present.
+     3. **pre_install to create**: Add `pre_install` code to create the directory if it doesn't exist in the archive (e.g. `"if (!(Test-Path \"\${'$'}dir\\config\")) { New-Item -ItemType Directory -Path \"\${'$'}dir\\config\" | Out-Null }"`).
    - **Electron exclusion**: If the research identified this as an Electron app, do NOT add `Data/` or any Electron internal directory to persist.
 
    - **GUI app persist hint**: If the app is GUI and `persist` is empty after source analysis, use `listArchiveContents` to check the archive for:

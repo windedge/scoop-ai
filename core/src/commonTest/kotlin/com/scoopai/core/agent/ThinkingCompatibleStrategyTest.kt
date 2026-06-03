@@ -40,6 +40,18 @@ class ThinkingCompatibleStrategyTest {
         assertTrue(isToolCallJsonParseError(e))
     }
 
+    @Test
+    fun `detects JsonObject type mismatch error`() {
+        val error = Exception("Expected JsonObject, but had JsonLiteral as the serialized body of com.scoopai.core.agent.ResearchOutput at element: $.primitive")
+        assertTrue(isToolCallJsonParseError(error))
+    }
+
+    @Test
+    fun `detects JsonLiteral error`() {
+        val error = Exception("JsonLiteral cannot be deserialized to ResearchOutput")
+        assertTrue(isToolCallJsonParseError(error))
+    }
+
     // ---------------------------------------------------------------
     // isToolCallJsonParseError — non-matching cases
     // ---------------------------------------------------------------

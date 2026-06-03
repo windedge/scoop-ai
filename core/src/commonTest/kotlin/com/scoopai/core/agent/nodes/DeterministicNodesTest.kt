@@ -702,6 +702,175 @@ class DeterministicNodesTest {
     }
 
     // ---------------------------------------------------------------
+    // env_set auto-fill from env_targets
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `assembleManifestSkeleton auto-fills env_set and persist from env_targets`() {
+        val research = ResearchOutput(
+            version = "1.0.0",
+            env_targets = mapOf("KOMGA_CONFIG_DIR" to "config"),
+        )
+        val analyze = AnalyzeOutput(
+            entries = listOf(AssetEntry(architecture = "64bit", url = "u", hash = "h")),
+            bin = listOf("app.exe"),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+
+        // env_set should be auto-filled from env_targets
+        val envSet = obj["env_set"]?.jsonObject
+        assertNotNull(envSet)
+        // config dir will be persisted (auto-added from env_targets), so use $persist_dir
+        assertEquals("\${'$'}persist_dir\\config", envSet["KOMGA_CONFIG_DIR"]?.jsonPrimitive?.content)
+
+        // persist should include "config"
+        val persist = obj["persist"]?.jsonArray
+        assertNotNull(persist, "persist should be present when env_targets adds dirs")
+        assertTrue(persist!!.any { it.jsonPrimitive.content == "config" }, "persist should contain 'config'")
+    }
+
+    @Test
+    fun `assembleManifestSkeleton does not override existing env_set with env_targets`() {
+        val research = ResearchOutput(
+            version = "1.0.0",
+            env_targets = mapOf("KOMGA_CONFIG_DIR" to "config"),
+        )
+        val analyze = AnalyzeOutput(
+            entries = listOf(AssetEntry(architecture = "64bit", url = "u", hash = "h")),
+            bin = listOf("app.exe"),
+            env_set = mapOf("KOMGA_CONFIG_DIR" to "\${'$'}dir\\custom"),
+            persist = listOf("custom"),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+
+        // LLM's explicit env_set should be preserved, NOT overridden by env_targets
+        // But $dir is normalized to $persist_dir because "custom" is in persist
+        assertEquals(
+            "\${'$'}persist_dir\\custom",
+            obj["env_set"]?.jsonObject?.get("KOMGA_CONFIG_DIR")?.jsonPrimitive?.content
+        )
+        // persist should NOT get "config" from env_targets when env_set is already present
+        assertEquals(1, obj["persist"]?.jsonArray?.size)
+        assertEquals("custom", obj["persist"]?.jsonArray?.single()?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `env_set uses $persist_dir when target dir is in analyze persist`() {
+        // env_target dir that is ALSO explicitly in analyze.persist should use $persist_dir
+        val research = ResearchOutput(
+            version = "1.0.0",
+            env_targets = mapOf("MY_APP_CONFIG" to "config"),
+        )
+        val analyze = AnalyzeOutput(
+            entries = listOf(AssetEntry(architecture = "64bit", url = "u", hash = "h")),
+            bin = listOf("app.exe"),
+            persist = listOf("config"),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+
+        val envSet = obj["env_set"]?.jsonObject
+        assertNotNull(envSet)
+        // config IS in allPersistDirs (explicitly in analyze.persist)
+        assertEquals("\${'$'}persist_dir\\config", envSet["MY_APP_CONFIG"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `env_set uses $persist_dir when target dir is auto-added to persist from env_targets`() {
+        // env_target dir that is NOT in analyze.persist but gets auto-added should also use $persist_dir
+        val research = ResearchOutput(
+            version = "1.0.0",
+            env_targets = mapOf("MY_APP_DATA" to "data"),
+        )
+        val analyze = AnalyzeOutput(
+            entries = listOf(AssetEntry(architecture = "64bit", url = "u", hash = "h")),
+            bin = listOf("app.exe"),
+            persist = listOf("config"),  // some other dir, not "data"
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+
+        val envSet = obj["env_set"]?.jsonObject
+        assertNotNull(envSet)
+        // "data" IS in allPersistDirs (via env_target non-blank values), so uses $persist_dir
+        assertEquals("\${'$'}persist_dir\\data", envSet["MY_APP_DATA"]?.jsonPrimitive?.content)
+
+        // persist should include both "config" and "data"
+        val persist = obj["persist"]?.jsonArray
+        assertNotNull(persist)
+        assertTrue(persist!!.any { it.jsonPrimitive.content == "config" })
+        assertTrue(persist.any { it.jsonPrimitive.content == "data" })
+    }
+
+    // ---------------------------------------------------------------
+    // env_set normalization: $dir → $persist_dir when dir is in persist
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `assembleManifestSkeleton normalizes env_set $dir to $persist_dir when dir is in persist`() {
+        // LLM provided env_set with $dir\config, and "config" is in analyze.persist
+        val research = ResearchOutput(version = "1.0.0")
+        val analyze = AnalyzeOutput(
+            entries = listOf(AssetEntry(architecture = "64bit", url = "u", hash = "h")),
+            bin = listOf("app.exe"),
+            env_set = mapOf("MYAPP_CONFIG_DIR" to "\${'$'}dir\\config"),
+            persist = listOf("config"),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+        val envSet = obj["env_set"]?.jsonObject
+        assertNotNull(envSet)
+        // "config" is persisted, so $dir should be replaced with $persist_dir
+        assertEquals("\${'$'}persist_dir\\config", envSet["MYAPP_CONFIG_DIR"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `assembleManifestSkeleton keeps $dir in env_set when dir not in persist`() {
+        // LLM provided env_set with $dir\logs, but "logs" is NOT in analyze.persist
+        val research = ResearchOutput(version = "1.0.0")
+        val analyze = AnalyzeOutput(
+            entries = listOf(AssetEntry(architecture = "64bit", url = "u", hash = "h")),
+            bin = listOf("app.exe"),
+            env_set = mapOf("MYAPP_LOG_DIR" to "\${'$'}dir\\logs"),
+            persist = listOf("config"),  // some other dir, not "logs"
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+        val envSet = obj["env_set"]?.jsonObject
+        assertNotNull(envSet)
+        // "logs" is NOT in persist, so $dir should be kept as-is
+        assertEquals("\${'$'}dir\\logs", envSet["MYAPP_LOG_DIR"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `assembleManifestSkeleton keeps $persist_dir in env_set when already correct`() {
+        // LLM already correctly used $persist_dir
+        val research = ResearchOutput(version = "1.0.0")
+        val analyze = AnalyzeOutput(
+            entries = listOf(AssetEntry(architecture = "64bit", url = "u", hash = "h")),
+            bin = listOf("app.exe"),
+            env_set = mapOf("MYAPP_CONFIG_DIR" to "\${'$'}persist_dir"),
+            persist = listOf("config"),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+        val envSet = obj["env_set"]?.jsonObject
+        assertNotNull(envSet)
+        // Already uses $persist_dir, should remain unchanged
+        assertEquals("\${'$'}persist_dir", envSet["MYAPP_CONFIG_DIR"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `assembleManifestSkeleton empty env_targets does not add env_set`() {
+        val research = ResearchOutput(
+            version = "1.0.0",
+            env_targets = emptyMap(),
+        )
+        val analyze = AnalyzeOutput(
+            entries = listOf(AssetEntry(architecture = "64bit", url = "u", hash = "h")),
+            bin = listOf("app.exe"),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+        assertFalse(obj.containsKey("env_set"), "should not have env_set when env_targets is empty")
+        assertFalse(obj.containsKey("persist"), "should not have persist when nothing to persist")
+    }
+
+    // ---------------------------------------------------------------
     // extract_dir: shared across all architectures → lifted to top level
     // ---------------------------------------------------------------
 

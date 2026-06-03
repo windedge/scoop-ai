@@ -47,6 +47,48 @@ fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): 
     val autoupdateArch = generateAutoupdateArchitectureBlock(analyze.entries, research.version, analyze.versioned_bin, analyze.bin_aliases)
     val checkverValue = generateCheckver(research.homepage, research.project)
 
+    // ---- Auto-fill env_set and persist from research.env_targets ----
+    // LLM's explicit analyze.env_set takes priority; if empty, fall back to env_targets.
+    val effectiveEnvSet: Map<String, String>
+    val envTargetDirs: List<String>
+    when {
+        analyze.env_set.isNotEmpty() -> {
+            effectiveEnvSet = analyze.env_set
+            envTargetDirs = emptyList()
+        }
+        research.env_targets.isNotEmpty() -> {
+            // Compute all dirs that will be persisted (explicit analyze.persist + non-blank env_target dirs)
+            val allPersistDirs = (analyze.persist + research.env_targets.values.filter { it.isNotBlank() }).distinct()
+            effectiveEnvSet = research.env_targets.mapValues { (_, dir) ->
+                if (dir.isNotBlank()) {
+                    // If this dir is persisted, use $persist_dir to survive updates; otherwise $dir
+                    if (dir in allPersistDirs) "\${'$'}persist_dir\\$dir" else "\${'$'}dir\\$dir"
+                } else {
+                    "\${'$'}dir"
+                }
+            }
+            envTargetDirs = research.env_targets.values.filter { it.isNotBlank() }
+        }
+        else -> {
+            effectiveEnvSet = emptyMap()
+            envTargetDirs = emptyList()
+        }
+    }
+    val effectivePersist = if (envTargetDirs.isNotEmpty()) {
+        analyze.persist + envTargetDirs.filter { it !in analyze.persist }
+    } else {
+        analyze.persist
+    }
+
+    // ---- Normalize env_set: $dir\x → $persist_dir\x when x is in persist ----
+    val normalizedEnvSet = effectiveEnvSet.mapValues { (_, value) ->
+        val dirPrefix = "\${'$'}dir\\"
+        if (value.startsWith(dirPrefix)) {
+            val subdir = value.removePrefix(dirPrefix)
+            if (subdir in effectivePersist) "\${'$'}persist_dir\\$subdir" else value
+        } else value
+    }
+
     return buildJsonObject {
         put("version", research.version)
         if (research.description.isNotBlank()) put("description", research.description)
@@ -108,9 +150,9 @@ fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): 
             }
         }
 
-        if (analyze.persist.isNotEmpty()) {
+        if (effectivePersist.isNotEmpty()) {
             putJsonArray("persist") {
-                analyze.persist.forEach { add(JsonPrimitive(it)) }
+                effectivePersist.forEach { add(JsonPrimitive(it)) }
             }
         }
         if (analyze.shortcuts.isNotEmpty()) {
@@ -127,9 +169,9 @@ fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): 
                 analyze.pre_install.forEach { add(JsonPrimitive(it)) }
             }
         }
-        if (analyze.env_set.isNotEmpty()) {
+        if (normalizedEnvSet.isNotEmpty()) {
             putJsonObject("env_set") {
-                analyze.env_set.forEach { (k, v) -> put(k, v) }
+                normalizedEnvSet.forEach { (k, v) -> put(k, v) }
             }
         }
         if (analyze.env_add_path.isNotEmpty()) {

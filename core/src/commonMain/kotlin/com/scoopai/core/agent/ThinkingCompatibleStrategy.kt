@@ -121,5 +121,7 @@ internal fun isToolCallJsonParseError(e: Exception): Boolean {
     return msg.contains("JSON token") ||
         msg.contains("Expected end of the object") ||
         msg.contains("JsonDecoding") ||
+        msg.contains("JsonObject") ||
+        msg.contains("JsonLiteral") ||
         (msg.contains("tool call", ignoreCase = true) && msg.contains("JSON", ignoreCase = true))
 }
