@@ -616,3 +616,61 @@ internal fun autoFillBinFromShortcuts(manifestJson: String): String {
     }
     return JsonObject(modified).toString()
 }
+
+/**
+ * Post-process manifest JSON: normalize env_set values.
+ *
+ * If env_set has a value like `$dir\<X>` and `<X>` is in the persist list,
+ * replaces it with `$persist_dir\<X>`. This ensures environment variables
+ * point to persisted directories that survive updates.
+ *
+ * Returns the original JSON string unchanged if:
+ * - No env_set exists
+ * - No values need normalization
+ * - The JSON cannot be parsed
+ */
+internal fun normalizeEnvSet(manifestJson: String): String {
+    val json = try {
+        Json.parseToJsonElement(manifestJson) as? JsonObject ?: return manifestJson
+    } catch (_: Exception) {
+        return manifestJson
+    }
+
+    val envSet = json["env_set"] as? JsonObject ?: return manifestJson
+
+    val dirPrefix = "\$dir\\"
+    val newPersistDirs = mutableListOf<String>()
+    var anyReplaced = false
+
+    val newEnvSetEntries = buildMap<String, JsonElement> {
+        envSet.forEach { (key, value) ->
+            val v = value.jsonPrimitive.content
+            if (v.startsWith(dirPrefix)) {
+                val subdir = v.removePrefix(dirPrefix)
+                put(key, JsonPrimitive("\$persist_dir\\$subdir"))
+                newPersistDirs.add(subdir)
+                anyReplaced = true
+            } else {
+                put(key, value)
+            }
+        }
+    }
+    if (!anyReplaced) return manifestJson
+
+    // Merge new dirs into persist, avoiding duplicates
+    val existingPersist = json["persist"]?.jsonArray?.mapNotNull { it.jsonPrimitive.content } ?: emptyList()
+    val updatedPersist = buildList {
+        addAll(existingPersist)
+        for (d in newPersistDirs) {
+            if (d !in existingPersist && d !in this) {
+                add(d)
+            }
+        }
+    }
+
+    val newJson = json.toMutableMap().apply {
+        put("env_set", JsonObject(newEnvSetEntries))
+        put("persist", JsonArray(updatedPersist.map { JsonPrimitive(it) }))
+    }
+    return JsonObject(newJson).toString()
+}

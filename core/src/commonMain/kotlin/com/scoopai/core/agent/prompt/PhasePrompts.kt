@@ -122,6 +122,17 @@ $task
 
    c. **Stop after step (a) and (b)**. Do NOT make additional fetchFileContent calls for source files unless you have zero matches and need to check one specific config file.
 
+   **Config & env var discovery** (use searchTextInArchive on the source archive):
+   Search for these patterns to discover config directories and environment variables:
+   1. `_CONFIG_DIR`, `_CONFIG_PATH`, `_CONFIG_HOME`, `_DATA_DIR` — env vars that override config paths
+   2. `env::var` / `getenv` / `os.Getenv` / `os.environ` / `System.getenv` — language-specific env var reads
+   3. `%APPDATA%` / `%LOCALAPPDATA%` — Windows data storage paths
+   4. `config_dir` / `config_path` / `data_dir` — config directory variables
+   5. `XDG_CONFIG_HOME` — Linux XDG convention
+
+   For each match found, record in `env_targets`: {"ENV_VAR_NAME": "directory_name"}
+   Also check README for mentions of config file locations (`%APPDATA%\<app>`, `~/.config/<app>`).
+
    **Framework-specific notes:**
    - **Electron apps**: If package.json shows `electron` dependency, the `Data/` directory in the archive is Electron-managed internal data and MUST NOT be added to persist_targets. User data lives at `%APPDATA%/<app-name>`.
    - **Tauri apps**: If `tauri.conf.json` exists, read `tauri.bundle.identifier` → config at `%APPDATA%/<identifier>`.
@@ -274,6 +285,11 @@ If the research output contains a `suggested_app_name`, include it unchanged in 
   * Do NOT use this for NSIS installers — those use `#/dl.7z` instead
 
 IMPORTANT: You MUST call the analysis tools (computeSha256FromUrl, listArchiveContents, findExecutables) to compute real values. Do not guess or estimate hashes.
+
+**Before finalizing**, consider these commonly missed fields:
+- env_set: Does the app read config from a configurable directory? Check research findings for env vars like *_CONFIG_DIR, *_CONFIG_PATH, config_dir. If evidence exists, add to env_set.
+- persist: Is there user data that should survive updates?
+If research did not report env_targets but you see evidence of config directories, add them yourself.
 
 ${PhaseSchemas.ANALYZE_SCHEMA}"""
 }

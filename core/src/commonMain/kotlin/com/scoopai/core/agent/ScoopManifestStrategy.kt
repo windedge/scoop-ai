@@ -10,6 +10,7 @@ import com.scoopai.core.ManifestResult
 import com.scoopai.core.RefineContext
 import com.scoopai.core.agent.nodes.assembleManifestSkeleton
 import com.scoopai.core.agent.nodes.autoFillBinFromShortcuts
+import com.scoopai.core.agent.nodes.normalizeEnvSet
 import com.scoopai.core.tools.api.ManifestIo
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -119,10 +120,13 @@ fun scoopManifestStrategy(
         refinePromptBuilder?.invoke(input) ?: ""
     }
 
-    // ── Verify node (deterministic: post-process + validate + review) ──
-    val verify by node<String, RefineContext?>("verify") { rawManifest ->
-        // Post-process: auto-fill bin from shortcuts for portable archives
-        val manifest = postProcessManifest(rawManifest)
+    // ── Post-process node (deterministic: auto-fill bin + normalize env_set) ──
+    val nodePostProcess by node<String, String>("nodePostProcess") { manifestJson ->
+        postProcessManifest(manifestJson)
+    }
+
+    // ── Verify node (deterministic: validate + review) ──
+    val verify by node<String, RefineContext?>("verify") { manifest ->
         finalManifest = manifest
         val errors = mutableListOf<String>()
 
@@ -172,7 +176,8 @@ fun scoopManifestStrategy(
     // Main path: analyze → prepareManifest → generate → verify
     edge(analyze forwardTo prepareManifest)
     edge(prepareManifest forwardTo generate)
-    edge(generate forwardTo verify)
+    edge(generate forwardTo nodePostProcess)
+    edge(nodePostProcess forwardTo verify)
 
     // Verify → pass → finish
     edge(verify forwardTo nodeFinish onCondition { ctx ->
@@ -217,11 +222,18 @@ fun scoopManifestStrategy(
  * deterministic post-processing rules are added, this is the single extension point.
  */
 internal fun postProcessManifest(manifestJson: String): String {
-    val processed = autoFillBinFromShortcuts(manifestJson)
-    if (processed != manifestJson) {
+    var result = manifestJson
+    val afterBin = autoFillBinFromShortcuts(result)
+    if (afterBin != result) {
         logger.info { "[post-process] Manifest modified by autoFillBinFromShortcuts" }
+        result = afterBin
     }
-    return processed
+    val afterEnv = normalizeEnvSet(result)
+    if (afterEnv != result) {
+        logger.info { "[post-process] Manifest modified by normalizeEnvSet" }
+        result = afterEnv
+    }
+    return result
 }
 
 private val codeBlockRegex = Regex("```(?:json)?\\s*\\n?([\\s\\S]*?)```")

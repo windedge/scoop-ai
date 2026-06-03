@@ -935,6 +935,153 @@ class DeterministicNodesTest {
     }
 
     // ---------------------------------------------------------------
+    // normalizeEnvSet
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `normalizeEnvSet replaces dir with persist_dir when dir is in persist`() {
+        // Input JSON has $dir\config → valid JSON requires \\ for backslash
+        val input = """{"version":"1.0","env_set":{"MYAPP_CONFIG":"${'$'}dir\\config"},"persist":["config"]}"""
+        val result = normalizeEnvSet(input)
+        val json = Json.parseToJsonElement(result).jsonObject
+        val envSet = json["env_set"]!!.jsonObject
+        assertEquals("${'$'}persist_dir\\config", envSet["MYAPP_CONFIG"]!!.jsonPrimitive.content)
+        val persist = json["persist"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertEquals(listOf("config"), persist)
+    }
+
+    @Test
+    fun `normalizeEnvSet replaces dir and adds new dir to persist`() {
+        val input = """{"version":"1.0","env_set":{"MYAPP_LOGS":"${'$'}dir\\logs"},"persist":["config"]}"""
+        val result = normalizeEnvSet(input)
+        val json = Json.parseToJsonElement(result).jsonObject
+        val envSet = json["env_set"]!!.jsonObject
+        assertEquals("${'$'}persist_dir\\logs", envSet["MYAPP_LOGS"]!!.jsonPrimitive.content)
+        val persist = json["persist"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertTrue("logs" in persist)
+        assertTrue("config" in persist)
+    }
+
+    @Test
+    fun `normalizeEnvSet handles manifest without env_set`() {
+        val input = """{"version":"1.0"}"""
+        val result = normalizeEnvSet(input)
+        assertEquals(input, result)
+    }
+
+    @Test
+    fun `normalizeEnvSet replaces dir and creates persist when persist missing`() {
+        val input = """{"version":"1.0","env_set":{"MYAPP_CONFIG":"${'$'}dir\\config"}}"""
+        val result = normalizeEnvSet(input)
+        val json = Json.parseToJsonElement(result).jsonObject
+        val envSet = json["env_set"]!!.jsonObject
+        assertEquals("${'$'}persist_dir\\config", envSet["MYAPP_CONFIG"]!!.jsonPrimitive.content)
+        val persist = json["persist"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertEquals(listOf("config"), persist)
+    }
+
+    @Test
+    fun `normalizeEnvSet handles invalid JSON gracefully`() {
+        val input = "not json"
+        val result = normalizeEnvSet(input)
+        assertEquals(input, result)
+    }
+
+    @Test
+    fun `normalizeEnvSet handles empty env_set`() {
+        val input = """{"version":"1.0","env_set":{},"persist":["config"]}"""
+        val result = normalizeEnvSet(input)
+        val json = Json.parseToJsonElement(result).jsonObject
+        assertTrue(json["env_set"]!!.jsonObject.isEmpty())
+        val persist = json["persist"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertEquals(listOf("config"), persist)
+    }
+
+    @Test
+    fun `normalizeEnvSet replaces multiple dir values when all in persist`() {
+        val input = """{"version":"1.0","env_set":{"MYAPP_CONFIG":"${'$'}dir\\config","MYAPP_DATA":"${'$'}dir\\data"},"persist":["config","data"]}"""
+        val result = normalizeEnvSet(input)
+        val json = Json.parseToJsonElement(result).jsonObject
+        val envSet = json["env_set"]!!.jsonObject
+        assertEquals("${'$'}persist_dir\\config", envSet["MYAPP_CONFIG"]!!.jsonPrimitive.content)
+        assertEquals("${'$'}persist_dir\\data", envSet["MYAPP_DATA"]!!.jsonPrimitive.content)
+        val persist = json["persist"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertTrue("config" in persist)
+        assertTrue("data" in persist)
+    }
+
+    @Test
+    fun `normalizeEnvSet replaces all dir values and adds missing to persist`() {
+        val input = """{"version":"1.0","env_set":{"MYAPP_CONFIG":"${'$'}dir\\config","MYAPP_LOGS":"${'$'}dir\\logs"},"persist":["config"]}"""
+        val result = normalizeEnvSet(input)
+        val json = Json.parseToJsonElement(result).jsonObject
+        val envSet = json["env_set"]!!.jsonObject
+        assertEquals("${'$'}persist_dir\\config", envSet["MYAPP_CONFIG"]!!.jsonPrimitive.content)
+        assertEquals("${'$'}persist_dir\\logs", envSet["MYAPP_LOGS"]!!.jsonPrimitive.content)
+        val persist = json["persist"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertTrue("config" in persist)
+        assertTrue("logs" in persist)
+    }
+
+    @Test
+    fun `normalizeEnvSet handles dir with nested path`() {
+        val input = """{"version":"1.0","env_set":{"MYAPP_CONFIG":"${'$'}dir\\subdir\\config"},"persist":["subdir\\config"]}"""
+        val result = normalizeEnvSet(input)
+        val json = Json.parseToJsonElement(result).jsonObject
+        val envSet = json["env_set"]!!.jsonObject
+        assertEquals("${'$'}persist_dir\\subdir\\config", envSet["MYAPP_CONFIG"]!!.jsonPrimitive.content)
+        val persist = json["persist"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertTrue("subdir\\config" in persist)
+    }
+
+    @Test
+    fun `normalizeEnvSet preserves dir without trailing backslash`() {
+        val input = """{"version":"1.0","env_set":{"MYAPP_HOME":"${'$'}dir"},"persist":["config"]}"""
+        val result = normalizeEnvSet(input)
+        val json = Json.parseToJsonElement(result).jsonObject
+        val envSet = json["env_set"]!!.jsonObject
+        assertEquals("${'$'}dir", envSet["MYAPP_HOME"]!!.jsonPrimitive.content)
+        val persist = json["persist"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertEquals(listOf("config"), persist)
+    }
+
+    @Test
+    fun `normalizeEnvSet preserves persist_dir values`() {
+        val input = """{"version":"1.0","env_set":{"MYAPP_CONFIG":"${'$'}persist_dir\\config"},"persist":["config"]}"""
+        val result = normalizeEnvSet(input)
+        val json = Json.parseToJsonElement(result).jsonObject
+        val envSet = json["env_set"]!!.jsonObject
+        assertEquals("${'$'}persist_dir\\config", envSet["MYAPP_CONFIG"]!!.jsonPrimitive.content)
+        val persist = json["persist"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertEquals(listOf("config"), persist)
+    }
+
+    @Test
+    fun `normalizeEnvSet does not duplicate dirs in persist`() {
+        val input = """{"version":"1.0","env_set":{"MYAPP_X":"${'$'}dir\\config","MYAPP_Y":"${'$'}dir\\config"},"persist":["config"]}"""
+        val result = normalizeEnvSet(input)
+        val json = Json.parseToJsonElement(result).jsonObject
+        val envSet = json["env_set"]!!.jsonObject
+        assertEquals("${'$'}persist_dir\\config", envSet["MYAPP_X"]!!.jsonPrimitive.content)
+        assertEquals("${'$'}persist_dir\\config", envSet["MYAPP_Y"]!!.jsonPrimitive.content)
+        val persist = json["persist"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertEquals(listOf("config"), persist)
+    }
+
+    @Test
+    fun `normalizeEnvSet handles mixed dir and non-dir values`() {
+        val input = """{"version":"1.0","env_set":{"MYAPP_CONFIG":"${'$'}dir\\config","MYAPP_PATH":"C:\\Program Files\\MyApp"},"persist":["data"]}"""
+        val result = normalizeEnvSet(input)
+        val json = Json.parseToJsonElement(result).jsonObject
+        val envSet = json["env_set"]!!.jsonObject
+        assertEquals("${'$'}persist_dir\\config", envSet["MYAPP_CONFIG"]!!.jsonPrimitive.content)
+        assertEquals("C:\\Program Files\\MyApp", envSet["MYAPP_PATH"]!!.jsonPrimitive.content)
+        val persist = json["persist"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertTrue("data" in persist)
+        assertTrue("config" in persist)
+    }
+
+    // ---------------------------------------------------------------
     // autoupdate: single entry → flat url, not architecture wrapper
     // ---------------------------------------------------------------
 
