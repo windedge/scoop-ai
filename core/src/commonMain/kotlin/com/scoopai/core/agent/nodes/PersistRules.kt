@@ -82,14 +82,13 @@ fun inferPersistHints(
 
     val allSnippets = fileSnippets.values.joinToString("\n")
     val allFilePaths = filePaths.joinToString("\n")
-    val readmeSnippet = fileSnippets
-        .filterKeys { it.contains("readme", ignoreCase = true) }
-        .values
-        .joinToString("\n")
 
     // ---- Framework detection ----
 
-    val isElectron = ELECTRON_PATTERNS.any { (pattern, _) -> allSnippets.contains(pattern) }
+    // Electron
+    val isElectron = ELECTRON_PATTERNS.any { (pattern, _) ->
+        allSnippets.contains(pattern) || pattern == "\"electron\"" && fileSnippets["package.json"]?.contains("\"electron\"") == true
+    }
     if (isElectron) {
         frameworks.add("Electron")
         notes.add("Electron app detected. User data lives at %APPDATA%/<app-name>. The Data/ directory in the archive is Electron-managed internal data and MUST NOT be added to persist_targets.")
@@ -115,13 +114,18 @@ fun inferPersistHints(
 
     // Extract top-level directory names from file paths
     val topDirs = filePaths.mapNotNull { path ->
-        path.substringBefore("/", "").takeIf { it.isNotBlank() }
+        val parts = path.split("/")
+        if (parts.size >= 2) parts[0] else null
     }.toSet()
 
     for (dir in topDirs) {
-        if (dir.lowercase() in CONFIG_DIR_NAMES) {
-            if ((dir.equals("Data", ignoreCase = true)) && isElectron) continue
-            if (dir !in persistTargets) persistTargets.add(dir)
+        if (dir.lowercase() in CONFIG_DIR_NAMES || dir in CONFIG_DIR_NAMES) {
+            // For Data/: only add if NOT Electron (Electron Data/ is internal)
+            if (dir == "Data" && isElectron) continue
+            if (dir == "data" && isElectron) continue
+            if (!persistTargets.contains(dir)) {
+                persistTargets.add(dir)
+            }
         }
     }
 
@@ -147,6 +151,11 @@ fun inferPersistHints(
 
     // ---- Dotfile/config patterns in README ----
 
+    val readmeSnippet = fileSnippets.entries
+        .filter { it.key.lowercase().contains("readme") }
+        .map { it.value }
+        .joinToString("\n")
+
     if (readmeSnippet.isNotBlank()) {
         // ~/.config/<app>/ pattern
         val xdgPattern = Regex("""~/.config/(\w+)/""")
@@ -170,11 +179,36 @@ fun inferPersistHints(
     val rootConfigFiles = listOf(
         "config.yaml", "config.yml", "config.toml", "config.json",
         "settings.json", "settings.toml", "app.conf",
+        // Extended config formats
+        "config.ini", "config.cfg", "config.xml", "config.properties",
+        "settings.ini", "settings.cfg", "settings.xml",
+        "app.ini", "app.cfg", "app.xml",
     )
     val rootFiles = filePaths.map { it.substringAfterLast("/") }
     for (configFile in rootConfigFiles) {
         if (rootFiles.contains(configFile) && persistTargets.isEmpty()) {
             notes.add("Source contains root-level config file: $configFile. The app likely creates this file at runtime.")
+        }
+    }
+
+    // ---- Archive-internal config file scanning ----
+
+    val archiveConfigExtensions = setOf(".ini", ".cfg", ".conf", ".xml")
+    val nonConfigStems = setOf("uninstall", "install", "setup", "readme")
+
+    for (path in filePaths) {
+        val depth = path.count { it == '/' }
+        if (depth !in 1..2) continue // only one or two levels deep
+
+        val filename = path.substringAfterLast("/")
+        val dotIndex = filename.lastIndexOf('.')
+        if (dotIndex < 0) continue
+
+        val stem = filename.substring(0, dotIndex).lowercase()
+        val ext = filename.substring(dotIndex).lowercase()
+
+        if (ext in archiveConfigExtensions && nonConfigStems.none { stem.startsWith(it) }) {
+            notes.add("Archive contains config file: $filename. Consider adding to persist.")
         }
     }
 

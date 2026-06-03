@@ -1,9 +1,7 @@
 package com.scoopai.core
 
 import ai.koog.agents.core.agent.AIAgent
-import ai.koog.agents.core.agent.AIAgentService
 import ai.koog.agents.core.agent.GraphAIAgent
-import ai.koog.agents.core.agent.createAgentTool
 import ai.koog.agents.core.agent.config.AIAgentConfig
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.features.eventHandler.feature.handleEvents
@@ -15,26 +13,29 @@ import com.scoopai.core.agent.AnalyzeOutput
 import com.scoopai.core.agent.PhaseTools
 import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.agent.prompt.REVIEW_AGENT_SYSTEM_PROMPT
-import com.scoopai.core.agent.prompt.REVIEW_TOOL_DESCRIPTION
-import com.scoopai.core.agent.prompt.REVIEW_TOOL_INPUT_DESCRIPTION
 import com.scoopai.core.agent.prompt.buildAnalyzePrompt
 import com.scoopai.core.agent.prompt.buildGeneratePrompt
+import com.scoopai.core.agent.prompt.buildRefinePrompt
 import com.scoopai.core.agent.prompt.buildResearchPrompt
 import com.scoopai.core.agent.scoopManifestStrategy
-import ai.koog.agents.core.tools.ToolBase
+import com.scoopai.core.utils.logLlmResponse
+import com.scoopai.core.utils.sanitizeForLog
 import com.scoopai.core.llm.LlmParamsBuilder
+import com.scoopai.core.tools.api.ManifestIo
 import com.scoopai.core.utils.sanitizeForLog
 import io.github.oshai.kotlinlogging.KotlinLogging
 
 private val logger = KotlinLogging.logger {}
 
 /**
- * Generates a Scoop manifest using a Koog graph strategy with three phases
- * (research -> analyze -> generate), routed by conditional edges.
+ * Generates a Scoop manifest using a Koog graph strategy with three LLM phases
+ * (research → analyze → generate) and a deterministic verify + optional refine loop.
  *
- * This class focuses on **orchestration**: connecting the strategy, tools,
- * and prompts. Prompt content is in [prompt][com.scoopai.core.agent.prompt],
- * LLM parameter construction is in [LlmParamsBuilder][com.scoopai.core.llm.LlmParamsBuilder].
+ * Flow: research(LLM) → analyze(LLM) → prepareManifest(deterministic) → generate(LLM) → verify(validate+review)
+ *                                                                                           ↓ pass        ↓ fail
+ *                                                                                      nodeFinish    refine(LLM, optional)
+ *                                                                                                        ↓ (max 3)
+ *                                                                                                     verify
  */
 class ScoopManifestGenerator(
     private val promptExecutor: PromptExecutor,
@@ -42,6 +43,8 @@ class ScoopManifestGenerator(
     private val toolRegistry: ToolRegistry,
     private val maxIterations: Int,
     private val thinkingLevel: String? = null,
+    /** Validator for manifest JSON. Used by the verify node. */
+    private val manifestIo: ManifestIo? = null,
 ) {
     /**
      * Model with [LLMCapability.ToolChoice] stripped so that Koog uses its
@@ -51,23 +54,22 @@ class ScoopManifestGenerator(
     private val modelWithoutToolChoice: LLModel by lazy {
         model.copy(capabilities = model.capabilities?.filter { it != LLMCapability.ToolChoice })
     }
+
     suspend fun generate(
         url: String,
         outputPath: String? = null,
         userPrompt: String? = null,
     ): ManifestResult {
+        val startTime = System.currentTimeMillis()
         // -- Track token usage across all LLM calls ------------------------
         val tokenAccumulator = TokenAccumulator()
 
         // -- Phase-specific tool subsets -----------------------------------
         val allTools = toolRegistry.tools
-
         val researchTools = allTools.filter { it.name in PhaseTools.RESEARCH_TOOL_NAMES }
         val analyzeTools = allTools.filter { it.name in PhaseTools.ANALYZE_TOOL_NAMES }
-        val reviewTool = createReviewTool(promptExecutor, tokenAccumulator)
-        val generateTools = allTools.filter { it.name in PhaseTools.GENERATE_TOOL_NAMES } + reviewTool
 
-        logger.info { "[tools] Total: ${allTools.size}, Research: ${researchTools.map { it.name }}, Analyze: ${analyzeTools.map { it.name }}, Generate: ${generateTools.map { it.name }}" }
+        logger.info { "[tools] Total: ${allTools.size}, Research: ${researchTools.map { it.name }}, Analyze: ${analyzeTools.map { it.name }}" }
 
         // -- Build prompt constructors for each phase ----------------------
         val researchPrompt: suspend (String) -> String =
@@ -76,25 +78,42 @@ class ScoopManifestGenerator(
             { buildAnalyzePrompt(it, userPrompt) }
         val generatePrompt: suspend (String, AnalyzeOutput, ResearchOutput?) -> String =
             { skeleton, analyze, research -> buildGeneratePrompt(skeleton, analyze, outputPath, userPrompt, research) }
+        val refinePrompt: suspend (RefineContext) -> String =
+            { buildRefinePrompt(it) }
+
+        // -- Create review executor (independent LLM agent) ----------------
+        val reviewAgent = AIAgent(
+            promptExecutor = promptExecutor,
+            llmModel = model,
+            toolRegistry = ToolRegistry.EMPTY,
+            systemPrompt = REVIEW_AGENT_SYSTEM_PROMPT,
+            maxIterations = 5,
+        ) {
+            handleEvents {
+                onLLMCallCompleted { ctx ->
+                    ctx.response?.metaInfo?.inputTokensCount?.let { tokenAccumulator.input += it.toLong() }
+                    ctx.response?.metaInfo?.outputTokensCount?.let { tokenAccumulator.output += it.toLong() }
+                }
+            }
+        }
+        // Wrap the review agent as a simple suspend function
+        val reviewExecutor: suspend (String) -> String = { manifest ->
+            @Suppress("UNCHECKED_CAST")
+            (reviewAgent as GraphAIAgent<String, String>).run(manifest)
+        }
 
         val llmParams = LlmParamsBuilder.build(modelWithoutToolChoice, thinkingLevel)
         val strategy = scoopManifestStrategy(
             researchTools = researchTools,
             analyzeTools = analyzeTools,
-            generateTools = generateTools,
             llmParams = llmParams,
             researchPromptBuilder = researchPrompt,
             analyzePromptBuilder = analyzePrompt,
             generatePromptBuilder = generatePrompt,
+            refinePromptBuilder = refinePrompt,
+            manifestIo = manifestIo,
+            reviewExecutor = reviewExecutor,
         )
-
-        // Create an expanded tool registry that includes the review tool.
-        // The review tool must be in the parent agent's registry for Koog to
-        // find its implementation when the subgraph LLM calls it.
-        val expandedToolRegistry = ToolRegistry {
-            tools(toolRegistry.tools)
-            tool(reviewTool)
-        }
 
         val agentConfig = AIAgentConfig(
             prompt = prompt("chat") {
@@ -108,7 +127,7 @@ class ScoopManifestGenerator(
             promptExecutor = promptExecutor,
             agentConfig = agentConfig,
             strategy = strategy,
-            toolRegistry = expandedToolRegistry,
+            toolRegistry = toolRegistry,
         ) {
             handleEvents {
                 onToolCallStarting { ctx ->
@@ -122,6 +141,7 @@ class ScoopManifestGenerator(
                 onLLMCallCompleted { ctx ->
                     ctx.response?.metaInfo?.inputTokensCount?.let { tokenAccumulator.input += it.toLong() }
                     ctx.response?.metaInfo?.outputTokensCount?.let { tokenAccumulator.output += it.toLong() }
+                    logLlmResponse(ctx.response, tokenAccumulator)
                 }
                 onAgentCompleted {
                     logger.info { "[agent] Agent completed." }
@@ -130,39 +150,11 @@ class ScoopManifestGenerator(
         }
 
         val result = agent.run(url)
-        return result.copy(tokenUsage = TokenUsage(tokenAccumulator.input, tokenAccumulator.output))
+        val elapsed = System.currentTimeMillis() - startTime
+        return result.copy(
+            tokenUsage = TokenUsage(tokenAccumulator.input, tokenAccumulator.output),
+            durationMs = elapsed,
+        )
     }
 
-    /**
-     * Creates an independent review agent wrapped as a tool for the refine phase.
-     * The review agent is a pure text reasoning agent with NO tools and NO shared context.
-     */
-    private fun createReviewTool(
-        executor: PromptExecutor,
-        accumulator: TokenAccumulator,
-    ): ToolBase<*, *> {
-        val reviewAgent = AIAgent(
-            promptExecutor = executor,
-            llmModel = model,
-            toolRegistry = ToolRegistry.EMPTY,
-            systemPrompt = REVIEW_AGENT_SYSTEM_PROMPT,
-            maxIterations = 5,
-        ) {
-            handleEvents {
-                onLLMCallCompleted { ctx ->
-                    ctx.response?.metaInfo?.inputTokensCount?.let { accumulator.input += it.toLong() }
-                    ctx.response?.metaInfo?.outputTokensCount?.let { accumulator.output += it.toLong() }
-                }
-            }
-        }
-
-        @Suppress("UNCHECKED_CAST")
-        return AIAgentService
-            .fromAgent(reviewAgent as GraphAIAgent<String, String>)
-            .createAgentTool<String, String>(
-                agentName = PhaseTools.REVIEW_MANIFEST,
-                agentDescription = REVIEW_TOOL_DESCRIPTION,
-                inputDescription = REVIEW_TOOL_INPUT_DESCRIPTION,
-            )
-    }
 }

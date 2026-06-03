@@ -140,6 +140,33 @@ class ScoopCacheManager(
         return targetFile
     }
 
+    /**
+     * Download only the first [maxBytes] of a URL using HTTP Range request.
+     *
+     * Useful for lightweight installer-type detection without downloading a
+     * potentially large (200MB+) file entirely.
+     *
+     * The downloaded header is cached in a temp directory (not the Scoop cache).
+     * Returns the bytes as a ByteArray.
+     */
+    fun peekHeader(url: String, maxBytes: Int = 1024 * 1024): ByteArray {
+        logger.info { "[cache] Peeking header: $url (max $maxBytes bytes)" }
+        val request = HttpRequest.newBuilder()
+            .uri(URI.create(url))
+            .header("User-Agent", "scoop-ai/0.1.0")
+            .header("Range", "bytes=0-${maxBytes - 1}")
+            .GET()
+            .build()
+        val response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray())
+        val status = response.statusCode()
+        if (status !in 200..206) {
+            throw IllegalStateException("HTTP $status for Range request to $url")
+        }
+        val bytes = response.body()
+        logger.info { "[cache] Peeked ${bytes.size} bytes from $url (status=$status)" }
+        return bytes
+    }
+
     private fun download(url: String, target: Path) {
         val tmpTarget = target.resolveSibling("${target.fileName}.downloading")
         try {

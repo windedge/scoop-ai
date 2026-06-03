@@ -15,7 +15,7 @@ object ReferenceManifests {
         }
     },
     "bin": "rg.exe",
-    "checkver": "github",
+    "checkver": { "github": "https://github.com/BurntSushi/ripgrep" },
     "autoupdate": {
         "architecture": {
             "64bit": {
@@ -38,7 +38,7 @@ object ReferenceManifests {
         }
     },
     "bin": "lazygit.exe",
-    "checkver": "github",
+    "checkver": { "github": "https://github.com/jesseduffield/lazygit" },
     "autoupdate": {
         "architecture": {
             "64bit": {
@@ -194,7 +194,7 @@ object ReferenceManifests {
     ],
     "bin": "bat.exe",
     "persist": ["config", "syntaxes", "themes"],
-    "checkver": "github",
+    "checkver": { "github": "https://github.com/sharkdp/bat" },
     "autoupdate": {
         "architecture": {
             "64bit": {

@@ -77,14 +77,23 @@ class JdkHttpGitHubApi(
     // JSON helper to safely extract primitive values
     // ---------------------------------------------------------------------------
 
-    private fun JsonObject.getStringOrNull(key: String): String? =
-        runCatching { this[key]?.jsonPrimitive?.content }.getOrNull()
+    private fun JsonObject.getStringOrNull(key: String): String? {
+        val element = this[key] ?: return null
+        if (element is JsonNull) return null
+        return runCatching { element.jsonPrimitive.content }.getOrNull()
+    }
 
-    private fun JsonObject.getLongOrNull(key: String): Long? =
-        runCatching { this[key]?.jsonPrimitive?.content?.toLongOrNull() }.getOrNull()
+    private fun JsonObject.getLongOrNull(key: String): Long? {
+        val element = this[key] ?: return null
+        if (element is JsonNull) return null
+        return runCatching { element.jsonPrimitive.content.toLongOrNull() }.getOrNull()
+    }
 
-    private fun JsonObject.getIntOrNull(key: String): Int? =
-        runCatching { this[key]?.jsonPrimitive?.content?.toIntOrNull() }.getOrNull()
+    private fun JsonObject.getIntOrNull(key: String): Int? {
+        val element = this[key] ?: return null
+        if (element is JsonNull) return null
+        return runCatching { element.jsonPrimitive.content.toIntOrNull() }.getOrNull()
+    }
 
     // ---------------------------------------------------------------------------
     // Tool implementations
@@ -125,12 +134,12 @@ class JdkHttpGitHubApi(
         val body = httpGet("https://api.github.com/repos/$ownerNotNull/$repoNotNull")
         val json = Json.parseToJsonElement(body).jsonObject
 
-        val license = json["license"]?.jsonObject
+        val license = json["license"]?.takeIf { it !is JsonNull }?.jsonObject
         buildJsonObject {
             put("full_name", json.getStringOrNull("full_name") ?: "$ownerNotNull/$repoNotNull")
             put("description", json.getStringOrNull("description"))
             put("homepage", json.getStringOrNull("homepage"))
-            put("license", license?.getStringOrNull("spdx_id"))
+            put("license", license?.getStringOrNull("spdx_id") ?: "NOASSERTION")
             put("default_branch", json.getStringOrNull("default_branch"))
             put("stars", json.getIntOrNull("stargazers_count"))
             put("forks", json.getIntOrNull("forks_count"))

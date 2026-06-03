@@ -126,6 +126,60 @@ class JdkHttpGitHubApiTest {
     }
 
     // ---------------------------------------------------------------
+    // `fetchRepoInfo returns NOASSERTION when license is null`
+    // ---------------------------------------------------------------
+    @Test
+    fun `fetchRepoInfo returns NOASSERTION when license is null`() = runBlocking {
+        val httpSpy = object : RetryingHttpClient() {
+            override fun get(url: String, headers: Map<String, String>): HttpResponse<String> {
+                return StubHttpResponse(body = """{"license": null, "full_name": "o/r", "description": "test"}""")
+            }
+        }
+        val api = JdkHttpGitHubApi(httpClient = httpSpy)
+
+        val result = api.fetchRepoInfo(owner = "o", repo = "r")
+        val json = Json.parseToJsonElement(result).jsonObject
+
+        assertEquals("NOASSERTION", json["license"]?.jsonPrimitive?.content)
+    }
+
+    // ---------------------------------------------------------------
+    // `fetchRepoInfo returns NOASSERTION when spdx_id is null`
+    // ---------------------------------------------------------------
+    @Test
+    fun `fetchRepoInfo returns NOASSERTION when spdx_id is null`() = runBlocking {
+        val httpSpy = object : RetryingHttpClient() {
+            override fun get(url: String, headers: Map<String, String>): HttpResponse<String> {
+                return StubHttpResponse(body = """{"license": {"spdx_id": null}, "full_name": "o/r", "description": "test"}""")
+            }
+        }
+        val api = JdkHttpGitHubApi(httpClient = httpSpy)
+
+        val result = api.fetchRepoInfo(owner = "o", repo = "r")
+        val json = Json.parseToJsonElement(result).jsonObject
+
+        assertEquals("NOASSERTION", json["license"]?.jsonPrimitive?.content)
+    }
+
+    // ---------------------------------------------------------------
+    // `fetchRepoInfo returns spdx_id when license is present`
+    // ---------------------------------------------------------------
+    @Test
+    fun `fetchRepoInfo returns spdx_id when license is present`() = runBlocking {
+        val httpSpy = object : RetryingHttpClient() {
+            override fun get(url: String, headers: Map<String, String>): HttpResponse<String> {
+                return StubHttpResponse(body = """{"license": {"spdx_id": "MIT"}, "full_name": "o/r", "description": "test"}""")
+            }
+        }
+        val api = JdkHttpGitHubApi(httpClient = httpSpy)
+
+        val result = api.fetchRepoInfo(owner = "o", repo = "r")
+        val json = Json.parseToJsonElement(result).jsonObject
+
+        assertEquals("MIT", json["license"]?.jsonPrimitive?.content)
+    }
+
+    // ---------------------------------------------------------------
     // `structuredError still detects rate-limit 403s`
     // ---------------------------------------------------------------
     @Test

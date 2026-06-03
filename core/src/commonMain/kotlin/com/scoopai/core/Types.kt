@@ -1,5 +1,7 @@
 package com.scoopai.core
 
+import kotlinx.serialization.Serializable
+
 /**
  * Result of a full manifest generation run.
  *
@@ -15,6 +17,22 @@ data class ManifestResult(
     val suggestedAppName: String? = null,
     val noAssets: Boolean = false,
     val tokenUsage: TokenUsage? = null,
+    /** Total elapsed time in milliseconds */
+    val durationMs: Long = 0L,
+)
+
+/**
+ * Context passed to the refine subgraph when manifest validation/review fails.
+ *
+ * @property manifest The current manifest JSON (may contain issues).
+ * @property feedback Description of issues to fix.
+ * @property retryCount Current refinement attempt (1-based).
+ */
+@kotlinx.serialization.Serializable
+data class RefineContext(
+    val manifest: String,
+    val feedback: String,
+    val retryCount: Int,
 )
 
 /**

@@ -153,6 +153,7 @@ fun main(args: Array<String>) {
                 model = config.model,
                 toolRegistry = toolRegistry,
                 maxIterations = 500,
+                manifestIo = manifestIo,
             )
 
             val outputPath = resolvedOutput.ifBlank { null }
@@ -179,10 +180,18 @@ fun main(args: Array<String>) {
         val writePath = output.ifBlank { "bucket/$appNameForOutput.json" }
         manifestIo.write(manifest, writePath)
         println("Written to $writePath")
+        val absoluteWritePath = java.io.File(writePath).absoluteFile.canonicalPath
+        println("Absolute path: $absoluteWritePath")
         
         // ── Print token usage ────────────────────────────────────────
         result.tokenUsage?.let { usage ->
             println("Token usage: input=${usage.totalInputTokens} output=${usage.totalOutputTokens} total=${usage.totalTokens}")
+        }
+        if (result.durationMs > 0) {
+            val seconds = result.durationMs / 1000
+            val minutes = seconds / 60
+            val sec = seconds % 60
+            println("Duration: ${minutes}m ${sec}s (${result.durationMs}ms)")
         }
         
         // ── Finalize cache entries ─────────────────────────────────

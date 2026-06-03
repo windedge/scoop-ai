@@ -4,11 +4,16 @@ import com.scoopai.core.agent.AssetEntry
 import com.scoopai.core.agent.WindowsAsset
 import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.agent.AnalyzeOutput
+import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.addJsonArray
@@ -497,4 +502,75 @@ fun fixPowerShellEscaping(scriptLine: String): String {
     // If already escaped, do nothing
     if (scriptLine.contains(escaped)) return scriptLine
     return scriptLine.replace(target, escaped)
+}
+
+private val detLogger = KotlinLogging.logger {}
+
+/**
+ * Appends `#/dl.7z` to MSIX/APPX URLs if not already present.
+ * Scoop needs this suffix to treat MSIX as a 7z archive for extraction.
+ */
+internal fun addMsixDlSuffix(url: String): String {
+    if (url.endsWith(".msix") || url.endsWith(".appx")) {
+        val fragment = url.substringAfter('#')
+        if (fragment.isBlank()) {
+            return "$url#/dl.7z"
+        }
+    }
+    return url
+}
+
+/**
+ * Returns true if the URL points to a portable archive format (not an installer).
+ * Strips URL fragment before checking extension.
+ */
+internal fun isPortableArchiveUrl(url: String): Boolean {
+    val withoutFragment = url.substringBefore('#')
+    val lower = withoutFragment.lowercase()
+    return when {
+        lower.endsWith(".exe") || lower.endsWith(".msi") ||
+            lower.endsWith(".msix") || lower.endsWith(".appx") -> false
+        lower.endsWith(".zip") || lower.endsWith(".tar.gz") || lower.endsWith(".tgz") ||
+            lower.endsWith(".tar.xz") || lower.endsWith(".7z") || lower.endsWith(".tar") ||
+            lower.endsWith(".rpm") || lower.endsWith(".deb") -> true
+        else -> false
+    }
+}
+
+/**
+ * Auto-fills `bin` from `shortcuts` for portable archive manifests.
+ * If shortcuts exist but bin is empty/missing, and URL is a portable archive,
+ * adds shortcut exe paths as bin entries. Does NOT modify installer-type manifests.
+ */
+internal fun autoFillBinFromShortcuts(manifestJson: String): String {
+    val json = try {
+        Json.parseToJsonElement(manifestJson) as? JsonObject ?: return manifestJson
+    } catch (_: Exception) {
+        return manifestJson
+    }
+
+    // Only auto-fill for portable archives
+    val url = json["url"]?.jsonPrimitive?.content
+        ?: json["architecture"]?.jsonObject?.get("64bit")?.jsonObject?.get("url")?.jsonPrimitive?.content
+        ?: json["architecture"]?.jsonObject?.get("32bit")?.jsonObject?.get("url")?.jsonPrimitive?.content
+        ?: return manifestJson
+
+    if (!isPortableArchiveUrl(url)) return manifestJson
+
+    // Skip if bin already has entries
+    if (json["bin"] != null) return manifestJson
+
+    // Skip if no shortcuts
+    val shortcuts = json["shortcuts"]?.jsonArray ?: return manifestJson
+
+    val shortcutExes = shortcuts.mapNotNull {
+        (it as? JsonArray)?.getOrNull(0)?.jsonPrimitive?.content
+    }
+    if (shortcutExes.isEmpty()) return manifestJson
+
+    val binJson = JsonArray(shortcutExes.map { JsonPrimitive(it) })
+    val modified = json.toMutableMap().apply {
+        put("bin", binJson)
+    }
+    return JsonObject(modified).toString()
 }

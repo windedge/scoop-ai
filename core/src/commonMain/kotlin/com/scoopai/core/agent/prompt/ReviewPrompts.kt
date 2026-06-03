@@ -17,7 +17,7 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
 
 ### 1. persist necessity
 - Only config-intensive desktop applications (editors, IDEs, browsers, terminals with profiles, database tools) legitimately need `persist`.
-- CLI tools (command-line utilities like ripgrep, fd, bat, delta, jq, yq, etc.) almost NEVER need `persist`.
+- CLI tools (command-line utilities like ripgrep, fd, delta, jq, yq) rarely need persist. However, some CLI tools DO need persist for user config, themes, syntaxes, or history databases (e.g. bat, starship, zoxide). Verify each case individually.
 - If `persist` contains only an empty directory name (e.g. `"persist": ["config"]`) without corresponding `pre_install` to create initial config, it is suspicious.
 - Acceptable persist: Electron config directories, plugin directories for IDEs, profile directories for terminals.
 
@@ -31,6 +31,10 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
 - For projects that dual-license (e.g. MIT or Apache-2.0), check if the manifest correctly reflects this.
 - Flag if the license seems generic/wrong (e.g. "MIT" for a project that uses "GPL-3.0").
 - Flag if the license has unnecessary suffix details that should be simplified.
+
+### GPL license suffix
+- If the GPL license uses a bare identifier like `GPL-3.0` (without `-only` or `-or-later`), flag as **warning** — the suffix should be explicit.
+- If the suffix is present (`-only` or `-or-later`), accept it — the research phase already verified the exact license text. Do NOT second-guess the suffix.
 
 ### 4. bin reasonableness
 - The `bin` field should contain only the main user-facing executables.
@@ -56,16 +60,28 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
 - If `env_add_path` and `bin` are both present for the same tool, flag it — only one should be used.
 - If the manifest has `env_add_path` but no `bin`, that is acceptable (e.g. version managers).
 
-### 8. GUI vs CLI: unnecessary fields
-- A **GUI application** (launched via shortcut, tray icon, or window) should NOT have `bin`, `env_set`, or `env_add_path`. These are only for CLI tools that run from the terminal.
-- Clues that an app is GUI-only: it has `shortcuts` but the executable is NOT a console tool (e.g. editors, IDEs, browsers, dev environments like Laragon, system tray utilities like SuperF4).
-- If the manifest has both `shortcuts` AND `bin`/`env_set`/`env_add_path` for the same executable, this MUST be flagged as ERROR (severity: "error") — unless the app is intentionally dual-mode (both GUI and CLI, like WezTerm or electerm). The reviewer can distinguish: single-exe GUI apps (SuperF4, Laragon) get ERROR; terminal/shell apps (WezTerm, electerm) are acceptable.
-- `env_set` is especially suspicious for GUI apps — it is almost never needed.
+### 8. bin/shortcuts overlap: default ACCEPT (do not flag)
+- A manifest MAY have both `shortcuts` and `bin` pointing to the same executable — many apps (editors, terminals, note-taking apps like VNote) work both as GUI and CLI. This is NOT an error.
+- Only flag if you are CERTAIN the executable is GUI-only (no CLI mode). Clues: system tray utility (SuperF4), service launcher (Laragon), or control panel applet.
+- When in doubt, ACCEPT both `shortcuts` and `bin` — having extra `bin` entries is harmless and gives users CLI access.
 
 ### 9. checkver presence
 - Every Scoop manifest MUST have a `checkver` field to enable automatic version detection.
 - If `checkver` is missing entirely, flag it as an error.
 - If `checkver` is present but uses the shorthand `"github"` instead of the full URL form `{"github":"https://..."}`, that is acceptable but worth a note (not an error).
+
+### 10. Per-architecture bin pattern
+- Some CLIs have different executables per architecture (e.g. `app-3.1.0-x86_64.exe` for 64bit, `app-3.1.0-i686.exe` for 32bit). In this case, `bin` is placed **inside** each architecture block, NOT at the top level.
+- This is **CORRECT** — do NOT flag it. Example:
+  ```json
+  "64bit": { "url": "...", "bin": [["app-3.1.0-x86_64.exe", "app"]] }
+  ```
+- The different filenames per architecture are intentional (versioned exe pattern).
+
+### License validation
+- If `license` is `"Proprietary"`, flag as a **warning**. Some apps are genuinely proprietary.
+- If `license` is missing or empty, flag as an **error**.
+- If `license` is not a valid SPDX identifier, flag as an **error**.
 
 ## Output Format
 
@@ -96,16 +112,3 @@ If no issues found:
 ```
 """.trimIndent()
 
-/** Description for the `__review_manifest__` tool, shown to the generating LLM. */
-val REVIEW_TOOL_DESCRIPTION: String = """
-An independent manifest review specialist. Pass your complete manifest JSON (as a string)
-to get an impartial review of common packaging issues: unnecessary persist or env_set,
-inaccurate license, broken bin, or missing autoupdate.hash. The reviewer has NO context
-about how the manifest was generated — it evaluates purely on manifest content.
-Returns a JSON with `approved` (boolean), `issues` (list), and `summary` (string).
-""".trimIndent()
-
-/** Description of the input parameter for the `__review_manifest__` tool. */
-val REVIEW_TOOL_INPUT_DESCRIPTION: String = """
-The complete Scoop manifest JSON as a string. Must be valid JSON starting with `{` and ending with `}`.
-""".trimIndent()

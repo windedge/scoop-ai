@@ -1,17 +1,24 @@
 package com.scoopai.core.agent
 
+import ai.koog.agents.core.agent.entity.createStorageKey
 import ai.koog.agents.core.dsl.builder.node
 import ai.koog.agents.core.dsl.builder.strategy
 import ai.koog.agents.core.tools.ToolBase
-import ai.koog.agents.core.tools.annotations.InternalAgentToolsApi
 import ai.koog.agents.ext.agent.subgraphWithTask
 import ai.koog.prompt.params.LLMParams
 import com.scoopai.core.ManifestResult
+import com.scoopai.core.RefineContext
 import com.scoopai.core.agent.nodes.assembleManifestSkeleton
+import com.scoopai.core.agent.nodes.autoFillBinFromShortcuts
+import com.scoopai.core.tools.api.ManifestIo
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import io.github.oshai.kotlinlogging.KotlinLogging
+
+private val logger = KotlinLogging.logger {}
 
 /** Shared Json instance for phase output parsing (lenient). */
 internal val phaseJson: Json = Json {
@@ -23,51 +30,60 @@ internal val phaseJson: Json = Json {
 /**
  * Creates a graph strategy for generating Scoop manifests.
  *
- * Flow:
+ * Flow (v3 — 3-phase + edge-based refine loop):
  * ```
- * nodeStart → research(LLM) →
- *   [no_windows] → finishNoAssets
- *   [ok] → analyze(LLM) → filterBin(deterministic) → generate(LLM) → nodeFinish
+ * nodeStart → research(LLM, research tools)
+ *   [no_windows] → finishNoAssets → nodeFinish
+ *   [ok] → analyze(LLM, analysis tools)
+ *        → prepareManifest(deterministic: skeleton assembly)
+ *        → generate(LLM, no tools: skeleton review + finalize)
+ *        → verify(validate + review)
+ *          [pass] → nodeFinish
+ *          [fail + retry ≤ 3] → refine(LLM, no tools) → verify (loop)
+ *          [fail + retry > 3] → nodeFinish (exhausted)
  * ```
  *
- * Each LLM phase runs as a [subgraphWithTask]: the LLM uses tools to gather data,
- * then calls `finalize_task_result` to return a structured result.
- *
- * Deterministic nodes:
- * - filterBin: Removes helper/proxy/updater exe from bin list
+ * @param researchTools Tools available in the research phase.
+ * @param analyzeTools Tools available in the analyze phase (hash/compute, archive listing, etc.).
+ * @param llmParams LLM parameters (thinking mode, etc.).
+ * @param researchPromptBuilder Builds the research prompt from a URL string.
+ * @param analyzePromptBuilder Builds the analyze prompt from [ResearchOutput].
+ * @param generatePromptBuilder Builds the generate prompt from (skeleton, analyze, research).
+ * @param refinePromptBuilder Builds the refine prompt from [RefineContext].
+ * @param manifestIo Structural validate tool (used in verify node).
+ * @param reviewExecutor Semantic review executor (independent LLM agent, used in verify node).
  */
-@OptIn(InternalAgentToolsApi::class)
 fun scoopManifestStrategy(
     researchTools: List<ToolBase<*, *>> = emptyList(),
     analyzeTools: List<ToolBase<*, *>> = emptyList(),
-    generateTools: List<ToolBase<*, *>> = emptyList(),
     llmParams: LLMParams? = null,
     researchPromptBuilder: (suspend (String) -> String)? = null,
     analyzePromptBuilder: (suspend (ResearchOutput) -> String)? = null,
-    /** Replaces generatePromptBuilder. Receives (skeleton, analyzeOutput, researchOutput) and returns generate prompt. */
     generatePromptBuilder: (suspend (String, AnalyzeOutput, ResearchOutput?) -> String)? = null,
-) = strategy<String, ManifestResult>("scoop_manifest_generator") {
+    refinePromptBuilder: (suspend (RefineContext) -> String)? = null,
+    manifestIo: ManifestIo? = null,
+    reviewExecutor: (suspend (String) -> String)? = null,
+) = strategy<String, ManifestResult>("scoop_manifest_v3") {
 
-    // Capture research data and suggested_app_name across phases
+    // ── Storage keys & captured state ─────────────────────────────
+    val retryCountKey = createStorageKey<Int>("refine_retry_count")
+    val maxRetries = 3
     var researchData: ResearchOutput? = null
+    var analyzeData: AnalyzeOutput? = null
     var suggestedAppName: String? = null
-    var lastAnalyzeOutput: AnalyzeOutput? = null
+    var finalManifest: String? = null
 
     // ── Research phase (LLM) ──
     val research by subgraphWithTask<String, ResearchOutput>(
         tools = researchTools,
         llmParams = llmParams,
     ) { input ->
-        researchPromptBuilder?.invoke(input) ?: input.toString()
+        researchPromptBuilder?.invoke(input) ?: input
     }
 
     // ── Finish when no Windows assets exist ──
     val finishNoAssets by node<ResearchOutput, ManifestResult>("finishNoAssets") { research ->
-        ManifestResult(
-            manifest = "",
-            suggestedAppName = research.suggested_app_name,
-            noAssets = true,
-        )
+        ManifestResult(manifest = "", suggestedAppName = research.suggested_app_name, noAssets = true)
     }
 
     // ── Analyze phase (LLM) ──
@@ -82,16 +98,60 @@ fun scoopManifestStrategy(
 
     // ── Deterministic: assemble JSON skeleton from research + analyze data ──
     val prepareManifest by node<AnalyzeOutput, String>("prepareManifest") { analyzeOutput ->
-        lastAnalyzeOutput = analyzeOutput
+        analyzeData = analyzeOutput
         assembleManifestSkeleton(researchData!!, analyzeOutput)
     }
 
-    // ── Generate phase (LLM): finalize manifest, add checkver/autoupdate and validate ──
+    // ── Generate phase (LLM, no tools: review skeleton + finalize) ──
     val generate by subgraphWithTask<String, String>(
-        tools = generateTools,
+        tools = emptyList<ToolBase<*, *>>(),
         llmParams = llmParams,
-    ) { manifestSkeleton ->
-        generatePromptBuilder?.invoke(manifestSkeleton, lastAnalyzeOutput!!, researchData) ?: manifestSkeleton
+    ) { skeleton ->
+        storage.set(retryCountKey, 0)
+        generatePromptBuilder?.invoke(skeleton, analyzeData!!, researchData) ?: skeleton
+    }
+
+    // ── Refine phase (LLM, no tools, lightweight fix loop) ──
+    val refine by subgraphWithTask<RefineContext, String>(
+        tools = emptyList<ToolBase<*, *>>(),
+        llmParams = llmParams,
+    ) { input ->
+        refinePromptBuilder?.invoke(input) ?: ""
+    }
+
+    // ── Verify node (deterministic: post-process + validate + review) ──
+    val verify by node<String, RefineContext?>("verify") { rawManifest ->
+        // Post-process: auto-fill bin from shortcuts for portable archives
+        val manifest = postProcessManifest(rawManifest)
+        finalManifest = manifest
+        val errors = mutableListOf<String>()
+
+        // Step 1: Structural validate
+        if (manifestIo != null) {
+            try {
+                val validateJson = manifestIo.validate(manifest)
+                errors.addAll(parseValidateErrors(validateJson))
+            } catch (e: Exception) {
+                errors.add("Validate error: ${e.message}")
+            }
+        }
+
+        // Step 2: Semantic review (only when validate passes)
+        if (errors.isEmpty() && reviewExecutor != null) {
+            try {
+                errors.addAll(parseReviewErrors(reviewExecutor(manifest)))
+            } catch (e: Exception) {
+                logger.warn { "[verify] Review agent error: ${e.message}" }
+            }
+        }
+
+        if (errors.isNotEmpty()) {
+            val currentRetry = (storage.get(retryCountKey) ?: 0) + 1
+            storage.set(retryCountKey, currentRetry)
+            RefineContext(manifest = manifest, feedback = errors.joinToString("\n- ", "- "), retryCount = currentRetry)
+        } else {
+            null
+        }
     }
 
     // ── Edges ──
@@ -109,18 +169,60 @@ fun scoopManifestStrategy(
 
     edge(finishNoAssets forwardTo nodeFinish)
 
-    // Main path: analyze → prepareManifest → generate → finish (with JSON extraction)
+    // Main path: analyze → prepareManifest → generate → verify
     edge(analyze forwardTo prepareManifest)
     edge(prepareManifest forwardTo generate)
-    edge(generate forwardTo nodeFinish transformed { generateOutput ->
-        val manifest = extractJsonBlock(generateOutput) ?: generateOutput
-        ManifestResult(manifest, suggestedAppName)
+    edge(generate forwardTo verify)
+
+    // Verify → pass → finish
+    edge(verify forwardTo nodeFinish onCondition { ctx ->
+        ctx == null
+    } transformed { _ ->
+        ManifestResult(
+            manifest = extractJsonBlock(finalManifest!!) ?: finalManifest!!,
+            suggestedAppName = suggestedAppName,
+        )
+    })
+
+    // Verify → fail + retry ≤ 3 → refine loop
+    edge(verify forwardTo refine onCondition { ctx ->
+        ctx != null && ctx.retryCount <= maxRetries
+    } transformed { ctx ->
+        ctx!!
+    })
+
+    // Refine → back to verify
+    edge(refine forwardTo verify)
+
+    // Verify → fail + retry > 3 → exhausted finish
+    edge(verify forwardTo nodeFinish onCondition { ctx ->
+        ctx != null && ctx.retryCount > maxRetries
+    } transformed {
+        logger.warn { "[strategy] Refine exhausted after $maxRetries attempts. Returning last manifest with issues." }
+        ManifestResult(
+            manifest = extractJsonBlock(finalManifest!!) ?: finalManifest!!,
+            suggestedAppName = suggestedAppName,
+        )
     })
 }
 
 // ---------------------------------------------------------------------------
 // JSON helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Applies deterministic post-processing rules to a manifest after LLM generation.
+ *
+ * Currently delegates to [autoFillBinFromShortcuts] for portable archives. As more
+ * deterministic post-processing rules are added, this is the single extension point.
+ */
+internal fun postProcessManifest(manifestJson: String): String {
+    val processed = autoFillBinFromShortcuts(manifestJson)
+    if (processed != manifestJson) {
+        logger.info { "[post-process] Manifest modified by autoFillBinFromShortcuts" }
+    }
+    return processed
+}
 
 private val codeBlockRegex = Regex("```(?:json)?\\s*\\n?([\\s\\S]*?)```")
 
@@ -158,5 +260,47 @@ internal fun parseResearchStatus(output: String): ResearchStatus {
         phaseJson.decodeFromString(StatusWrapper.serializer(), output).status
     } catch (_: Exception) {
         ResearchStatus.OK
+    }
+}
+
+/**
+ * Extracts error messages from a validate JSON result.
+ * Returns empty list when valid=true.
+ */
+internal fun parseValidateErrors(validateJson: String): List<String> {
+    return try {
+        val obj = Json.parseToJsonElement(validateJson).jsonObject
+        if (obj["valid"]?.jsonPrimitive?.content == "true") return emptyList()
+        obj["errors"]?.jsonArray
+            ?.mapNotNull { it.jsonPrimitive.content.takeIf { c -> c.isNotBlank() } }
+            ?: emptyList()
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+/**
+ * Extracts error-severity issue messages from a review JSON result.
+ * Returns empty list when approved=true.
+ */
+
+/**
+ * Checks whether a manifest represents a portable archive (ZIP, tar.gz, 7z) vs an installer.
+ *
+ * Portable archives can have their exe files added to `bin` for CLI access.
+ * Installers (innosetup/nsis/msi/msix) should keep their `shortcuts`-only judgment from the LLM.
+ */
+
+
+internal fun parseReviewErrors(reviewJson: String): List<String> {
+    return try {
+        val obj = Json.parseToJsonElement(reviewJson).jsonObject
+        if (obj["approved"]?.jsonPrimitive?.content == "true") return emptyList()
+        obj["issues"]?.jsonArray
+            ?.filter { it.jsonObject["severity"]?.jsonPrimitive?.content == "error" }
+            ?.mapNotNull { it.jsonObject["message"]?.jsonPrimitive?.content }
+            ?: emptyList()
+    } catch (_: Exception) {
+        emptyList()
     }
 }

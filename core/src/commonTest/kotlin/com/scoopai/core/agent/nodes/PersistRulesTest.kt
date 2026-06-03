@@ -237,4 +237,138 @@ class PersistRulesTest {
         assertTrue("Electron" in hints.frameworks)
         assertTrue(hints.envTargets.containsKey("MYAPP_CONFIG_PATH"))
     }
+
+    // ---------------------------------------------------------------
+    // Extended rootConfigFiles detection (.ini, .cfg, .xml, .properties)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `config ini at root yields persist hint`() {
+        val hints = inferPersistHints(
+            filePaths = listOf("src/main.rs", "config.ini"),
+            fileSnippets = emptyMap(),
+        )
+        assertTrue(hints.notes.any { it.contains("config.ini") })
+    }
+
+    @Test
+    fun `config cfg at root yields persist hint`() {
+        val hints = inferPersistHints(
+            filePaths = listOf("src/main.rs", "config.cfg"),
+            fileSnippets = emptyMap(),
+        )
+        assertTrue(hints.notes.any { it.contains("config.cfg") })
+    }
+
+    @Test
+    fun `settings xml at root yields persist hint`() {
+        val hints = inferPersistHints(
+            filePaths = listOf("src/main.rs", "settings.xml"),
+            fileSnippets = emptyMap(),
+        )
+        assertTrue(hints.notes.any { it.contains("settings.xml") })
+    }
+
+    @Test
+    fun `config properties at root yields persist hint`() {
+        val hints = inferPersistHints(
+            filePaths = listOf("src/main.rs", "config.properties"),
+            fileSnippets = emptyMap(),
+        )
+        assertTrue(hints.notes.any { it.contains("config.properties") })
+    }
+
+    // ---------------------------------------------------------------
+    // Archive-internal config file scanning (.ini, .cfg, .conf, .xml)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `ini files in one-level deep subdirectory yield archive config notes`() {
+        val hints = inferPersistHints(
+            filePaths = listOf("Resources/ColorSchemes.ini", "Resources/Schedules.ini"),
+            fileSnippets = emptyMap(),
+        )
+        assertTrue(hints.notes.any { it.contains("ColorSchemes.ini") })
+        assertTrue(hints.notes.any { it.contains("Schedules.ini") })
+    }
+
+    @Test
+    fun `cfg file in subdirectory yields archive config note`() {
+        val hints = inferPersistHints(
+            filePaths = listOf("config/app.cfg"),
+            fileSnippets = emptyMap(),
+        )
+        assertTrue(hints.notes.any { it.contains("app.cfg") })
+    }
+
+    @Test
+    fun `conf file in subdirectory yields archive config note`() {
+        val hints = inferPersistHints(
+            filePaths = listOf("app/daemon.conf"),
+            fileSnippets = emptyMap(),
+        )
+        assertTrue(hints.notes.any { it.contains("daemon.conf") })
+    }
+
+    @Test
+    fun `xml file two levels deep yields archive config note`() {
+        val hints = inferPersistHints(
+            filePaths = listOf("config/tools/settings.xml"),
+            fileSnippets = emptyMap(),
+        )
+        assertTrue(hints.notes.any { it.contains("settings.xml") })
+    }
+
+    // ---------------------------------------------------------------
+    // Negative cases — archive-internal false positives
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `uninstall ini in subdirectory is not flagged as config`() {
+        val hints = inferPersistHints(
+            filePaths = listOf("Resources/uninstall.ini"),
+            fileSnippets = emptyMap(),
+        )
+        assertFalse(hints.notes.any { it.contains("uninstall.ini") })
+    }
+
+    @Test
+    fun `readme ini in subdirectory is not flagged as config`() {
+        val hints = inferPersistHints(
+            filePaths = listOf("doc/readme.ini"),
+            fileSnippets = emptyMap(),
+        )
+        assertFalse(hints.notes.any { it.contains("readme.ini") })
+    }
+
+    @Test
+    fun `ini file more than two levels deep is not scanned`() {
+        val hints = inferPersistHints(
+            filePaths = listOf("resources/config/themes/colors.ini"),
+            fileSnippets = emptyMap(),
+        )
+        assertFalse(hints.notes.any { it.contains("colors.ini") })
+    }
+
+    // ---------------------------------------------------------------
+    // Existing functionality regression
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `config json at root still detected as root config`() {
+        val hints = inferPersistHints(
+            filePaths = listOf("src/main.rs", "config.json"),
+            fileSnippets = emptyMap(),
+        )
+        assertTrue(hints.notes.any { it.contains("config.json") })
+    }
+
+    @Test
+    fun `config yaml at root still detected as root config`() {
+        val hints = inferPersistHints(
+            filePaths = listOf("src/main.rs", "config.yaml"),
+            fileSnippets = emptyMap(),
+        )
+        assertTrue(hints.notes.any { it.contains("config.yaml") })
+    }
 }

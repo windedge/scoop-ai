@@ -27,7 +27,9 @@ When you have finished researching, call the `finalize_task_result` tool with yo
       "filename": "Filename on disk",
       "architecture": "64bit or 32bit or arm64",
       "asset_type": "zip or exe or msi",
-      "source": "release_api or official_page or derived"
+      "source": "release_api or official_page or derived",
+      "hash": "SHA-256 hash if available from GH API (optional, use when provided)",
+      "size": "File size in bytes if available from GH API (optional)"
     }
   ],
   "notes": "Any additional context for the analyze phase",
@@ -51,6 +53,12 @@ Rules:
 - Use searchTextInArchive on the source code zip to discover persist patterns in a single call, rather than reading individual files with fetchFileContent.
 - If GitHub API returns rate_limited (error_type: rate_limited), stop all GitHub API calls and proceed with available data or searchTextInArchive.
 - All fields except status, project, version are optional (omit or use empty string/list).
+
+IMPORTANT: The `result` parameter of `finalize_task_result` must be a raw JSON object, NOT a JSON string.
+- WRONG: result="{\"version\":\"1.0\",\"homepage\":\"...\"}"  ← string wrapping
+- RIGHT: result={"version":"1.0","homepage":"..."}            ← raw JSON object
+Do NOT wrap the JSON in quotes or call jsonStr() on it.
+
 - ONLY CALL TOOLS. Do NOT output text responses. When done, call finalize_task_result.
 """.trimIndent()
 
@@ -81,7 +89,8 @@ When you have finished analyzing, call the `finalize_task_result` tool with your
   "env_add_path": ["subdir\\bin", "subdir\\shims"],
   "versioned_bin": true or false (default false),
   "bin_aliases": ["alias1", "alias2"],
-  "installer_type": "zip or msi or innosetup or nsis",
+  "nsis_unsupported": true or false (default false, only relevant when installer_type is nsis),
+  "installer_type": "zip or msi or innosetup or nsis or nsis_unsupported",
   "notes": "Any additional context for the generate phase"
 }
 
@@ -99,6 +108,12 @@ Rules:
   * Set `bin_aliases` to short command names (e.g. `["xdelta3"]`).
   * The skeleton will generate per-architecture `bin` with `[versioned.exe, alias]` format.
   * Do NOT use `pre_install` to rename versioned executables.
+
+IMPORTANT: The `result` parameter of `finalize_task_result` must be a raw JSON object, NOT a JSON string.
+- WRONG: result="{\"version\":\"1.0\",\"homepage\":\"...\"}"  ← string wrapping
+- RIGHT: result={"version":"1.0","homepage":"..."}            ← raw JSON object
+Do NOT wrap the JSON in quotes or call jsonStr() on it.
+
 - ONLY CALL TOOLS. Do NOT output text responses. When done, call finalize_task_result.
 """.trimIndent()
 }

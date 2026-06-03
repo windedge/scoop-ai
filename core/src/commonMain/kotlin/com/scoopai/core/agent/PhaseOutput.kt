@@ -72,6 +72,10 @@ data class WindowsAsset(
     val asset_type: String = "",
     /** "release_api", "official_page", "derived" */
     val source: String = "",
+    /** SHA-256 hash from GH API digest (when available), or user-computed */
+    val hash: String = "",
+    /** Asset file size in bytes from GH API */
+    val size: Long = 0L,
 )
 
 /**
@@ -112,6 +116,10 @@ data class AnalyzeOutput(
     val bin_aliases: List<String> = emptyList(),
     /** "zip", "msi", "innosetup", "nsis", or "" */
     val installer_type: String = "",
+    /** True when NSIS installer was found to be unsupported by 7z extraction.
+     * Some NSIS 3 installers (e.g. spyder 6.1.4) cannot be extracted by 7z.
+     * When true, the LLM should NOT use #/dl.7z and should look for alternatives. */
+    val nsis_unsupported: Boolean = false,
     /** Per-architecture installer scripts (NSIS Electron). Key = architecture ("64bit"/"32bit"), value = PS script lines */
     val installer_scripts: Map<String, List<String>> = emptyMap(),
     /** Free-text notes for the generate phase */

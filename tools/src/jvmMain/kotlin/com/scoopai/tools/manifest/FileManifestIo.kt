@@ -38,7 +38,15 @@ class FileManifestIo(
                 return validationResult(false, errors, warnings)
             }
 
-            val obj = element.jsonObject
+            var obj = element.jsonObject
+
+            // Unwrap {"status":"...","manifest":"{...}"} wrapper that LLM sometimes produces
+            if (obj.containsKey("manifest") && !obj.containsKey("version")) {
+                val inner = obj["manifest"]?.jsonPrimitive?.contentOrNull
+                if (inner != null) {
+                    obj = Json.parseToJsonElement(inner).jsonObject
+                }
+            }
 
             // Check required field: version
             if (!obj.containsKey("version")) {
@@ -48,6 +56,11 @@ class FileManifestIo(
                 if (version.isNullOrBlank()) {
                     errors.add("Field 'version' must be a non-empty string")
                 }
+            }
+
+            // Check required field: license
+            if (!obj.containsKey("license") || obj["license"]?.jsonPrimitive?.contentOrNull.isNullOrBlank()) {
+                errors.add("Missing required field: license (SPDX identifier like MIT, GPL-3.0-or-later, etc.) — do NOT omit or leave empty")
             }
 
             // Check url or architecture
@@ -182,14 +195,27 @@ class FileManifestIo(
 
     /** Pretty-print JSON and normalize extract_dir slashes. */
     private fun formatManifest(rawJson: String): String {
-        val element = try {
-            Json.parseToJsonElement(rawJson)
+        // Unwrap {"status":"...","manifest":"{...}"} wrapper that LLM sometimes produces
+        val unwrapped = try {
+            val element = Json.parseToJsonElement(rawJson)
+            if (element is JsonObject && element.containsKey("manifest") && !element.containsKey("version")) {
+                val inner = element["manifest"]?.jsonPrimitive?.content
+                if (inner != null) inner else rawJson
+            } else {
+                rawJson
+            }
         } catch (_: Exception) {
-            // LLM output may be truncated — try auto-fixing missing closing braces
-            val openCount = rawJson.count { it == '{' }
-            val closeCount = rawJson.count { it == '}' }
+            rawJson
+        }
+
+        val element = try {
+            Json.parseToJsonElement(unwrapped)
+        } catch (_: Exception) {
+            // LLM output may be truncated - try auto-fixing missing closing braces
+            val openCount = unwrapped.count { it == '{' }
+            val closeCount = unwrapped.count { it == '}' }
             if (openCount > closeCount) {
-                val fixed = rawJson.trimEnd() + "}".repeat(openCount - closeCount)
+                val fixed = unwrapped.trimEnd() + "}".repeat(openCount - closeCount)
                 try {
                     val fixedElement = Json.parseToJsonElement(fixed)
                     return prettyJson.encodeToString(JsonElement.serializer(), fixedElement)
@@ -197,7 +223,7 @@ class FileManifestIo(
                     // Auto-fix didn't help, return original
                 }
             }
-            return rawJson
+            return unwrapped
         }
         return prettyJson.encodeToString(JsonElement.serializer(), element)
     }
@@ -386,15 +412,18 @@ class FileManifestIo(
         if (overlap.isNotEmpty()) {
             // If every bin entry is also in shortcuts with no extra CLI-only exe,
             // this is likely a GUI-only app and bin is unnecessary.
+            // Use WARNING only - some dual-mode apps (terminals, IDEs) legitimately need both.
+            // The LLM should decide based on semantic context, not a structural rule.
             if (overlap.size == binExes.size) {
-                errors.add(
+                warnings.add(
                     "bin references ${overlap.joinToString()} which is also in shortcuts. " +
-                    "GUI applications typically don't need 'bin' — remove it."
+                    "If this is a GUI-only application, consider removing 'bin'. " +
+                    "If it is dual-mode (terminal, IDE, editor), keep 'bin'."
                 )
             } else {
                 warnings.add(
                     "bin references ${overlap.joinToString()} which is also in shortcuts. " +
-                    "GUI applications typically don't need 'bin' — consider removing it."
+                    "If this is a GUI-only application, consider removing those 'bin' entries."
                 )
             }
         }
@@ -454,7 +483,8 @@ class FileManifestIo(
             archElement["url"]?.let { validateUrls(it, errors, "architecture.$archName.url") }
             archElement["hash"]?.let { validateHashes(it, errors, "architecture.$archName.hash") }
             // Reject top-level-only fields inside architecture blocks
-            val topLevelOnly = setOf("bin", "shortcuts", "persist", "env_set", "checkver", "autoupdate", "notes", "pre_install", "post_install")
+            // Note: "bin" is allowed inside architecture blocks for per-arch versioned executables
+            val topLevelOnly = setOf("shortcuts", "persist", "env_set", "checkver", "autoupdate", "notes", "pre_install", "post_install")
             for (field in topLevelOnly) {
                 if (archElement.containsKey(field)) {
                     errors.add("Field '$field' MUST be at the top level of the manifest, NOT inside architecture.$archName. Move it out of the architecture block.")
@@ -474,12 +504,22 @@ class FileManifestIo(
             }
         }
         obj["extract_dir"]?.jsonPrimitive?.contentOrNull?.let { checkExtractDir(it, "extract_dir") }
+        val hasTopLevelExtractDir = obj.containsKey("extract_dir")
         obj["architecture"]?.jsonObject?.let { arch ->
+            var anyArchExtractDir = false
             for ((archName, archElement) in arch) {
                 if (archElement !is JsonObject) continue
                 archElement["extract_dir"]?.jsonPrimitive?.contentOrNull?.let {
+                    anyArchExtractDir = true
                     checkExtractDir(it, "architecture.$archName.extract_dir")
                 }
+            }
+            if (hasTopLevelExtractDir && anyArchExtractDir) {
+                warnings.add(
+                    "Top-level 'extract_dir' conflicts with per-architecture 'extract_dir'. " +
+                    "If extract_dir differs by architecture, remove top-level extract_dir. " +
+                    "If extract_dir is the same for all, remove per-arch extract_dir."
+                )
             }
         }
     }
@@ -575,7 +615,7 @@ class FileManifestIo(
             // URL already has a fragment → ok
             if (urlVal.contains("#/")) return
             if (urlVal.endsWith(".exe", ignoreCase = true)) {
-                // Raw .exe without fragment — could be portable or installer
+                // Raw .exe without fragment - could be portable or installer
                 // Only warn if there's no other indication this is intentional
                 if (!obj.containsKey("innosetup") && !obj.containsKey("installer")) {
                     warnings.add(

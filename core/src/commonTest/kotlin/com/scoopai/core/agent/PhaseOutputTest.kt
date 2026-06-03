@@ -344,6 +344,35 @@ class PhaseOutputTest {
     }
 
     @Test
+    fun `AnalyzeOutput nsis_unsupported defaults to false when missing`() {
+        val input = """{"status":"ok","strategy":"installer","installer_type":"nsis"}"""
+        val output = json.decodeFromString<AnalyzeOutput>(input)
+        assertEquals(false, output.nsis_unsupported)
+    }
+
+    @Test
+    fun `AnalyzeOutput nsis_unsupported round-trip when true`() {
+        val input = """{"status":"ok","strategy":"installer","installer_type":"nsis","nsis_unsupported":true}"""
+        val output = json.decodeFromString<AnalyzeOutput>(input)
+        assertEquals(true, output.nsis_unsupported)
+
+        val jsonStr = json.encodeToString(AnalyzeOutput.serializer(), output)
+        val restored = json.decodeFromString<AnalyzeOutput>(jsonStr)
+        assertEquals(true, restored.nsis_unsupported)
+    }
+
+    @Test
+    fun `AnalyzeOutput nsis_unsupported round-trip when false`() {
+        val input = """{"status":"ok","strategy":"installer","installer_type":"nsis","nsis_unsupported":false}"""
+        val output = json.decodeFromString<AnalyzeOutput>(input)
+        assertEquals(false, output.nsis_unsupported)
+
+        val jsonStr = json.encodeToString(AnalyzeOutput.serializer(), output)
+        val restored = json.decodeFromString<AnalyzeOutput>(jsonStr)
+        assertEquals(false, restored.nsis_unsupported)
+    }
+
+    @Test
     fun `AnalyzeOutput env_add_path absent from JSON`() {
         val input = """{"status":"ok","strategy":"portable_zip","bin":["app.exe"]}"""
         val output = json.decodeFromString<AnalyzeOutput>(input)

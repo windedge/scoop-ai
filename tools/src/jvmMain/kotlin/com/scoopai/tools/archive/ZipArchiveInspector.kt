@@ -11,9 +11,10 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
+import kotlinx.serialization.json.*
+import java.io.File
 
-
-private val logger = io.github.oshai.kotlinlogging.KotlinLogging.logger {}
+private val nsisLogger = io.github.oshai.kotlinlogging.KotlinLogging.logger {}
 
 /** Text-like file extensions that should be scanned by searchTextInArchive. */
 private val TEXT_EXTENSIONS = setOf(
@@ -127,20 +128,29 @@ class ZipArchiveInspector(
                 }.toString()
             }
 
-            val file = cache.getOrDownload(urlNotNull)
-            val headerBytes = Files.newInputStream(file).use { it.readNBytes(1024 * 1024) }
+            // Lightweight: only download first 1MB for installer type detection.
+            // Falls back to full download only when needed for deeper inspection
+            // (InnoSetup verification, NSIS inner files enumeration).
+            val headerBytes = cache.peekHeader(urlNotNull, 1024 * 1024)
             val headerContent = String(headerBytes, Charsets.ISO_8859_1)
 
-            val installerType = when {
-                headerContent.contains("Inno Setup", ignoreCase = true) -> {
-                    // Try to verify that innounp can actually unpack this
+            val suspectedType = when {
+                headerContent.contains("Inno Setup", ignoreCase = true) -> "innosetup"
+                headerContent.contains("Nullsoft", ignoreCase = true) -> "nsis"
+                else -> "unknown"
+            }
+
+            // Deeper verification needs the full file - only download on demand.
+            val installerType = when (suspectedType) {
+                "innosetup" -> {
+                    val file = cache.getOrDownload(urlNotNull)
                     val canList = tryInnounpList(file)
                     if (canList) "innosetup" else "innosetup_unsupported"
                 }
-                headerContent.contains("Nullsoft", ignoreCase = true) -> {
-                    // Determine NSIS subtype via 7z content inspection
-                    try7zNsisContent(file)
-                    "nsis"
+                "nsis" -> {
+                    val file = cache.getOrDownload(urlNotNull)
+                    val canList = testNsisExtractability(file)
+                    if (canList) "nsis" else "nsis_unsupported"
                 }
                 else -> "unknown"
             }
@@ -151,8 +161,12 @@ class ZipArchiveInspector(
                 if (installerType == "innosetup_unsupported") {
                     put("warning", "Inno Setup version not supported by innounp. Scoop install will fail with 'innosetup: true'. Consider using the .zip asset instead, or ask the user.")
                 }
+                if (installerType == "nsis_unsupported") {
+                    put("warning", "NSIS installer cannot be extracted by 7z. Scoop's \"#/dl.7z\" trick will NOT work. Consider using a different asset (ZIP, MSI) or adding a silent install script.")
+                }
                 // If NSIS, include inner file details for the AI
                 if (installerType == "nsis") {
+                    val file = cache.getOrDownload(urlNotNull)
                     val innerFiles = try7zNsisContent(file)
                     if (innerFiles.isNotEmpty()) {
                         put("nsis_type", if (innerFiles.any { it.contains("\$PLUGINSDIR", ignoreCase = true) }) "electron" else "standard")
@@ -337,8 +351,17 @@ class ZipArchiveInspector(
     ) {
         var scanned = 0
         try {
-            // tar --to-stdout concatenates all files, so we can't separate them.
-            // Fall back to filename-based matching via tar -tzf listing.
+            val process = ProcessBuilder("tar", "xzf", file.toAbsolutePath().toString(), "--to-stdout")
+                .redirectErrorStream(true)
+                .start()
+            // tar --to-stdout concatenates all files; can't separate them.
+            // Instead, use tar -tzf to list, then extract individually.
+            // Simpler: list files first, then use 7z or tar to extract each one.
+            // For now, fall back to a simpler approach: read the full tar listing.
+            process.destroyForcibly()
+
+            // Alternative: use Apache commons-compress or just scan via listing + individual extraction
+            // For simplicity, scan by listing paths and noting which patterns match in file names.
             // TODO: full content search for tar.gz requires per-file extraction support
             val listProcess = ProcessBuilder("tar", "tzf", file.toAbsolutePath().toString())
                 .redirectErrorStream(true)
@@ -454,6 +477,38 @@ class ZipArchiveInspector(
     }
 
     // -----------------------------------------------------------------------
+    // NSIS extractability test
+    // -----------------------------------------------------------------------
+
+    /**
+     * Test if a cached NSIS installer can be listed by 7z.
+     *
+     * Returns `true` if `7z l` exits with code 0 (7z can read the file),
+     * `false` if 7z fails (file is not extractable, or 7z is not available).
+     *
+     * Some NSIS 3 installers cannot be extracted by 7z (e.g. spyder 6.1.4).
+     * This test detects those cases so the agent can choose an alternative strategy.
+     */
+    internal fun testNsisExtractability(filePath: Path): Boolean {
+        return try {
+            val proc = ProcessBuilder("7z", "l", filePath.toAbsolutePath().toString())
+                .redirectErrorStream(true)
+                .start()
+            val output = proc.inputStream.bufferedReader().readText()
+            proc.waitFor(30, TimeUnit.SECONDS)
+            if (proc.exitValue() == 0) {
+                true
+            } else {
+                nsisLogger.warn { "[7z] extractability test failed with exit ${proc.exitValue()} for ${filePath.fileName}: ${output.take(200)}" }
+                false
+            }
+        } catch (e: Exception) {
+            nsisLogger.warn { "[7z] extractability test exception: ${e.message}" }
+            false
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // NSIS listing (via 7z — reads NSIS installer internals)
     // -----------------------------------------------------------------------
 
@@ -470,13 +525,13 @@ class ZipArchiveInspector(
             val output = proc.inputStream.bufferedReader().readText()
             proc.waitFor(30, TimeUnit.SECONDS)
             if (proc.exitValue() != 0) {
-                logger.warn { "[7z] exit code ${proc.exitValue()} for ${file.fileName}: ${output.take(300)}" }
+                nsisLogger.warn { "[7z] exit code ${proc.exitValue()} for ${file.fileName}: ${output.take(300)}" }
                 emptyList()
             } else {
                 parse7zOutput(output)
             }
         } catch (e: Exception) {
-            logger.warn { "[7z] execute failed: ${e.message}" }
+            nsisLogger.warn { "[7z] execute failed: ${e.message}" }
             emptyList()
         }
     }
