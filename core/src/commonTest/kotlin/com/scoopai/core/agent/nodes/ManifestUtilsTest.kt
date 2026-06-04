@@ -1190,9 +1190,100 @@ class ManifestUtilsTest {
     // enforceArchitectureWrap
     // ---------------------------------------------------------------
 
+    // ---------------------------------------------------------------
+    // isArchSpecificUrl
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `isArchSpecificUrl returns false for noarch URL without arch keywords`() {
+        assertFalse(isArchSpecificUrl("https://example.com/audioswitcher-1.8.zip"))
+    }
+
+    @Test
+    fun `isArchSpecificUrl returns false for noarch URL with version only`() {
+        assertFalse(isArchSpecificUrl("https://example.com/tool-portable.zip"))
+    }
+
+    @Test
+    fun `isArchSpecificUrl returns true for URL with x64`() {
+        assertTrue(isArchSpecificUrl("https://example.com/app-x64.zip"))
+    }
+
+    @Test
+    fun `isArchSpecificUrl returns true for URL with win64`() {
+        assertTrue(isArchSpecificUrl("https://example.com/app-win64.exe"))
+    }
+
+    @Test
+    fun `isArchSpecificUrl returns true for URL with arm64`() {
+        assertTrue(isArchSpecificUrl("https://example.com/app-arm64.zip"))
+    }
+
+    @Test
+    fun `isArchSpecificUrl returns true for URL with x86`() {
+        assertTrue(isArchSpecificUrl("https://example.com/app-x86.zip"))
+    }
+
+    @Test
+    fun `isArchSpecificUrl ignores fragment suffix when checking URL`() {
+        // #/dl.7z fragment should not prevent arch detection
+        assertTrue(isArchSpecificUrl("https://example.com/app-win64.exe#/dl.7z"))
+    }
+
+    @Test
+    fun `isArchSpecificUrl returns true for MSI installer with x64`() {
+        assertTrue(isArchSpecificUrl("https://example.com/Monokle-win-2.4.8-x64.exe"))
+    }
+
+    @Test
+    fun `isArchSpecificUrl returns false for pure ZIP without arch keywords`() {
+        assertFalse(isArchSpecificUrl("https://example.com/audioswitcher-1.8.zip"))
+    }
+
+    // ---------------------------------------------------------------
+    // enforceArchitectureWrap — noarch protection
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `enforceArchitectureWrap skips noarch URL without arch keywords`() {
+        val input = """{"version":"1.8","url":"https://example.com/audioswitcher-1.8.zip","hash":"abc123","bin":["AudioSwitcher.exe"]}"""
+        val result = enforceArchitectureWrap(input)
+        assertEquals(input, result)  // 不变
+    }
+
+    @Test
+    fun `enforceArchitectureWrap wraps URL with x64 keyword`() {
+        val input = """{"version":"1.0","url":"https://example.com/app-x64.zip","hash":"abc123","bin":["app.exe"]}"""
+        val result = enforceArchitectureWrap(input)
+        val json = parseJsonObject(result)
+        assertTrue(json.containsKey("architecture"))
+        assertFalse(json.containsKey("url"))
+        val bit64 = json["architecture"]!!.jsonObject["64bit"]!!.jsonObject
+        assertEquals("https://example.com/app-x64.zip", bit64["url"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `enforceArchitectureWrap wraps URL with win64 keyword`() {
+        val input = """{"version":"1.0","url":"https://example.com/app-win64.exe#/dl.7z","hash":"abc123","bin":["app.exe"]}"""
+        val result = enforceArchitectureWrap(input)
+        val json = parseJsonObject(result)
+        assertTrue(json.containsKey("architecture"))
+        val bit64 = json["architecture"]!!.jsonObject["64bit"]!!.jsonObject
+        assertEquals("https://example.com/app-win64.exe#/dl.7z", bit64["url"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `enforceArchitectureWrap wraps MSI installer with x64 keyword`() {
+        val input = """{"version":"2.4.8","url":"https://example.com/Monokle-win-2.4.8-x64.exe","hash":"def456"}"""
+        val result = enforceArchitectureWrap(input)
+        val json = parseJsonObject(result)
+        assertTrue(json.containsKey("architecture"))
+        assertFalse(json.containsKey("url"))
+    }
+
     @Test
     fun `enforceArchitectureWrap moves top-level url and hash into architecture 64bit`() {
-        val input = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc123","bin":["app.exe"]}"""
+        val input = """{"version":"1.0","url":"https://example.com/app-x64.zip","hash":"abc123","bin":["app.exe"]}"""
         val result = enforceArchitectureWrap(input)
         val json = parseJsonObject(result)
         // 顶层不应有 url/hash
@@ -1201,7 +1292,7 @@ class ManifestUtilsTest {
         // architecture.64bit 应有 url/hash
         val arch = json["architecture"]!!.jsonObject
         val bit64 = arch["64bit"]!!.jsonObject
-        assertEquals("https://example.com/app.zip", bit64["url"]!!.jsonPrimitive.content)
+        assertEquals("https://example.com/app-x64.zip", bit64["url"]!!.jsonPrimitive.content)
         assertEquals("abc123", bit64["hash"]!!.jsonPrimitive.content)
         // 其他字段保持
         assertEquals("1.0", json["version"]!!.jsonPrimitive.content)
@@ -1209,12 +1300,12 @@ class ManifestUtilsTest {
 
     @Test
     fun `enforceArchitectureWrap moves extract_dir too`() {
-        val input = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc","extract_dir":"myapp-1.0","bin":["app.exe"]}"""
+        val input = """{"version":"1.0","url":"https://example.com/app-x64.zip","hash":"abc","extract_dir":"myapp-1.0","bin":["app.exe"]}"""
         val result = enforceArchitectureWrap(input)
         val json = parseJsonObject(result)
         assertFalse(json.containsKey("url"))
         val bit64 = json["architecture"]!!.jsonObject["64bit"]!!.jsonObject
-        assertEquals("https://example.com/app.zip", bit64["url"]!!.jsonPrimitive.content)
+        assertEquals("https://example.com/app-x64.zip", bit64["url"]!!.jsonPrimitive.content)
         // extract_dir 也应在 64bit 内
         assertEquals("myapp-1.0", bit64["extract_dir"]!!.jsonPrimitive.content)
     }
@@ -1235,14 +1326,14 @@ class ManifestUtilsTest {
 
     @Test
     fun `enforceArchitectureWrap moves autoupdate flat url into architecture 64bit`() {
-        val input = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc123","autoupdate":{"url":"https://example.com/app-${'$'}version.zip","hash":{"url":"https://example.com/checksums-${'$'}version.txt"}},"bin":["app.exe"]}"""
+        val input = """{"version":"1.0","url":"https://example.com/app-x64.zip","hash":"abc123","autoupdate":{"url":"https://example.com/app-${'$'}version-x64.zip","hash":{"url":"https://example.com/checksums-${'$'}version.txt"}},"bin":["app.exe"]}"""
         val result = enforceArchitectureWrap(input)
         val json = parseJsonObject(result)
         // autoupdate flat url -> architecture wrapper
         val autoupdate = json["autoupdate"]!!.jsonObject
         assertFalse(autoupdate.containsKey("url"), "autoupdate.url should NOT be flat")
         val autoArch = autoupdate["architecture"]!!.jsonObject["64bit"]!!.jsonObject
-        assertEquals("https://example.com/app-${'$'}version.zip", autoArch["url"]!!.jsonPrimitive.content)
+        assertEquals("https://example.com/app-${'$'}version-x64.zip", autoArch["url"]!!.jsonPrimitive.content)
         // autoupdate.hash should still be preserved (not part of 64bit)
         assertTrue(autoupdate.containsKey("hash"))
     }
@@ -1267,6 +1358,72 @@ class ManifestUtilsTest {
         // autoupdate has no url field, so it shouldn't be touched
         assertFalse(autoupdate.containsKey("architecture"), "autoupdate without url should not get architecture")
         assertTrue(autoupdate.containsKey("hash"))
+    }
+
+    // ---------------------------------------------------------------
+    // assembleManifestSkeleton — noarch flat format
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `assembleManifestSkeleton single noarch entry uses flat format`() {
+        val research = ResearchOutput(version = "1.8")
+        val analyze = AnalyzeOutput(
+            entries = listOf(
+                AssetEntry(architecture = "", url = "https://example.com/audioswitcher-1.8.zip", hash = "abc123", filename = "audioswitcher-1.8.zip"),
+            ),
+            bin = listOf("AudioSwitcher.exe"),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+        assertFalse(obj.containsKey("architecture"), "noarch should NOT have architecture block")
+        assertEquals("https://example.com/audioswitcher-1.8.zip", obj["url"]?.jsonPrimitive?.content)
+        assertEquals("abc123", obj["hash"]?.jsonPrimitive?.content)
+        assertEquals("1.8", obj["version"]?.jsonPrimitive?.content)
+        assertEquals("AudioSwitcher.exe", obj["bin"]?.jsonArray?.single()?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `assembleManifestSkeleton keeps architecture block when architecture is explicitly set even with noarch URL`() {
+        val research = ResearchOutput(version = "1.0")
+        val analyze = AnalyzeOutput(
+            entries = listOf(
+                AssetEntry(architecture = "64bit", url = "https://example.com/app.zip", hash = "abc123", filename = "app.zip"),
+            ),
+            bin = listOf("app.exe"),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+        assertTrue(obj.containsKey("architecture"), "explicit 64bit should have architecture block")
+        assertFalse(obj.containsKey("url"))
+    }
+
+    // ---------------------------------------------------------------
+    // generateAutoupdateArchitectureBlock — noarch flat format
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `generateAutoupdateArchitectureBlock noarch single entry uses flat format`() {
+        val entries = listOf(
+            AssetEntry(architecture = "", url = "https://example.com/audioswitcher-1.8.zip", hash = "abc123"),
+        )
+        val result = generateAutoupdateArchitectureBlock(entries, "1.8")
+        assertFalse(result.containsKey("architecture"), "noarch autoupdate should NOT have architecture wrapper")
+        assertEquals(
+            "https://example.com/audioswitcher-\$version.zip",
+            result["url"]?.jsonPrimitive?.content
+        )
+    }
+
+    @Test
+    fun `generateAutoupdateArchitectureBlock single arch entry still wraps in architecture when arch is explicit`() {
+        val entries = listOf(
+            AssetEntry(architecture = "64bit", url = "https://github.com/owner/repo/releases/download/v1.0.0/app-v1.0.0.zip", hash = "h", extract_dir = "app-v1.0.0"),
+        )
+        val result = generateAutoupdateArchitectureBlock(entries, "1.0.0")
+        assertTrue(result.containsKey("architecture"), "explicit 64bit should have architecture wrapper")
+        val arch64 = result["architecture"]!!.jsonObject["64bit"]!!.jsonObject
+        assertEquals(
+            "https://github.com/owner/repo/releases/download/v\$version/app-v\$version.zip",
+            arch64["url"]?.jsonPrimitive?.content
+        )
     }
 }
 

@@ -242,7 +242,7 @@ class ScoopManifestStrategyTest {
             version = "1.0",
             windows_assets = listOf(
                 WindowsAsset(
-                    url = "https://example.com/app.zip",
+                    url = "https://example.com/app-x64.zip",
                     architecture = "64bit",
                     asset_type = "zip",
                     source = "release_api"
@@ -255,14 +255,14 @@ class ScoopManifestStrategyTest {
             entries = listOf(
                 AssetEntry(
                     architecture = "64bit",
-                    url = "https://example.com/app.zip",
+                    url = "https://example.com/app-x64.zip",
                     hash = "abc123",
                 )
             ),
             bin = listOf("app.exe"),
         )
         // Flat manifest: url/hash at top level, no architecture block
-        val flatManifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc123","bin":["app.exe"]}"""
+        val flatManifest = """{"version":"1.0","url":"https://example.com/app-x64.zip","hash":"abc123","bin":["app.exe"]}"""
 
         val promptExecutor = getMockExecutor {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
@@ -299,7 +299,7 @@ class ScoopManifestStrategyTest {
             version = "1.0",
             windows_assets = listOf(
                 WindowsAsset(
-                    url = "https://example.com/app.zip",
+                    url = "https://example.com/app-x64.zip",
                     architecture = "64bit",
                     asset_type = "zip",
                     source = "release_api"
@@ -312,13 +312,13 @@ class ScoopManifestStrategyTest {
             entries = listOf(
                 AssetEntry(
                     architecture = "64bit",
-                    url = "https://example.com/app.zip",
+                    url = "https://example.com/app-x64.zip",
                     hash = "abc123",
                 )
             ),
             bin = listOf("app.exe"),
         )
-        val flatManifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc123","bin":["app.exe"]}"""
+        val flatManifest = """{"version":"1.0","url":"https://example.com/app-x64.zip","hash":"abc123","bin":["app.exe"]}"""
 
         val promptExecutor = getMockExecutor {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
