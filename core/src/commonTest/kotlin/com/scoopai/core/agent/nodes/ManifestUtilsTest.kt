@@ -19,7 +19,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
-class DeterministicNodesTest {
+class ManifestUtilsTest {
 
     private fun buildTestManifest(url: String): JsonObject {
         val manifestStr = """{"version":"1.0.0","architecture":{"64bit":{"url":"$url","hash":"abc123"}},"bin":["app.exe"]}"""
@@ -290,7 +290,7 @@ class DeterministicNodesTest {
     // -------------------------------------------------------------
 
     @Test
-    fun `assembleManifestSkeleton flat single entry`() {
+    fun `assembleManifestSkeleton single entry wraps url hash in architecture block`() {
         val research = ResearchOutput(
             project = "test-app",
             description = "A test app",
@@ -311,30 +311,40 @@ class DeterministicNodesTest {
         assertEquals("A test app", obj["description"]?.jsonPrimitive?.content)
         assertEquals("https://example.com", obj["homepage"]?.jsonPrimitive?.content)
         assertEquals("MIT", obj["license"]?.jsonPrimitive?.content)
-        assertEquals("https://example.com/app.zip", obj["url"]?.jsonPrimitive?.content)
-        assertEquals("abc123", obj["hash"]?.jsonPrimitive?.content)
+        // url/hash should be inside architecture block, NOT at top level
+        assertTrue(obj.containsKey("architecture"), "single entry should have architecture block")
+        val arch = obj["architecture"]!!.jsonObject["64bit"]!!.jsonObject
+        assertEquals("https://example.com/app.zip", arch["url"]?.jsonPrimitive?.content)
+        assertEquals("abc123", arch["hash"]?.jsonPrimitive?.content)
+        assertFalse(obj.containsKey("url"), "url should NOT be at top level")
+        assertFalse(obj.containsKey("hash"), "hash should NOT be at top level")
         assertEquals("app.exe", obj["bin"]?.jsonArray?.single()?.jsonPrimitive?.content)
-        assertTrue(obj.containsKey("url"), "flat url should be at top level")
-        assertFalse(obj.containsKey("architecture"), "single entry should NOT have architecture block")
     }
 
     @Test
-    fun `assembleManifestSkeleton flat with extract_dir`() {
+    fun `assembleManifestSkeleton single entry with extract_dir lifts shared extract_dir to top level`() {
         val research = ResearchOutput(
             version = "1.0.0",
         )
         val analyze = AnalyzeOutput(
             entries = listOf(
-                AssetEntry(architecture = "", url = "https://example.com/app.msi", hash = "abc123", filename = "app.msi", extract_dir = "PFiles\\App"),
+                AssetEntry(architecture = "64bit", url = "https://example.com/app.msi", hash = "abc123", filename = "app.msi", extract_dir = "PFiles\\App"),
             ),
             bin = listOf("app.exe"),
         )
         val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+        // url/hash should be in architecture block
+        assertTrue(obj.containsKey("architecture"))
+        val arch = obj["architecture"]!!.jsonObject["64bit"]!!.jsonObject
+        assertEquals("https://example.com/app.msi", arch["url"]?.jsonPrimitive?.content)
+        assertEquals("abc123", arch["hash"]?.jsonPrimitive?.content)
+        assertFalse(arch.containsKey("extract_dir"), "shared extract_dir should NOT be inside arch block")
+        // extract_dir lifted to top level (shared since single entry)
         assertEquals("PFiles\\App", obj["extract_dir"]?.jsonPrimitive?.content)
     }
 
     @Test
-    fun `assembleManifestSkeleton multi architecture block`() {
+    fun `assembleManifestSkeleton multi entry architecture block`() {
         val research = ResearchOutput(version = "2.0.0")
         val analyze = AnalyzeOutput(
             entries = listOf(
@@ -344,7 +354,7 @@ class DeterministicNodesTest {
             bin = listOf("app.exe"),
         )
         val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
-        assertTrue(obj.containsKey("architecture"), "multi-arch should have architecture block")
+        assertTrue(obj.containsKey("architecture"), "always has architecture block")
         val arch = obj["architecture"]?.jsonObject
         assertEquals("https://example.com/app-x64.zip", arch?.get("64bit")?.jsonObject?.get("url")?.jsonPrimitive?.content)
         assertEquals("hash32", arch?.get("32bit")?.jsonObject?.get("hash")?.jsonPrimitive?.content)
@@ -447,18 +457,21 @@ class DeterministicNodesTest {
     // ---------------------------------------------------------------
 
     @Test
-    fun `generateAutoupdateArchitectureBlock single arch`() {
+    fun `generateAutoupdateArchitectureBlock single arch wraps in architecture block`() {
         val entries = listOf(
             AssetEntry(architecture = "64bit", url = "https://github.com/owner/repo/releases/download/v1.0.0/app-v1.0.0.zip", hash = "h", extract_dir = "app-v1.0.0"),
         )
         val result = generateAutoupdateArchitectureBlock(entries, "1.0.0")
-        // Single entry: flat format, no architecture wrapper
-        assertFalse(result.containsKey("architecture"))
+        // Always architecture wrapper
+        assertTrue(result.containsKey("architecture"), "should have architecture wrapper")
+        val arch = result["architecture"]!!.jsonObject
+        assertEquals(1, arch.size)
+        val arch64 = arch["64bit"]!!.jsonObject
         assertEquals(
             "https://github.com/owner/repo/releases/download/v\$version/app-v\$version.zip",
-            result["url"]?.jsonPrimitive?.content
+            arch64["url"]?.jsonPrimitive?.content
         )
-        assertEquals("app-v\$version", result["extract_dir"]?.jsonPrimitive?.content)
+        assertEquals("app-v\$version", arch64["extract_dir"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -531,12 +544,13 @@ class DeterministicNodesTest {
         // checkver present with full github URL
         val checkver = json["checkver"]!!.jsonObject
         assertEquals("https://github.com/JetpackDuba/Gitnuro", checkver["github"]!!.jsonPrimitive.content)
-        // autoupdate present with correct template (flat format for single entry)
+        // autoupdate present with correct template (always architecture wrapper)
         val autoupdate = json["autoupdate"]!!.jsonObject
-        assertFalse(autoupdate.containsKey("architecture"), "single entry autoupdate should be flat")
+        assertTrue(autoupdate.containsKey("architecture"), "autoupdate should have architecture wrapper")
+        val arch64 = autoupdate["architecture"]!!.jsonObject["64bit"]!!.jsonObject
         assertEquals(
             "https://github.com/JetpackDuba/Gitnuro/releases/download/v\$version/Gitnuro_Windows_Portable_v\$version.zip",
-            autoupdate["url"]?.jsonPrimitive?.content
+            arch64["url"]?.jsonPrimitive?.content
         )
     }
 
@@ -1082,30 +1096,32 @@ class DeterministicNodesTest {
     }
 
     // ---------------------------------------------------------------
-    // autoupdate: single entry → flat url, not architecture wrapper
+    // autoupdate: always uses architecture wrapper
     // ---------------------------------------------------------------
 
     @Test
-    fun `generateAutoupdateArchitectureBlock single entry produces flat url`() {
+    fun `generateAutoupdateArchitectureBlock single entry wraps in architecture`() {
         val entries = listOf(
             AssetEntry(architecture = "64bit", url = "https://github.com/leokhoa/laragon/releases/download/8.6.1/laragon-wamp.exe", hash = "h"),
         )
         val result = generateAutoupdateArchitectureBlock(entries, "8.6.1")
-        // Should be flat { "url": "..." }, NOT { "architecture": { "64bit": { "url": "..." } } }
+        // Always architecture wrapper
+        assertTrue(result.containsKey("architecture"), "should have architecture wrapper")
+        val arch64 = result["architecture"]!!.jsonObject["64bit"]!!.jsonObject
         assertEquals("https://github.com/leokhoa/laragon/releases/download/\$version/laragon-wamp.exe",
-            result["url"]?.jsonPrimitive?.content)
-        assertFalse(result.containsKey("architecture"), "single entry should not have architecture wrapper in autoupdate")
+            arch64["url"]?.jsonPrimitive?.content)
     }
 
     @Test
-    fun `generateAutoupdateArchitectureBlock single entry with extract_dir produces flat fields`() {
+    fun `generateAutoupdateArchitectureBlock single entry with extract_dir wraps in architecture`() {
         val entries = listOf(
             AssetEntry(architecture = "64bit", url = "https://example.com/app-1.0.zip", hash = "h", extract_dir = "app-1.0"),
         )
         val result = generateAutoupdateArchitectureBlock(entries, "1.0")
-        assertEquals("https://example.com/app-\$version.zip", result["url"]?.jsonPrimitive?.content)
-        assertEquals("app-\$version", result["extract_dir"]?.jsonPrimitive?.content)
-        assertFalse(result.containsKey("architecture"))
+        assertTrue(result.containsKey("architecture"), "should have architecture wrapper")
+        val arch64 = result["architecture"]!!.jsonObject["64bit"]!!.jsonObject
+        assertEquals("https://example.com/app-\$version.zip", arch64["url"]?.jsonPrimitive?.content)
+        assertEquals("app-\$version", arch64["extract_dir"]?.jsonPrimitive?.content)
     }
 
     // ---------------------------------------------------------------
@@ -1168,6 +1184,89 @@ class DeterministicNodesTest {
 
         // 32bit also
         assertTrue(arch32.containsKey("bin"))
+    }
+
+    // ---------------------------------------------------------------
+    // enforceArchitectureWrap
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `enforceArchitectureWrap moves top-level url and hash into architecture 64bit`() {
+        val input = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc123","bin":["app.exe"]}"""
+        val result = enforceArchitectureWrap(input)
+        val json = parseJsonObject(result)
+        // 顶层不应有 url/hash
+        assertFalse(json.containsKey("url"))
+        assertFalse(json.containsKey("hash"))
+        // architecture.64bit 应有 url/hash
+        val arch = json["architecture"]!!.jsonObject
+        val bit64 = arch["64bit"]!!.jsonObject
+        assertEquals("https://example.com/app.zip", bit64["url"]!!.jsonPrimitive.content)
+        assertEquals("abc123", bit64["hash"]!!.jsonPrimitive.content)
+        // 其他字段保持
+        assertEquals("1.0", json["version"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `enforceArchitectureWrap moves extract_dir too`() {
+        val input = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc","extract_dir":"myapp-1.0","bin":["app.exe"]}"""
+        val result = enforceArchitectureWrap(input)
+        val json = parseJsonObject(result)
+        assertFalse(json.containsKey("url"))
+        val bit64 = json["architecture"]!!.jsonObject["64bit"]!!.jsonObject
+        assertEquals("https://example.com/app.zip", bit64["url"]!!.jsonPrimitive.content)
+        // extract_dir 也应在 64bit 内
+        assertEquals("myapp-1.0", bit64["extract_dir"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `enforceArchitectureWrap skips if architecture already exists`() {
+        val input = """{"version":"1.0","architecture":{"64bit":{"url":"https://example.com/app.zip","hash":"abc"}}}"""
+        val result = enforceArchitectureWrap(input)
+        assertEquals(input, result)  // 不变
+    }
+
+    @Test
+    fun `enforceArchitectureWrap handles manifest without url`() {
+        val input = """{"version":"1.0","bin":["app.exe"]}"""
+        val result = enforceArchitectureWrap(input)
+        assertEquals(input, result)  // 不变
+    }
+
+    @Test
+    fun `enforceArchitectureWrap moves autoupdate flat url into architecture 64bit`() {
+        val input = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc123","autoupdate":{"url":"https://example.com/app-${'$'}version.zip","hash":{"url":"https://example.com/checksums-${'$'}version.txt"}},"bin":["app.exe"]}"""
+        val result = enforceArchitectureWrap(input)
+        val json = parseJsonObject(result)
+        // autoupdate flat url -> architecture wrapper
+        val autoupdate = json["autoupdate"]!!.jsonObject
+        assertFalse(autoupdate.containsKey("url"), "autoupdate.url should NOT be flat")
+        val autoArch = autoupdate["architecture"]!!.jsonObject["64bit"]!!.jsonObject
+        assertEquals("https://example.com/app-${'$'}version.zip", autoArch["url"]!!.jsonPrimitive.content)
+        // autoupdate.hash should still be preserved (not part of 64bit)
+        assertTrue(autoupdate.containsKey("hash"))
+    }
+
+    @Test
+    fun `enforceArchitectureWrap skips autoupdate if autoupdate already has architecture`() {
+        val input = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc","autoupdate":{"architecture":{"64bit":{"url":"https://example.com/app-${'$'}version.zip"}}},"bin":["app.exe"]}"""
+        val result = enforceArchitectureWrap(input)
+        val json = parseJsonObject(result)
+        // autoupdate should remain unchanged
+        val autoupdate = json["autoupdate"]!!.jsonObject
+        assertTrue(autoupdate.containsKey("architecture"))
+        assertFalse(autoupdate.containsKey("url"))
+    }
+
+    @Test
+    fun `enforceArchitectureWrap handles autoupdate without url`() {
+        val input = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc","autoupdate":{"hash":{"url":"https://example.com/checksums-${'$'}version.txt"}},"bin":["app.exe"]}"""
+        val result = enforceArchitectureWrap(input)
+        val json = parseJsonObject(result)
+        val autoupdate = json["autoupdate"]!!.jsonObject
+        // autoupdate has no url field, so it shouldn't be touched
+        assertFalse(autoupdate.containsKey("architecture"), "autoupdate without url should not get architecture")
+        assertTrue(autoupdate.containsKey("hash"))
     }
 }
 

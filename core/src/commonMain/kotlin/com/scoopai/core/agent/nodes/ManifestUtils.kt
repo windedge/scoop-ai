@@ -34,10 +34,9 @@ import kotlinx.serialization.json.put
  */
 fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): String {
     val effectiveBin = filterExecutables(analyze.bin)
-    val isMultiArch = analyze.entries.size > 1
 
-    // Check if all multi-arch entries share the same extract_dir
-    val sharedExtractDir = if (isMultiArch && analyze.entries.all { it.extract_dir.isNotBlank() } && analyze.entries.map { it.extract_dir }.distinct().size == 1) {
+    // Check if all entries share the same extract_dir (trivially true for single entry)
+    val sharedExtractDir = if (analyze.entries.all { it.extract_dir.isNotBlank() } && analyze.entries.map { it.extract_dir }.distinct().size == 1) {
         analyze.entries.first().extract_dir
     } else {
         null
@@ -95,52 +94,45 @@ fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): 
         if (research.homepage.isNotBlank()) put("homepage", research.homepage)
         research.license?.value?.let { put("license", it) }
 
-        if (isMultiArch) {
-            putJsonObject("architecture") {
-                analyze.entries.forEach { entry ->
-                    putJsonObject(entry.architecture) {
-                        put("url", entry.url)
-                        put("hash", entry.hash)
-                        // Only put extract_dir inside arch block if not shared
-                        if (sharedExtractDir == null && entry.extract_dir.isNotBlank()) {
-                            put("extract_dir", entry.extract_dir)
-                        }
-                        // Per-arch bin for versioned executables
-                        if (analyze.versioned_bin && analyze.bin.isNotEmpty()) {
-                            val entryIdx = analyze.entries.indexOf(entry)
-                            val versionedExe = analyze.bin.getOrElse(entryIdx) { analyze.bin.first() }
-                            val aliases = if (analyze.bin_aliases.isNotEmpty()) analyze.bin_aliases else listOf(versionedExe.removeSuffix(".exe"))
-                            putJsonArray("bin") {
-                                aliases.forEach { alias ->
-                                    addJsonArray {
-                                        add(JsonPrimitive(versionedExe))
-                                        add(JsonPrimitive(alias))
-                                    }
+        // Always wrap url/hash in architecture block, even for single entry
+        putJsonObject("architecture") {
+            analyze.entries.forEach { entry ->
+                putJsonObject(entry.architecture) {
+                    put("url", entry.url)
+                    put("hash", entry.hash)
+                    // Only put extract_dir inside arch block if not shared
+                    if (sharedExtractDir == null && entry.extract_dir.isNotBlank()) {
+                        put("extract_dir", entry.extract_dir)
+                    }
+                    // Per-arch bin for versioned executables
+                    if (analyze.versioned_bin && analyze.bin.isNotEmpty()) {
+                        val entryIdx = analyze.entries.indexOf(entry)
+                        val versionedExe = analyze.bin.getOrElse(entryIdx) { analyze.bin.first() }
+                        val aliases = if (analyze.bin_aliases.isNotEmpty()) analyze.bin_aliases else listOf(versionedExe.removeSuffix(".exe"))
+                        putJsonArray("bin") {
+                            aliases.forEach { alias ->
+                                addJsonArray {
+                                    add(JsonPrimitive(versionedExe))
+                                    add(JsonPrimitive(alias))
                                 }
                             }
                         }
-                        // Per-arch installer scripts (NSIS Electron)
-                        val scripts = analyze.installer_scripts[entry.architecture]
-                        if (!scripts.isNullOrEmpty()) {
-                            putJsonObject("installer") {
-                                putJsonArray("script") {
-                                    scripts.forEach { add(JsonPrimitive(fixPowerShellEscaping(it))) }
-                                }
+                    }
+                    // Per-arch installer scripts (NSIS Electron)
+                    val scripts = analyze.installer_scripts[entry.architecture]
+                    if (!scripts.isNullOrEmpty()) {
+                        putJsonObject("installer") {
+                            putJsonArray("script") {
+                                scripts.forEach { add(JsonPrimitive(fixPowerShellEscaping(it))) }
                             }
                         }
                     }
                 }
             }
-            // Lift shared extract_dir to top level
-            if (sharedExtractDir != null) {
-                put("extract_dir", sharedExtractDir)
-            }
-        } else {
-            analyze.entries.firstOrNull()?.let { entry ->
-                put("url", entry.url)
-                put("hash", entry.hash)
-                if (entry.extract_dir.isNotBlank()) put("extract_dir", entry.extract_dir)
-            }
+        }
+        // Lift shared extract_dir to top level
+        if (sharedExtractDir != null) {
+            put("extract_dir", sharedExtractDir)
         }
 
         // Versioned bin: skip top-level bin (will be inside arch blocks)
@@ -226,29 +218,7 @@ internal fun generateAutoupdateArchitectureBlock(
     versionedBin: Boolean = false,
     binAliases: List<String> = emptyList()
 ): JsonObject {
-    // Single entry: flat { "url": "..." } instead of { "architecture": { "64bit": { "url": "..." } } }
-    if (entries.size == 1) {
-        val entry = entries.first()
-        return buildJsonObject {
-            put("url", replaceVersionWithTemplate(entry.url, version))
-            if (entry.extract_dir.isNotBlank()) {
-                put("extract_dir", replaceVersionWithTemplate(entry.extract_dir, version))
-            }
-            // Versioned bin in autoupdate
-            if (versionedBin && binAliases.isNotEmpty()) {
-                putJsonArray("bin") {
-                    binAliases.forEach { alias ->
-                        addJsonArray {
-                            add(JsonPrimitive(replaceVersionWithTemplate(entry.filename.removeSuffix(".zip"), version)))
-                            add(JsonPrimitive(alias))
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Multi-entry: architecture wrapper
+    // Always wrap in architecture block, even for single entry
     return buildJsonObject {
         putJsonObject("architecture") {
             entries.forEach { entry ->
@@ -673,4 +643,92 @@ internal fun normalizeEnvSet(manifestJson: String): String {
         put("persist", JsonArray(updatedPersist.map { JsonPrimitive(it) }))
     }
     return JsonObject(newJson).toString()
+}
+
+// ---------------------------------------------------------------------------
+// Architecture wrapping (force flat format into architecture wrapper)
+// ---------------------------------------------------------------------------
+
+/**
+ * Ensures manifest uses architecture wrapper.
+ *
+ * If `url`/`hash`/`extract_dir` are at top level (flat format), moves them into
+ * `architecture.64bit`. If `architecture` already exists, does nothing.
+ *
+ * Also handles `autoupdate`: if `autoupdate` has flat `url` but no `architecture`,
+ * wraps it into `autoupdate.architecture.64bit.url`.
+ */
+internal fun enforceArchitectureWrap(manifestJson: String): String {
+    val json = try {
+        Json.parseToJsonElement(manifestJson) as? JsonObject ?: return manifestJson
+    } catch (_: Exception) {
+        return manifestJson
+    }
+
+    // Already has architecture block — nothing to do
+    if (json.containsKey("architecture")) return manifestJson
+
+    // No url at top level — nothing to do
+    if (!json.containsKey("url")) return manifestJson
+
+    // Move url, hash, extract_dir from top level into architecture.64bit
+    val archKeys = listOf("url", "hash", "extract_dir")
+    val archBlock = buildJsonObject {
+        putJsonObject("64bit") {
+            for (key in archKeys) {
+                json[key]?.let { put(key, it) }
+            }
+        }
+    }
+
+    // Rebuild manifest without top-level url/hash/extract_dir, add architecture
+    val result = buildJsonObject {
+        for ((key, value) in json) {
+            if (key !in archKeys) {
+                put(key, value)
+            }
+        }
+        put("architecture", archBlock)
+    }
+
+    // Also handle autoupdate flat format
+    val withAutoupdate = processAutoupdateArchitecture(result)
+
+    return withAutoupdate.toString()
+}
+
+/**
+ * If `autoupdate` has flat `url` but no `architecture`, wraps it into
+ * `autoupdate.architecture.64bit.url`.
+ */
+private fun processAutoupdateArchitecture(manifest: JsonObject): JsonObject {
+    val autoupdate = manifest["autoupdate"] as? JsonObject ?: return manifest
+
+    // Already has architecture block — nothing to do
+    if (autoupdate.containsKey("architecture")) return manifest
+
+    // No url in autoupdate — nothing to do
+    if (!autoupdate.containsKey("url")) return manifest
+
+    // Move autoupdate.url into autoupdate.architecture.64bit.url
+    val autoArchBlock = buildJsonObject {
+        putJsonObject("64bit") {
+            listOf("url", "extract_dir").forEach { key ->
+                autoupdate[key]?.let { put(key, it) }
+            }
+        }
+    }
+
+    val newAutoupdate = buildJsonObject {
+        for ((key, value) in autoupdate) {
+            if (key != "url" && key != "extract_dir") {
+                put(key, value)
+            }
+        }
+        put("architecture", autoArchBlock)
+    }
+
+    return JsonObject(manifest.toMutableMap().apply {
+        put("autoupdate", newAutoupdate)
+    })
 }

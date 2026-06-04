@@ -12,6 +12,7 @@ import ai.koog.prompt.llm.LLModel
 import com.scoopai.core.agent.AnalyzeOutput
 import com.scoopai.core.agent.PhaseTools
 import com.scoopai.core.agent.ResearchOutput
+
 import com.scoopai.core.agent.prompt.REVIEW_AGENT_SYSTEM_PROMPT
 import com.scoopai.core.agent.prompt.buildAnalyzePrompt
 import com.scoopai.core.agent.prompt.buildGeneratePrompt
@@ -149,9 +150,11 @@ class ScoopManifestGenerator(
             }
         }
 
-        val result = agent.run(url)
+        val result: ManifestResult = agent.run(url)
         val elapsed = System.currentTimeMillis() - startTime
+
         return result.copy(
+            manifest = result.manifest,
             tokenUsage = TokenUsage(tokenAccumulator.input, tokenAccumulator.output),
             durationMs = elapsed,
         )

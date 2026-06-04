@@ -31,6 +31,11 @@ $task
      1. The homepage MUST be the project's official website URL or GitHub repository URL (e.g. `https://github.com/{owner}/{repo}`).
      2. Do NOT use social/chat/forum links as homepage: Discord (discord.gg, discord.com), Slack, Twitter/X, Mastodon, Reddit, YouTube, or similar community/communication platforms.
      3. If the homepage from fetchRepoInfo is a social/chat link or cannot be determined, use the GitHub repository URL as the default.
+   - **Homepage priority**: When multiple candidate homepages exist, use this order:
+     1. Official project website / documentation page (e.g. from README "Website" / "Documentation" link)
+     2. Dedicated product page (e.g. developers.google.com/workspace/cli)
+     3. GitHub repository URL (fallback only)
+     Do NOT use GitHub repo URL as homepage if a dedicated website or docs page exists.
    - **License resolution rules** (follow in order):
      1. If `fetchRepoInfo` returns a `license` field with a value (e.g. "MIT", "Apache-2.0"), use that value directly.
      2. If the value is `"NOASSERTION"`, `null`, or absent:
@@ -129,6 +134,8 @@ $task
    3. `%APPDATA%` / `%LOCALAPPDATA%` — Windows data storage paths
    4. `config_dir` / `config_path` / `data_dir` — config directory variables
    5. `XDG_CONFIG_HOME` — Linux XDG convention
+   6. `_HOME`, `_LIB`, `_CFG`, `_PATH` — toolchain env vars (compilers, SDKs, build tools)
+   7. `config_dir` / `config_path` / `data_dir` / `home_dir` — generic config path variables
 
    For each match found, record in `env_targets`: {"ENV_VAR_NAME": "directory_name"}
    Also check README for mentions of config file locations (`%APPDATA%\<app>`, `~/.config/<app>`).
@@ -235,6 +242,10 @@ $researchJson
    - Set `extract_dir` to ONLY this top-level directory (e.g. `pyenv-win-3.1.1`), never deeper.
    - **Incorrect** (causes install failure): `extract_dir` omitted because "Scoop will strip it automatically" — **Scoop does NOT auto-strip**.
    - **Correct**: `"extract_dir": "project-1.2.3"` for each architecture entry.
+   - **extract_dir verification**: Before setting extract_dir, cross-check against the listArchiveContents output:
+     - The extract_dir MUST match an actual top-level directory in the archive
+     - If the archive contains nested directories like `target/x86_64-pc-windows-msvc/release/`, use the FULL path as extract_dir, not just the first level
+     - NEVER use a partial or abbreviated extract_dir — it must be the exact directory name from the archive listing
    - If the executable is inside a nested subdirectory (e.g. `project-1.2.3/tools/bin/app.exe`), do NOT set `extract_dir` to the nested path. Instead:
      * Use `env_add_path` to add the nested `bin` directory to PATH.
      * Use subdirectory-prefixed paths in `persist` and `env_set` (e.g. `tools\\version`, `${'$'}dir\\tools`).

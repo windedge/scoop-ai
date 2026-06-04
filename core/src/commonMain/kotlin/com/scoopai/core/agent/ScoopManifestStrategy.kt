@@ -11,6 +11,7 @@ import com.scoopai.core.RefineContext
 import com.scoopai.core.agent.nodes.assembleManifestSkeleton
 import com.scoopai.core.agent.nodes.autoFillBinFromShortcuts
 import com.scoopai.core.agent.nodes.normalizeEnvSet
+import com.scoopai.core.agent.nodes.enforceArchitectureWrap
 import com.scoopai.core.tools.api.ManifestIo
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -122,11 +123,15 @@ fun scoopManifestStrategy(
 
     // ── Post-process node (deterministic: auto-fill bin + normalize env_set) ──
     val nodePostProcess by node<String, String>("nodePostProcess") { manifestJson ->
-        postProcessManifest(manifestJson)
+        logger.info { "[post-process] Running on manifest (${manifestJson.length} chars)" }
+        val result = postProcessManifest(manifestJson)
+        logger.info { "[post-process] Completed (${result.length} chars), modified=${result != manifestJson}" }
+        result
     }
 
     // ── Verify node (deterministic: validate + review) ──
     val verify by node<String, RefineContext?>("verify") { manifest ->
+        logger.info { "[verify] Starting validation (${manifest.length} chars)" }
         finalManifest = manifest
         val errors = mutableListOf<String>()
 
@@ -134,26 +139,47 @@ fun scoopManifestStrategy(
         if (manifestIo != null) {
             try {
                 val validateJson = manifestIo.validate(manifest)
-                errors.addAll(parseValidateErrors(validateJson))
+                val validationErrors = parseValidateErrors(validateJson)
+                errors.addAll(validationErrors)
+                if (validationErrors.isEmpty()) {
+                    logger.info { "[verify] Structural validation passed" }
+                } else {
+                    logger.info { "[verify] Structural validation found ${validationErrors.size} errors" }
+                }
             } catch (e: Exception) {
                 errors.add("Validate error: ${e.message}")
+                logger.warn { "[verify] Structural validation threw: ${e.message}" }
             }
+        } else {
+            logger.info { "[verify] No manifestIo, skipping structural validation" }
         }
 
         // Step 2: Semantic review (only when validate passes)
         if (errors.isEmpty() && reviewExecutor != null) {
+            logger.info { "[verify] Starting semantic review" }
             try {
-                errors.addAll(parseReviewErrors(reviewExecutor(manifest)))
+                val reviewResult = reviewExecutor(manifest)
+                val reviewErrors = parseReviewErrors(reviewResult)
+                errors.addAll(reviewErrors)
+                logger.info { "[verify] Semantic review found ${reviewErrors.size} issues" }
             } catch (e: Exception) {
                 logger.warn { "[verify] Review agent error: ${e.message}" }
             }
+        } else if (errors.isNotEmpty()) {
+            logger.info { "[verify] Skipping semantic review due to ${errors.size} validation errors" }
+        } else {
+            logger.info { "[verify] No reviewExecutor, skipping semantic review" }
         }
+
+        logger.info { "[verify] Total errors: ${errors.size}" }
 
         if (errors.isNotEmpty()) {
             val currentRetry = (storage.get(retryCountKey) ?: 0) + 1
             storage.set(retryCountKey, currentRetry)
+            logger.info { "[verify] Errors found, retry #$currentRetry (max $maxRetries)" }
             RefineContext(manifest = manifest, feedback = errors.joinToString("\n- ", "- "), retryCount = currentRetry)
         } else {
+            logger.info { "[verify] Validation passed, proceeding to finish" }
             null
         }
     }
@@ -218,8 +244,10 @@ fun scoopManifestStrategy(
 /**
  * Applies deterministic post-processing rules to a manifest after LLM generation.
  *
- * Currently delegates to [autoFillBinFromShortcuts] for portable archives. As more
- * deterministic post-processing rules are added, this is the single extension point.
+ * Currently: autoFillBinFromShortcuts → normalizeEnvSet → enforceArchitectureWrap.
+ * Order matters: autoFillBinFromShortcuts reads `url` and `architecture` from the
+ * manifest, so it must run before enforceArchitectureWrap. See each function for
+ * details on individual rules.
  */
 internal fun postProcessManifest(manifestJson: String): String {
     var result = manifestJson
@@ -232,6 +260,11 @@ internal fun postProcessManifest(manifestJson: String): String {
     if (afterEnv != result) {
         logger.info { "[post-process] Manifest modified by normalizeEnvSet" }
         result = afterEnv
+    }
+    val afterArch = enforceArchitectureWrap(result)
+    if (afterArch != result) {
+        logger.info { "[post-process] Manifest modified by enforceArchitectureWrap" }
+        result = afterArch
     }
     return result
 }

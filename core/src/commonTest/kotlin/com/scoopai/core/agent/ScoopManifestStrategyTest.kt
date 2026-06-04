@@ -6,6 +6,8 @@ import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.core.tools.annotations.InternalAgentToolsApi
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.deepseek.DeepSeekModels
+import ai.koog.prompt.llm.LLMCapability
+import ai.koog.prompt.llm.LLModel
 import ai.koog.agents.ext.agent.FinishTool
 import ai.koog.agents.testing.feature.withTesting
 import ai.koog.agents.testing.tools.getMockExecutor
@@ -16,6 +18,9 @@ import com.scoopai.core.agent.prompt.buildAnalyzePrompt
 import com.scoopai.core.agent.prompt.buildGeneratePrompt
 import com.scoopai.core.agent.prompt.buildResearchPrompt
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -37,9 +42,18 @@ class ScoopManifestStrategyTest {
     @OptIn(InternalAgentToolsApi::class)
     private val generateFinishTool = FinishTool<String>(typeToken<String>())
 
+    /**
+     * Model without ToolChoice capability, used to simulate the generate subgraph environment
+     * where nodePostProcess/verify must execute without tool_choice forced.
+     */
+    private val modelWithoutToolChoice: LLModel = DeepSeekModels.DeepSeekV4Flash.copy(
+        capabilities = DeepSeekModels.DeepSeekV4Flash.capabilities?.filter { it != LLMCapability.ToolChoice }
+    )
+
     private fun createTestAgent(
         promptExecutor: PromptExecutor,
         maxIterations: Int = 50,
+        model: LLModel = DeepSeekModels.DeepSeekV4Flash,
     ): AIAgent<String, ManifestResult> {
         val strategy = scoopManifestStrategy(
             researchPromptBuilder = { buildResearchPrompt(it, null) },
@@ -52,7 +66,7 @@ class ScoopManifestStrategyTest {
             strategy = strategy,
             agentConfig = AIAgentConfig(
                 prompt = prompt("test") { system("You are a helpful assistant.") },
-                model = DeepSeekModels.DeepSeekV4Flash,
+                model = model,
                 maxAgentIterations = maxIterations,
             ),
         ) {
@@ -205,6 +219,130 @@ class ScoopManifestStrategyTest {
         val result = createTestAgent(promptExecutor)
             .run("https://github.com/sharkdp/fd")
         assertEquals(null, result.suggestedAppName)
+    }
+
+    // =========================================================================
+    // Post-process & verify execution tests
+    //
+    // nodePostProcess calls enforceArchitectureWrap which transforms a flat manifest
+    // (url/hash at top level) into architecture-wrapped format.
+    // verify returns null (pass) when manifestIo is null, allowing nodeFinish.
+    //
+    // If either node is bypassed, the manifest stays flat or the agent fails.
+    // =========================================================================
+
+    @Test
+    fun `flat manifest from generate triggers enforceArchitectureWrap in nodePostProcess`() = runBlocking {
+        // Given: research + analyze produce valid structured data, but the generate
+        // phase returns a FLAT manifest (url at top level, no architecture block).
+        // nodePostProcess should invoke enforceArchitectureWrap to fix this.
+        val researchResult = ResearchOutput(
+            status = ResearchStatus.OK,
+            project = "test/app",
+            version = "1.0",
+            windows_assets = listOf(
+                WindowsAsset(
+                    url = "https://example.com/app.zip",
+                    architecture = "64bit",
+                    asset_type = "zip",
+                    source = "release_api"
+                )
+            )
+        )
+        val analyzeResult = AnalyzeOutput(
+            status = AnalyzeStatus.OK,
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://example.com/app.zip",
+                    hash = "abc123",
+                )
+            ),
+            bin = listOf("app.exe"),
+        )
+        // Flat manifest: url/hash at top level, no architecture block
+        val flatManifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc123","bin":["app.exe"]}"""
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(generateFinishTool, flatManifest) onRequestContains "GENERATE phase"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        // When: agent runs through all three phases (with modelWithoutToolChoice)
+        val result = createTestAgent(promptExecutor, model = modelWithoutToolChoice)
+            .run("https://github.com/test/app")
+
+        // Then: manifest must have been transformed by enforceArchitectureWrap
+        val parsed = Json.parseToJsonElement(result.manifest).jsonObject
+        assertTrue(parsed.containsKey("architecture"),
+            "Manifest should have architecture block after nodePostProcess.enforceArchitectureWrap\nGot: ${result.manifest}")
+        assertTrue("url" !in parsed,
+            "Top-level 'url' key should NOT exist; it should be moved inside architecture block. Manifest: ${result.manifest}")
+        val archBlock = parsed["architecture"]!!.jsonObject
+        assertTrue(archBlock.containsKey("64bit"),
+            "Architecture block should contain 64bit entry. Got keys: ${archBlock.keys}")
+        assertTrue(result.manifest.isNotBlank(),
+            "Result manifest should not be blank (proves verify->nodeFinish completed)")
+    }
+
+    @Test
+    fun `generate mixed response with text and tool call still triggers nodePostProcess and verify`() = runBlocking {
+        // Given: the LLM returns both text AND a finalize_task_result tool call
+        // (common with thinking models that explain then call tools).
+        // nodePostProcess and verify must still execute after the subgraph finishes.
+        val researchResult = ResearchOutput(
+            status = ResearchStatus.OK,
+            project = "test/app",
+            version = "1.0",
+            windows_assets = listOf(
+                WindowsAsset(
+                    url = "https://example.com/app.zip",
+                    architecture = "64bit",
+                    asset_type = "zip",
+                    source = "release_api"
+                )
+            )
+        )
+        val analyzeResult = AnalyzeOutput(
+            status = AnalyzeStatus.OK,
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://example.com/app.zip",
+                    hash = "abc123",
+                )
+            ),
+            bin = listOf("app.exe"),
+        )
+        val flatManifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc123","bin":["app.exe"]}"""
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            // Mixed response: text + tool call (simulates thinking model behavior)
+            mockLLMMixedResponse(
+                toolCalls = listOf(generateFinishTool to flatManifest),
+                responses = listOf("Here is the manifest I generated for you:")
+            ) onRequestContains "GENERATE phase"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        // When: agent runs through all three phases (with modelWithoutToolChoice)
+        val result = createTestAgent(promptExecutor, model = modelWithoutToolChoice)
+            .run("https://github.com/test/app")
+
+        // Then: manifest must have architecture block (proves nodePostProcess executed)
+        val parsed = Json.parseToJsonElement(result.manifest).jsonObject
+        assertTrue(parsed.containsKey("architecture"),
+            "Mixed response: Manifest should have architecture block after nodePostProcess\nGot: ${result.manifest}")
+        assertTrue("url" !in parsed,
+            "Mixed response: Top-level 'url' key should NOT exist. Manifest: ${result.manifest}")
+        assertTrue(result.manifest.isNotBlank(),
+            "Mixed response: Result manifest should not be blank (proves verify->nodeFinish)")
     }
 
     @Test
