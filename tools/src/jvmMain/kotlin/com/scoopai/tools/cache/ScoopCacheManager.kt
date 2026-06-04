@@ -26,10 +26,13 @@ private val logger = KotlinLogging.logger {}
  */
 class ScoopCacheManager(
     private val keepCache: Boolean = true,
+    private val maxDownloadBytes: Long = 500L * 1024 * 1024,
+    private val httpClient: HttpClient = HttpClient.newBuilder()
+        .followRedirects(HttpClient.Redirect.NORMAL)
+        .build(),
+    customCacheDir: Path? = null,
 ) {
     companion object {
-        private const val MAX_DOWNLOAD_BYTES: Long = 500L * 1024 * 1024 // 500 MB
-
         /** Resolve Scoop cache directory from env / default. */
         fun scoopCacheDir(): Path {
             val envDir = System.getenv("SCOOP_CACHE")
@@ -76,17 +79,13 @@ class ScoopCacheManager(
         }
     }
 
-    private val httpClient: HttpClient = HttpClient.newBuilder()
-        .followRedirects(HttpClient.Redirect.NORMAL)
-        .build()
-
     /** URL -> cached local file path (populated on download). */
     private val downloadCache = mutableMapOf<String, Path>()
 
     /** Files to delete on cleanup (only when keepCache = false). */
     private val tempFiles = mutableListOf<Path>()
 
-    private val cacheDir: Path by lazy { scoopCacheDir() }
+    private val cacheDir: Path = customCacheDir ?: scoopCacheDir()
 
     /**
      * Get a file from cache, or download it.
@@ -167,7 +166,47 @@ class ScoopCacheManager(
         return bytes
     }
 
+    // -----------------------------------------------------------------------
+    // F1: Content-Length pre-check via HEAD
+    // -----------------------------------------------------------------------
+
+    /**
+     * Send a HEAD request to check Content-Length before downloading.
+     * Returns -1 if HEAD is not supported (e.g. 405) or Content-Length is unknown,
+     * allowing the caller to fall back to streaming size check (F2).
+     *
+     * This is `internal` so that [ZipArchiveInspector] can also use it for
+     * lightweight size checks before deciding to download full files.
+     */
+    internal fun getContentLength(url: String): Long {
+        return try {
+            val headRequest = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .method("HEAD", HttpRequest.BodyPublishers.noBody())
+                .header("User-Agent", "scoop-ai/0.1.0")
+                .build()
+            val response = httpClient.send(headRequest, HttpResponse.BodyHandlers.discarding())
+            if (response.statusCode() in 200..299) {
+                response.headers().firstValue("Content-Length")
+                    .map { it.toLongOrNull() ?: -1 }
+                    .orElse(-1)
+            } else {
+                -1  // HEAD not supported, fallback to streaming check
+            }
+        } catch (_: Exception) {
+            -1  // Network error, fallback to streaming check
+        }
+    }
+
     private fun download(url: String, target: Path) {
+        // F1: Content-Length pre-check via HEAD (before any data transfer)
+        val contentLength = getContentLength(url)
+        if (contentLength > 0 && contentLength > maxDownloadBytes) {
+            throw IllegalStateException(
+                "File too large: ${contentLength / 1024 / 1024}MB exceeds ${maxDownloadBytes / 1024 / 1024}MB limit"
+            )
+        }
+
         val tmpTarget = target.resolveSibling("${target.fileName}.downloading")
         try {
             val request = HttpRequest.newBuilder()
@@ -181,14 +220,23 @@ class ScoopCacheManager(
                 throw IllegalStateException("HTTP ${response.statusCode()} for $url")
             }
 
+            // F2: Stream with byte counting — interrupt if exceeding limit
             response.body().use { input ->
-                Files.copy(input, tmpTarget, StandardCopyOption.REPLACE_EXISTING)
-            }
-
-            val fileSize = Files.size(tmpTarget)
-            if (fileSize > MAX_DOWNLOAD_BYTES) {
-                Files.deleteIfExists(tmpTarget)
-                throw IllegalStateException("File too large: $fileSize bytes (max $MAX_DOWNLOAD_BYTES)")
+                Files.newOutputStream(tmpTarget).use { output ->
+                    val buffer = ByteArray(8192)
+                    var totalRead = 0L
+                    while (true) {
+                        val bytesRead = input.read(buffer)
+                        if (bytesRead == -1) break
+                        totalRead += bytesRead
+                        if (totalRead > maxDownloadBytes) {
+                            throw IllegalStateException(
+                                "File too large: exceeded ${maxDownloadBytes / 1024 / 1024}MB during download"
+                            )
+                        }
+                        output.write(buffer, 0, bytesRead)
+                    }
+                }
             }
 
             // Atomic move: .downloading -> final name

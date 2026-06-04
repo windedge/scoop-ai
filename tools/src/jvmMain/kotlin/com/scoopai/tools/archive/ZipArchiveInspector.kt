@@ -140,17 +140,31 @@ class ZipArchiveInspector(
                 else -> "unknown"
             }
 
-            // Deeper verification needs the full file - only download on demand.
+            // Deeper verification needs the full file — skip for very large files (>100MB)
+            // where downloading the full file just for verification is wasteful.
+            // peekHeader has already confirmed the installer type from the first 1MB.
+            val SKIP_VERIFICATION_SIZE = 100L * 1024 * 1024 // 100MB
+
             val installerType = when (suspectedType) {
                 "innosetup" -> {
-                    val file = cache.getOrDownload(urlNotNull)
-                    val canList = tryInnounpList(file)
-                    if (canList) "innosetup" else "innosetup_unsupported"
+                    val contentLength = cache.getContentLength(urlNotNull)
+                    if (contentLength > SKIP_VERIFICATION_SIZE) {
+                        "innosetup"
+                    } else {
+                        val file = cache.getOrDownload(urlNotNull)
+                        val canList = tryInnounpList(file)
+                        if (canList) "innosetup" else "innosetup_unsupported"
+                    }
                 }
                 "nsis" -> {
-                    val file = cache.getOrDownload(urlNotNull)
-                    val canList = testNsisExtractability(file)
-                    if (canList) "nsis" else "nsis_unsupported"
+                    val contentLength = cache.getContentLength(urlNotNull)
+                    if (contentLength > SKIP_VERIFICATION_SIZE) {
+                        "nsis"
+                    } else {
+                        val file = cache.getOrDownload(urlNotNull)
+                        val canList = testNsisExtractability(file)
+                        if (canList) "nsis" else "nsis_unsupported"
+                    }
                 }
                 else -> "unknown"
             }
