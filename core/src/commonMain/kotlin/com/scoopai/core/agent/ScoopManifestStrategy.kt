@@ -12,7 +12,12 @@ import com.scoopai.core.agent.nodes.assembleManifestSkeleton
 import com.scoopai.core.agent.nodes.autoFillBinFromShortcuts
 import com.scoopai.core.agent.nodes.normalizeEnvSet
 import com.scoopai.core.agent.nodes.enforceArchitectureWrap
+import com.scoopai.core.agent.nodes.normalizeHomepage
+import com.scoopai.core.agent.nodes.removeInvalidTopLevelFields
+import com.scoopai.core.agent.nodes.normalizeBin
 import com.scoopai.core.tools.api.ManifestIo
+import ai.koog.agents.core.agent.entity.AIAgentStorageAPI
+import ai.koog.agents.core.agent.entity.AIAgentStorageKey
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
@@ -121,67 +126,17 @@ fun scoopManifestStrategy(
         refinePromptBuilder?.invoke(input) ?: ""
     }
 
-    // ── Post-process node (deterministic: auto-fill bin + normalize env_set) ──
-    val nodePostProcess by node<String, String>("nodePostProcess") { manifestJson ->
-        logger.info { "[post-process] Running on manifest (${manifestJson.length} chars)" }
-        val result = postProcessManifest(manifestJson)
-        logger.info { "[post-process] Completed (${result.length} chars), modified=${result != manifestJson}" }
+    // ── Normalize node (deterministic: post-process + normalize) ──
+    val normalize by node<String, String>("normalize") { manifestJson ->
+        logger.info { "[normalize] Running on manifest (${manifestJson.length} chars)" }
+        val result = normalizeManifest(manifestJson)
+        logger.info { "[normalize] Completed (${result.length} chars), modified=${result != manifestJson}" }
         result
     }
 
     // ── Verify node (deterministic: validate + review) ──
     val verify by node<String, RefineContext?>("verify") { manifest ->
-        logger.info { "[verify] Starting validation (${manifest.length} chars)" }
-        finalManifest = manifest
-        val errors = mutableListOf<String>()
-
-        // Step 1: Structural validate
-        if (manifestIo != null) {
-            try {
-                val validateJson = manifestIo.validate(manifest)
-                val validationErrors = parseValidateErrors(validateJson)
-                errors.addAll(validationErrors)
-                if (validationErrors.isEmpty()) {
-                    logger.info { "[verify] Structural validation passed" }
-                } else {
-                    logger.info { "[verify] Structural validation found ${validationErrors.size} errors" }
-                }
-            } catch (e: Exception) {
-                errors.add("Validate error: ${e.message}")
-                logger.warn { "[verify] Structural validation threw: ${e.message}" }
-            }
-        } else {
-            logger.info { "[verify] No manifestIo, skipping structural validation" }
-        }
-
-        // Step 2: Semantic review (only when validate passes)
-        if (errors.isEmpty() && reviewExecutor != null) {
-            logger.info { "[verify] Starting semantic review" }
-            try {
-                val reviewResult = reviewExecutor(manifest)
-                val reviewErrors = parseReviewErrors(reviewResult)
-                errors.addAll(reviewErrors)
-                logger.info { "[verify] Semantic review found ${reviewErrors.size} issues" }
-            } catch (e: Exception) {
-                logger.warn { "[verify] Review agent error: ${e.message}" }
-            }
-        } else if (errors.isNotEmpty()) {
-            logger.info { "[verify] Skipping semantic review due to ${errors.size} validation errors" }
-        } else {
-            logger.info { "[verify] No reviewExecutor, skipping semantic review" }
-        }
-
-        logger.info { "[verify] Total errors: ${errors.size}" }
-
-        if (errors.isNotEmpty()) {
-            val currentRetry = (storage.get(retryCountKey) ?: 0) + 1
-            storage.set(retryCountKey, currentRetry)
-            logger.info { "[verify] Errors found, retry #$currentRetry (max $maxRetries)" }
-            RefineContext(manifest = manifest, feedback = errors.joinToString("\n- ", "- "), retryCount = currentRetry)
-        } else {
-            logger.info { "[verify] Validation passed, proceeding to finish" }
-            null
-        }
+        validateManifest(manifest, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries) { finalManifest = it }
     }
 
     // ── Edges ──
@@ -202,8 +157,8 @@ fun scoopManifestStrategy(
     // Main path: analyze → prepareManifest → generate → verify
     edge(analyze forwardTo prepareManifest)
     edge(prepareManifest forwardTo generate)
-    edge(generate forwardTo nodePostProcess)
-    edge(nodePostProcess forwardTo verify)
+    edge(generate forwardTo normalize)
+    edge(normalize forwardTo verify)
 
     // Verify → pass → finish
     edge(verify forwardTo nodeFinish onCondition { ctx ->
@@ -223,7 +178,7 @@ fun scoopManifestStrategy(
     })
 
     // Refine → back to verify
-    edge(refine forwardTo verify)
+    edge(refine forwardTo normalize)
 
     // Verify → fail + retry > 3 → exhausted finish
     edge(verify forwardTo nodeFinish onCondition { ctx ->
@@ -242,31 +197,112 @@ fun scoopManifestStrategy(
 // ---------------------------------------------------------------------------
 
 /**
- * Applies deterministic post-processing rules to a manifest after LLM generation.
+ * Applies deterministic normalization rules to a manifest after LLM generation.
  *
- * Currently: autoFillBinFromShortcuts → normalizeEnvSet → enforceArchitectureWrap.
+ * Currently: autoFillBinFromShortcuts → normalizeEnvSet → enforceArchitectureWrap
+ * → normalizeHomepage → removeInvalidTopLevelFields → normalizeBin.
  * Order matters: autoFillBinFromShortcuts reads `url` and `architecture` from the
  * manifest, so it must run before enforceArchitectureWrap. See each function for
  * details on individual rules.
  */
-internal fun postProcessManifest(manifestJson: String): String {
+internal fun normalizeManifest(manifestJson: String): String {
     var result = manifestJson
     val afterBin = autoFillBinFromShortcuts(result)
     if (afterBin != result) {
-        logger.info { "[post-process] Manifest modified by autoFillBinFromShortcuts" }
+        logger.info { "[normalize] Manifest modified by autoFillBinFromShortcuts" }
         result = afterBin
     }
     val afterEnv = normalizeEnvSet(result)
     if (afterEnv != result) {
-        logger.info { "[post-process] Manifest modified by normalizeEnvSet" }
+        logger.info { "[normalize] Manifest modified by normalizeEnvSet" }
         result = afterEnv
     }
     val afterArch = enforceArchitectureWrap(result)
     if (afterArch != result) {
-        logger.info { "[post-process] Manifest modified by enforceArchitectureWrap" }
+        logger.info { "[normalize] Manifest modified by enforceArchitectureWrap" }
         result = afterArch
     }
+    val afterHomepage = normalizeHomepage(result)
+    if (afterHomepage != result) {
+        logger.info { "[normalize] Manifest modified by normalizeHomepage" }
+        result = afterHomepage
+    }
+    val afterInvalid = removeInvalidTopLevelFields(result)
+    if (afterInvalid != result) {
+        logger.info { "[normalize] Manifest modified by removeInvalidTopLevelFields" }
+        result = afterInvalid
+    }
+    val afterBinNorm = normalizeBin(result)
+    if (afterBinNorm != result) {
+        logger.info { "[normalize] Manifest modified by normalizeBin" }
+        result = afterBinNorm
+    }
     return result
+}
+
+/**
+ * Validates a manifest JSON string and returns a [RefineContext] with errors if found,
+ * or null if validation passes.
+ */
+internal suspend fun validateManifest(
+    manifest: String,
+    manifestIo: ManifestIo?,
+    reviewExecutor: (suspend (String) -> String)?,
+    retryCountKey: AIAgentStorageKey<Int>,
+    storage: AIAgentStorageAPI,
+    maxRetries: Int,
+    finalManifestSetter: (String) -> Unit,
+): RefineContext? {
+    finalManifestSetter(manifest)
+    val errors = mutableListOf<String>()
+
+    // Step 1: Structural validation
+    if (manifestIo != null) {
+        try {
+            val validateJson = manifestIo.validate(manifest)
+            val validationErrors = parseValidateErrors(validateJson)
+            errors.addAll(validationErrors)
+            if (validationErrors.isEmpty()) {
+                logger.info { "[verify] Structural validation passed" }
+            } else {
+                logger.info { "[verify] Structural validation found ${validationErrors.size} errors" }
+            }
+        } catch (e: Exception) {
+            errors.add("Validate error: ${e.message}")
+            logger.warn { "[verify] Structural validation threw: ${e.message}" }
+        }
+    } else {
+        logger.info { "[verify] No manifestIo, skipping structural validation" }
+    }
+
+    // Step 2: Semantic review (only when validate passes)
+    if (errors.isEmpty() && reviewExecutor != null) {
+        logger.info { "[verify] Starting semantic review" }
+        try {
+            val reviewResult = reviewExecutor(manifest)
+            val reviewErrors = parseReviewErrors(reviewResult)
+            errors.addAll(reviewErrors)
+            logger.info { "[verify] Semantic review found ${reviewErrors.size} issues" }
+        } catch (e: Exception) {
+            logger.warn { "[verify] Review agent error: ${e.message}" }
+        }
+    } else if (errors.isNotEmpty()) {
+        logger.info { "[verify] Skipping semantic review due to ${errors.size} validation errors" }
+    } else {
+        logger.info { "[verify] No reviewExecutor, skipping semantic review" }
+    }
+
+    logger.info { "[verify] Total errors: ${errors.size}" }
+
+    if (errors.isNotEmpty()) {
+        val currentRetry = (storage.get(retryCountKey) ?: 0) + 1
+        storage.set(retryCountKey, currentRetry)
+        logger.info { "[verify] Errors found, retry #$currentRetry (max $maxRetries)" }
+        return RefineContext(manifest = manifest, feedback = errors.joinToString("\n- ", "- "), retryCount = currentRetry)
+    } else {
+        logger.info { "[verify] Validation passed, proceeding to finish" }
+        return null
+    }
 }
 
 private val codeBlockRegex = Regex("```(?:json)?\\s*\\n?([\\s\\S]*?)```")

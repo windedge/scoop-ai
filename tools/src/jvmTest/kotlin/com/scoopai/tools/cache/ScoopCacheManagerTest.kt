@@ -21,7 +21,7 @@ class ScoopCacheManagerTest {
             when (exchange.requestMethod) {
                 "HEAD" -> {
                     headRequested.set(true)
-                    // Return Content-Length = 600MB (> 500MB limit)
+                    // Return Content-Length = 600MB (> 200MB limit)
                     exchange.responseHeaders.set("Content-Length", "600000000")
                     exchange.sendResponseHeaders(200, -1)
                 }
@@ -39,7 +39,7 @@ class ScoopCacheManagerTest {
         try {
             val cacheManager = ScoopCacheManager(
                 keepCache = false,
-                maxDownloadBytes = 500L * 1024 * 1024,
+                maxDownloadBytes = 200L * 1024 * 1024,
                 customCacheDir = tmpDir,
             )
             val ex = assertFailsWith<IllegalStateException> {
@@ -134,7 +134,7 @@ class ScoopCacheManagerTest {
         try {
             val cacheManager = ScoopCacheManager(
                 keepCache = false,
-                maxDownloadBytes = 500L * 1024 * 1024,
+                maxDownloadBytes = 200L * 1024 * 1024,
                 customCacheDir = tmpDir,
             )
             val path = cacheManager.getOrDownload(url)

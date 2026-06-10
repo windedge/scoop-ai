@@ -40,7 +40,7 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
 - The `bin` field should contain only the main user-facing executables.
 - Flag if `bin` includes internal tools, helpers, updaters, or support DLLs/EXEs.
 - Flag if `bin` is missing (for tools that provide CLI commands).
-- For GUI-only applications, `bin` should be absent or minimal; `shortcuts` is the proper field.
+- For GUI applications, both `bin` and `shortcuts` should be present. The main exe should be in both fields so users can launch from CLI too. Only omit `bin` if the app has NO usable CLI interface (e.g. a system tray utility).
 
 ### 5. autoupdate.hash completeness
 - Check if `autoupdate` exists and has a `hash` block.
@@ -77,6 +77,9 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
   "64bit": { "url": "...", "bin": [["app-3.1.0-x86_64.exe", "app"]] }
   ```
 - The different filenames per architecture are intentional (versioned exe pattern).
+
+### 11. homepage protocol
+- If `homepage` uses `http://`, suggest `https://` unless the site is known not to support HTTPS.
 
 ### License validation
 - If `license` is `"Proprietary"`, flag as a **warning**. Some apps are genuinely proprietary.

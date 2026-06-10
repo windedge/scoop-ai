@@ -91,7 +91,8 @@ When you have finished analyzing, call the `finalize_task_result` tool with your
   "bin_aliases": ["alias1", "alias2"],
   "nsis_unsupported": true or false (default false, only relevant when installer_type is nsis),
   "installer_type": "zip or msi or innosetup or nsis or nsis_unsupported",
-  "notes": "Any additional context for the generate phase"
+  "notes": "Any additional context for the generate phase",
+  "suggest": {"vcredist": "extras/vcredist2022"}
 }
 
 Rules:

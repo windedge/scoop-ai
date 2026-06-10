@@ -147,8 +147,12 @@ fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): 
 
         // Versioned bin: skip top-level bin (will be inside arch blocks)
         if (effectiveBin.isNotEmpty() && !analyze.versioned_bin) {
-            putJsonArray("bin") {
-                effectiveBin.forEach { add(JsonPrimitive(it)) }
+            if (effectiveBin.size == 1) {
+                put("bin", effectiveBin.first())
+            } else {
+                putJsonArray("bin") {
+                    effectiveBin.forEach { add(JsonPrimitive(it)) }
+                }
             }
         }
 
@@ -179,6 +183,11 @@ fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): 
         if (analyze.env_add_path.isNotEmpty()) {
             putJsonArray("env_add_path") {
                 analyze.env_add_path.forEach { add(JsonPrimitive(it)) }
+            }
+        }
+        if (analyze.suggest.isNotEmpty()) {
+            putJsonObject("suggest") {
+                analyze.suggest.forEach { (k, v) -> put(k, v) }
             }
         }
 
@@ -591,7 +600,9 @@ internal fun autoFillBinFromShortcuts(manifestJson: String): String {
         ?: json["architecture"]?.jsonObject?.get("32bit")?.jsonObject?.get("url")?.jsonPrimitive?.content
         ?: return manifestJson
 
-    if (!isPortableArchiveUrl(url)) return manifestJson
+    // NSIS/InnoSetup with #/dl.7z fragment is also extractable
+    val isExtractableInstaller = url.contains("#/dl.7z")
+    if (!isPortableArchiveUrl(url) && !isExtractableInstaller) return manifestJson
 
     // Skip if bin already has entries
     if (json["bin"] != null) return manifestJson
@@ -782,4 +793,131 @@ private fun processAutoupdateArchitecture(manifest: JsonObject): JsonObject {
     return JsonObject(manifest.toMutableMap().apply {
         put("autoupdate", newAutoupdate)
     })
+}
+
+// ---------------------------------------------------------------------------
+// Homepage normalization: remove trailing slash
+// ---------------------------------------------------------------------------
+
+/**
+ * Removes trailing slash from homepage URL if present.
+ * Only removes the last character if it is `/`, preserving all internal path slashes.
+ * Returns the original JSON unchanged if homepage is missing or already correct.
+ */
+internal fun normalizeHomepage(manifestJson: String): String {
+    val json = try {
+        Json.parseToJsonElement(manifestJson) as? JsonObject ?: return manifestJson
+    } catch (_: Exception) {
+        return manifestJson
+    }
+    val homepage = json["homepage"] as? JsonPrimitive ?: return manifestJson
+    val url = homepage.content
+    if (url.endsWith("/") && url.length > 1) {
+        val newUrl = url.removeSuffix("/")
+        val modified = json.toMutableMap().apply {
+            put("homepage", JsonPrimitive(newUrl))
+        }
+        return JsonObject(modified).toString()
+    }
+    return manifestJson
+}
+
+// ---------------------------------------------------------------------------
+// Remove invalid top-level fields from manifest
+// ---------------------------------------------------------------------------
+
+private val INVALID_TOP_LEVEL_FIELDS = setOf("innosetup", "installer_type")
+
+/**
+ * Removes known-invalid top-level fields from a manifest JSON string.
+ *
+ * LLMs sometimes hallucinate Scoop-invalid fields like `innosetup` or
+ * `installer_type`. These are not valid Scoop manifest fields and should
+ * be removed before output.
+ *
+ * Returns the original JSON unchanged if no invalid fields are present.
+ */
+internal fun removeInvalidTopLevelFields(manifestJson: String): String {
+    val json = try {
+        Json.parseToJsonElement(manifestJson) as? JsonObject ?: return manifestJson
+    } catch (_: Exception) {
+        return manifestJson
+    }
+    val hasInvalid = INVALID_TOP_LEVEL_FIELDS.any { json.containsKey(it) }
+    if (!hasInvalid) return manifestJson
+    val modified = json.toMutableMap().apply {
+        INVALID_TOP_LEVEL_FIELDS.forEach { remove(it) }
+    }
+    return JsonObject(modified).toString()
+}
+
+// ---------------------------------------------------------------------------
+// Bin normalization: single-element array to string
+// ---------------------------------------------------------------------------
+
+/**
+ * If `bin` (top-level or inside architecture.*) is a single-element string array
+ * like `["app.exe"]`, converts it to a plain string `"app.exe"`.
+ *
+ * Multi-element arrays (e.g. `["a.exe", "b.exe"]`) and nested arrays
+ * (e.g. `[["app.exe", "alias"]]`) are preserved unchanged.
+ *
+ * Handles both top-level `bin` and architecture sub-level `bin`
+ * (e.g. `architecture.64bit.bin`).
+ */
+internal fun normalizeBin(manifestJson: String): String {
+    val json = try {
+        Json.parseToJsonElement(manifestJson) as? JsonObject ?: return manifestJson
+    } catch (_: Exception) {
+        return manifestJson
+    }
+
+    var modified = false
+    val result = json.toMutableMap()
+
+    // Process top-level bin
+    val topBin = result["bin"]
+    if (topBin != null) {
+        val normalized = normalizeSingleBinElement(topBin)
+        if (normalized != null) {
+            result["bin"] = normalized
+            modified = true
+        }
+    }
+
+    // Process architecture sub-level bins
+    val archElement = result["architecture"]
+    if (archElement != null) {
+        val arch = (archElement as? JsonObject)?.toMutableMap() ?: return if (modified) JsonObject(result).toString() else manifestJson
+        var archModified = false
+        for ((archKey, archValue) in arch) {
+            val archEntry = (archValue as? JsonObject)?.toMutableMap() ?: continue
+            val archBin = archEntry["bin"]
+            if (archBin != null) {
+                val normalized = normalizeSingleBinElement(archBin)
+                if (normalized != null) {
+                    archEntry["bin"] = normalized
+                    archModified = true
+                }
+            }
+            arch[archKey] = JsonObject(archEntry)
+        }
+        if (archModified) {
+            result["architecture"] = JsonObject(arch)
+            modified = true
+        }
+    }
+
+    return if (modified) JsonObject(result).toString() else manifestJson
+}
+
+/**
+ * Normalizes a single bin element: if it's a single-element array of primitives,
+ * returns the unwrapped primitive. Otherwise returns null (no change).
+ */
+private fun normalizeSingleBinElement(element: JsonElement): JsonElement? {
+    val array = element as? JsonArray ?: return null
+    if (array.size != 1) return null
+    val first = array[0]
+    return first as? JsonPrimitive
 }

@@ -44,7 +44,7 @@ class ScoopManifestStrategyTest {
 
     /**
      * Model without ToolChoice capability, used to simulate the generate subgraph environment
-     * where nodePostProcess/verify must execute without tool_choice forced.
+     * where normalize/verify must execute without tool_choice forced.
      */
     private val modelWithoutToolChoice: LLModel = DeepSeekModels.DeepSeekV4Flash.copy(
         capabilities = DeepSeekModels.DeepSeekV4Flash.capabilities?.filter { it != LLMCapability.ToolChoice }
@@ -224,7 +224,7 @@ class ScoopManifestStrategyTest {
     // =========================================================================
     // Post-process & verify execution tests
     //
-    // nodePostProcess calls enforceArchitectureWrap which transforms a flat manifest
+    // normalize calls enforceArchitectureWrap which transforms a flat manifest
     // (url/hash at top level) into architecture-wrapped format.
     // verify returns null (pass) when manifestIo is null, allowing nodeFinish.
     //
@@ -232,10 +232,10 @@ class ScoopManifestStrategyTest {
     // =========================================================================
 
     @Test
-    fun `flat manifest from generate triggers enforceArchitectureWrap in nodePostProcess`() = runBlocking {
+    fun `flat manifest from generate triggers enforceArchitectureWrap in normalize`() = runBlocking {
         // Given: research + analyze produce valid structured data, but the generate
         // phase returns a FLAT manifest (url at top level, no architecture block).
-        // nodePostProcess should invoke enforceArchitectureWrap to fix this.
+        // normalize should invoke enforceArchitectureWrap to fix this.
         val researchResult = ResearchOutput(
             status = ResearchStatus.OK,
             project = "test/app",
@@ -278,7 +278,7 @@ class ScoopManifestStrategyTest {
         // Then: manifest must have been transformed by enforceArchitectureWrap
         val parsed = Json.parseToJsonElement(result.manifest).jsonObject
         assertTrue(parsed.containsKey("architecture"),
-            "Manifest should have architecture block after nodePostProcess.enforceArchitectureWrap\nGot: ${result.manifest}")
+            "Manifest should have architecture block after normalize.enforceArchitectureWrap\nGot: ${result.manifest}")
         assertTrue("url" !in parsed,
             "Top-level 'url' key should NOT exist; it should be moved inside architecture block. Manifest: ${result.manifest}")
         val archBlock = parsed["architecture"]!!.jsonObject
@@ -289,10 +289,10 @@ class ScoopManifestStrategyTest {
     }
 
     @Test
-    fun `generate mixed response with text and tool call still triggers nodePostProcess and verify`() = runBlocking {
+    fun `generate mixed response with text and tool call still triggers normalize and verify`() = runBlocking {
         // Given: the LLM returns both text AND a finalize_task_result tool call
         // (common with thinking models that explain then call tools).
-        // nodePostProcess and verify must still execute after the subgraph finishes.
+        // normalize and verify must still execute after the subgraph finishes.
         val researchResult = ResearchOutput(
             status = ResearchStatus.OK,
             project = "test/app",
@@ -335,10 +335,10 @@ class ScoopManifestStrategyTest {
         val result = createTestAgent(promptExecutor, model = modelWithoutToolChoice)
             .run("https://github.com/test/app")
 
-        // Then: manifest must have architecture block (proves nodePostProcess executed)
+        // Then: manifest must have architecture block (proves normalize executed)
         val parsed = Json.parseToJsonElement(result.manifest).jsonObject
         assertTrue(parsed.containsKey("architecture"),
-            "Mixed response: Manifest should have architecture block after nodePostProcess\nGot: ${result.manifest}")
+            "Mixed response: Manifest should have architecture block after normalize\nGot: ${result.manifest}")
         assertTrue("url" !in parsed,
             "Mixed response: Top-level 'url' key should NOT exist. Manifest: ${result.manifest}")
         assertTrue(result.manifest.isNotBlank(),

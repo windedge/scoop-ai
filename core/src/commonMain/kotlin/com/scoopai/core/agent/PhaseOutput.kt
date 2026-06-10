@@ -126,6 +126,8 @@ data class AnalyzeOutput(
     val notes: String = "",
     /** Passed through from Research phase; suggested kebab-case app name */
     val suggested_app_name: String? = null,
+    /** Suggestions/recommendations for additional packages, e.g. {"vcredist": "extras/vcredist2022"} */
+    val suggest: Map<String, String> = emptyMap(),
 )
 
 @Serializable

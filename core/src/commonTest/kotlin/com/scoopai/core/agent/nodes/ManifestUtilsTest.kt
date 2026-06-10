@@ -318,7 +318,7 @@ class ManifestUtilsTest {
         assertEquals("abc123", arch["hash"]?.jsonPrimitive?.content)
         assertFalse(obj.containsKey("url"), "url should NOT be at top level")
         assertFalse(obj.containsKey("hash"), "hash should NOT be at top level")
-        assertEquals("app.exe", obj["bin"]?.jsonArray?.single()?.jsonPrimitive?.content)
+        assertEquals("app.exe", obj["bin"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -1378,7 +1378,7 @@ class ManifestUtilsTest {
         assertEquals("https://example.com/audioswitcher-1.8.zip", obj["url"]?.jsonPrimitive?.content)
         assertEquals("abc123", obj["hash"]?.jsonPrimitive?.content)
         assertEquals("1.8", obj["version"]?.jsonPrimitive?.content)
-        assertEquals("AudioSwitcher.exe", obj["bin"]?.jsonArray?.single()?.jsonPrimitive?.content)
+        assertEquals("AudioSwitcher.exe", obj["bin"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -1424,6 +1424,167 @@ class ManifestUtilsTest {
             "https://github.com/owner/repo/releases/download/v\$version/app-v\$version.zip",
             arch64["url"]?.jsonPrimitive?.content
         )
+    }
+
+    // ---------------------------------------------------------------
+    // normalizeHomepage
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `normalizeHomepage removes trailing slash`() {
+        val input = """{"version":"1.0","homepage":"https://lima-vm.io/","url":"https://example.com/app.zip","hash":"abc"}"""
+        val result = normalizeHomepage(input)
+        val json = parseJsonObject(result)
+        assertEquals("https://lima-vm.io", json["homepage"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `normalizeHomepage preserves homepage without trailing slash`() {
+        val input = """{"version":"1.0","homepage":"https://zed.dev","url":"https://example.com/app.zip","hash":"abc"}"""
+        val result = normalizeHomepage(input)
+        assertEquals(input, result)
+    }
+
+    @Test
+    fun `normalizeHomepage preserves path slashes`() {
+        val input = """{"version":"1.0","homepage":"https://docs.example.com/app/docs","url":"https://example.com/app.zip","hash":"abc"}"""
+        val result = normalizeHomepage(input)
+        assertEquals(input, result)
+    }
+
+    @Test
+    fun `normalizeHomepage handles missing homepage`() {
+        val input = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc"}"""
+        val result = normalizeHomepage(input)
+        assertEquals(input, result)
+    }
+
+    // ---------------------------------------------------------------
+    // removeInvalidTopLevelFields
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `removeInvalidTopLevelFields removes innosetup`() {
+        val input = """{"version":"1.0","innosetup":true,"url":"https://example.com/app.zip","hash":"abc"}"""
+        val result = removeInvalidTopLevelFields(input)
+        val json = parseJsonObject(result)
+        assertFalse(json.containsKey("innosetup"))
+        assertTrue(json.containsKey("version"))
+    }
+
+    @Test
+    fun `removeInvalidTopLevelFields removes installer_type`() {
+        val input = """{"version":"1.0","installer_type":"innosetup","url":"https://example.com/app.zip","hash":"abc"}"""
+        val result = removeInvalidTopLevelFields(input)
+        val json = parseJsonObject(result)
+        assertFalse(json.containsKey("installer_type"))
+    }
+
+    @Test
+    fun `removeInvalidTopLevelFields preserves valid fields`() {
+        val input = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc","bin":"app.exe","license":"MIT"}"""
+        val result = removeInvalidTopLevelFields(input)
+        assertEquals(input, result)
+    }
+
+    // ---------------------------------------------------------------
+    // autoFillBinFromShortcuts
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `autoFillBinFromShortcuts fills bin from shortcuts for NSIS dl 7z URL`() {
+        // NSIS installer with #/dl.7z — should be treated as extractable
+        val manifest = """{
+        "version":"2.2.1",
+        "architecture":{"64bit":{"url":"https://example.com/LibreCAD-2.2.1-setup.exe#/dl.7z","hash":"abc123"}},
+        "shortcuts":[["LibreCAD.exe","LibreCAD"]],
+        "license":"GPL-2.0-only"
+    }"""
+        val result = autoFillBinFromShortcuts(manifest)
+        val json = parseJsonObject(result)
+        // Should auto-fill bin from shortcuts
+        assertTrue(json.containsKey("bin"), "NSIS #/dl.7z manifest should get auto-filled bin")
+    }
+
+    // ---------------------------------------------------------------
+    // assembleManifestSkeleton - suggest field
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `assembleManifestSkeleton embeds suggest field from analyze output`() {
+        val research = ResearchOutput(version = "1.0.0")
+        val analyze = AnalyzeOutput(
+            entries = listOf(AssetEntry(architecture = "64bit", url = "u", hash = "h")),
+            bin = listOf("app.exe"),
+            suggest = mapOf("vcredist" to "extras/vcredist2022"),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+        val suggest = obj["suggest"]?.jsonObject
+        assertNotNull(suggest, "suggest field should be present")
+        assertEquals("extras/vcredist2022", suggest!!["vcredist"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `assembleManifestSkeleton omits suggest field when empty`() {
+        val research = ResearchOutput(version = "1.0.0")
+        val analyze = AnalyzeOutput(
+            entries = listOf(AssetEntry(architecture = "64bit", url = "u", hash = "h")),
+            bin = listOf("app.exe"),
+            suggest = emptyMap(),
+        )
+        val obj = parseJsonObject(assembleManifestSkeleton(research, analyze))
+        assertFalse(obj.containsKey("suggest"), "suggest should be omitted when empty")
+    }
+
+    // ---------------------------------------------------------------
+    // normalizeBin
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `normalizeBin converts single-element array to string`() {
+        val input = """{"version":"1.0","bin":["app.exe"],"url":"https://example.com/app.zip","hash":"abc"}"""
+        val result = normalizeBin(input)
+        val json = parseJsonObject(result)
+        assertEquals("app.exe", json["bin"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `normalizeBin preserves multi-element array`() {
+        val input = """{"version":"1.0","bin":["a.exe","b.exe"],"url":"https://example.com/app.zip","hash":"abc"}"""
+        val result = normalizeBin(input)
+        val json = parseJsonObject(result)
+        assertEquals(2, json["bin"]!!.jsonArray.size)
+    }
+
+    @Test
+    fun `normalizeBin preserves nested array`() {
+        val input = """{"version":"1.0","bin":[["app.exe","alias"]],"url":"https://example.com/app.zip","hash":"abc"}"""
+        val result = normalizeBin(input)
+        val json = parseJsonObject(result)
+        assertEquals(1, json["bin"]!!.jsonArray.size)
+    }
+
+    @Test
+    fun `normalizeBin handles string bin`() {
+        val input = """{"version":"1.0","bin":"app.exe","url":"https://example.com/app.zip","hash":"abc"}"""
+        val result = normalizeBin(input)
+        assertEquals(input, result)
+    }
+
+    @Test
+    fun `normalizeBin handles architecture sub-level bin`() {
+        val input = """{"version":"1.0","architecture":{"64bit":{"url":"https://example.com/app.zip","hash":"abc","bin":["app.exe"]}}}"""
+        val result = normalizeBin(input)
+        val json = parseJsonObject(result)
+        val archBin = json["architecture"]!!.jsonObject["64bit"]!!.jsonObject["bin"]!!
+        assertEquals("app.exe", archBin.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `normalizeBin handles missing bin`() {
+        val input = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc"}"""
+        val result = normalizeBin(input)
+        assertEquals(input, result)
     }
 }
 

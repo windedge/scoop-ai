@@ -203,19 +203,20 @@ $researchJson
 4. **Filter executables aggressively**:
    - Prefer the main end-user executable for the app.
    - Exclude names containing terms like: `helper`, `proxy`, `updater`, `update`, `uninstall`, `setup`, `crash`, `service`, `broker`, `elevat`, `patch`, `pluginproxy`.
-   - **`bin` vs `shortcuts` (CHOOSE ONE strategy)**:
-     - **GUI-only apps**: use `shortcuts` ONLY. Do NOT add the same exe to `bin`. If the only exe is the GUI launcher, leave `bin` empty.
+   - **`bin` vs `shortcuts`**:
+     - **GUI apps with a main executable**: Include the main exe in BOTH `bin` AND `shortcuts`.
+       Users may want to launch the app from CLI (e.g. `librecad file.dxf`), so bin is valuable even for GUI apps.
+       Only omit `bin` if the app has NO usable CLI interface at all (e.g. a system tray utility).
        * **Every GUI app MUST have `shortcuts`** — this creates Start Menu entries. Omitting `shortcuts` for a GUI app makes it invisible to the user after install.
-       * Examples of GUI-only: screenshot tools (Free Shooter, Greenshot), system tray utilities (SuperF4), desktop audio players, image viewers, service managers (Laragon).
-       * **Common GUI app descriptors in the project description**: "screenshot", "screen capture", "image viewer", "audio player", "video player", "desktop", "GUI", "graphical", "system tray", "notifications", "file manager", "text editor" (if desktop-focused).
      - **Dual-mode apps** (CLI + GUI both as primary interfaces, e.g. WezTerm, electerm, VS Code, VNote): use BOTH `bin` (with all CLI entry points including the GUI launcher exe) and `shortcuts` (with the GUI launcher).
        * A terminal emulator, code editor, or note-taking app typically works in both GUI and CLI modes — include both.
      - **Multi-exe apps** (one GUI launcher + multiple unrelated CLI tools): `bin` contains the CLI tools, `shortcuts` contains the GUI launcher — different exes in each.
+     - **CLI-only tools**: Use `bin` only, no `shortcuts`.
    - **Heuristic** (follow this decision tree):
      1. Check the research `description` for GUI indicators (see above). Does it describe a desktop application with a user interface?
      2. Check the homepage/screenshots in the research notes — does the project show a desktop window?
      3. Check if the archive contains ONLY executables that are clearly GUI (like `app.exe` with no CLI subcommands).
-     4. If ANY of the above indicates a GUI app, add `shortcuts`. If the app appears to be GUI-only (no CLI subcommands or terminal use), do NOT add `bin`.
+     4. If ANY of the above indicates a GUI app, add `shortcuts`. Unless the app is truly CLI-only (no GUI at all), add `bin` as well — users benefit from CLI access.
      5. When uncertain: add `shortcuts` + `bin` (extra bin entries are harmless for dual-mode apps).
 
 5. **Set persist, env_set, env_add_path, and pre_install from research findings**:
@@ -286,6 +287,7 @@ If the research output contains a `suggested_app_name`, include it unchanged in 
 
 - ZIP/7z/tar → `url` + `bin` (extract and use)
 - MSI → Treat EXACTLY like ZIP. Scoop auto-extracts MSI internally. Just set `url`, `extract_dir` (backslashes ONLY), and `bin`. Do NOT add `"installer"` block.
+- **MSI notes**: If the tool requires environment variable setup or has special CLI usage, include user-facing instructions in `notes` (e.g. automation drivers needing env vars like `APPIUM_WAD_PATH`).
 - InnoSetup → `"innosetup": true` (uses innounp to unpack, NOT silent install)
 - NSIS → Append `#/dl.7z` to the URL to force 7z extraction. Do NOT add `"installer"` block.
 - NSIS unsupported (when `detectInstallerType` returns `nsis_unsupported` or `nsis_unsupported` is true in analyze output): The `#/dl.7z` trick does NOT work for this installer. Set `"installer_type": "nsis"` and `"nsis_unsupported": true`. Look for alternative ZIP/MSI assets for this version. If no alternative exists, use a silent install script with `"installer": { "script": ["..."] }` — try `/S /D=${'$'}dir` for standard NSIS silent flags.
@@ -294,6 +296,12 @@ If the research output contains a `suggested_app_name`, include it unchanged in 
   * Example: `linkerd2-cli-stable-2.14.10-windows.exe` → URL `.../linkerd2-cli-stable-2.14.10-windows.exe#/linkerd.exe` + `"bin": "linkerd.exe"`
   * The short name should be the canonical CLI command (e.g. `linkerd`, not `linkerd2` or `linkerd2-cli`)
   * Do NOT use this for NSIS installers — those use `#/dl.7z` instead
+
+### NSIS/InnoSetup cleanup patterns
+When the installer type is NSIS or InnoSetup (detected via `#/dl.7z` suffix or `installer_type`):
+- Use `listArchiveContents` to inspect inner files for cleanup targets: `Uninst*`, `vc_redist*`, `${'$'}PLUGINSDIR`, `${'$'}*`
+- If found, generate a `pre_install` script to remove these unnecessary files
+- Check for `vcruntime*.dll` or `msvcp*.dll` in the archive — if present, add `suggest: {"vcredist": "extras/vcredist2022"}` to the output
 
 IMPORTANT: You MUST call the analysis tools (computeSha256FromUrl, listArchiveContents, findExecutables) to compute real values. Do not guess or estimate hashes.
 
@@ -356,6 +364,9 @@ fun buildGeneratePrompt(skeleton: String, analyze: AnalyzeOutput, outputPath: St
         "1. Reflect the variant in the `description` field.\n" +
         "2. Ensure the chosen assets match the requested variant."
     } else ""
+    val notesSection = analyze.notes.takeIf { it.isNotBlank() }?.let {
+        "\n\n## Analysis Notes\n$it\n"
+    } ?: ""
     return """You are now in the GENERATE phase. Your task is to take the pre-assembled manifest skeleton below, apply installer-specific transformations, review the pre-generated checkver/autoupdate, add autoupdate.hash if possible, and finalize. Validation is automatic in a later phase — do not call validate here.
 
 CRITICAL: You can ONLY use these tools: __ask_user__, finalize_task_result. Do NOT call validate, research tools, or analysis tools — they are NOT available in this phase. Validation is handled automatically in a later phase.
@@ -371,7 +382,7 @@ $skeleton
 $outputPart$suggestedPart$userReq$checksumsNote
 
 ## Installer Type Hints
-$installerTypeNote
+$installerTypeNote$notesSection
 
 ## SKELETON PRESERVATION RULES
 
@@ -398,7 +409,7 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
 ### ⚠️ CRITICAL: bin and shortcuts consistency
 
 - For dual-mode apps (editors, terminals, IDEs, note-taking apps that have both GUI and CLI modes): include the exe in BOTH `bin` and `shortcuts`.
-- For GUI-only apps (screenshot tools, image viewers, system tray utilities, service managers like Laragon): `shortcuts` alone is sufficient — do NOT add the GUI exe to `bin`.
+- For GUI apps with a main executable: include the main exe in BOTH `bin` AND `shortcuts`. Users may want to launch from CLI (e.g. `librecad file.dxf`). Only omit `bin` if the app has NO usable CLI interface (e.g. a system tray utility).
 
 ### Fields to preserve exactly (copy verbatim):
 - `checkver` — keep the skeleton's format (either shorthand `"github"` or full `{"github":"https://..."}`)
@@ -412,6 +423,7 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
 - `autoupdate.hash` — if checksums file is available
 - URL fragment transformations (NSIS `#/dl.7z`, portable `#/app.exe`). Note: MSIX/appx URLs already have `#/dl.7z` in the skeleton — do NOT add it again.
 - `"installer": { "script": ["..."] }` — only when `nsis_unsupported` is true, to add a silent install script for NSIS installers that 7z cannot extract
+- `notes` — user-facing setup instructions (env vars, config paths, post-install steps). If analysis notes contain setup instructions, include them here as an array of strings.
 
 ### Fields you MUST NOT change:
 - Do NOT change the `checkver` format that the skeleton used.
@@ -427,11 +439,13 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
    - InnoSetup: add `"innosetup": true` as a top-level field
    - Portable EXE: append `#/shortname.exe` to URL. The short name MUST be the canonical command name (e.g. `linkerd` not `linkerd2-cli-stable-2.14.10-windows`). Also set `bin` to the short name.
 3. **Add autoupdate.hash if checksums are available**:
-   - Common patterns:
-     * `"hash": { "url": "${'$'}baseurl/checksums.txt" }`
-     * `"hash": { "url": "${'$'}baseurl/sha256sums.txt" }`
-     * `"hash": { "url": "${'$'}url.sha256" }`
    - If the research section above says checksums are available, add the appropriate hash block.
+
+   Common autoupdate hash patterns (pick the most appropriate):
+   - Separate checksums file: `{"url": "${'$'}baseurl/checksums.txt", "regex": "${'$'}basename.*?([a-f0-9]{32,})"}`
+   - SHA256SUMS/MD5SUMS in release assets: `{"url": "${'$'}baseurl/SHA256SUMS", "find": "${'$'}basename"}`
+   - GitHub release HTML page with hash: `{"url": "${'$'}baseurl", "regex": "${'$'}basename.*?([a-f0-9]{32,})"}`
+   - No checksums available: omit hash block entirely
 4. **Finalize**: Call `finalize_task_result` with one parameter `result` whose value is a **STRING containing the manifest JSON text** (NOT a JSON object).
 
    The tool's `result` parameter has type `string`. Its content is the manifest serialized as JSON text. The inner quotes must be escaped as `\"`.
@@ -449,7 +463,7 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
 
 ## Rules
 
-- For GUI apps: add `shortcuts`, do NOT add `bin` unless the app is dual-mode (terminal/shell).
+- For GUI apps with a main executable: add BOTH `bin` AND `shortcuts`. Only omit `bin` if the app has NO usable CLI interface (e.g. a system tray utility).
 - `persist`: Use for apps that store user config, themes, plugins, or data in the app directory. Most CLI tools don't need persist, but some config-intensive ones do (e.g. bat, starship).
 - `env_set`: only for app-specific env vars (BAT_CONFIG_DIR, etc.). Never set XDG_CONFIG_HOME, HOME, APPDATA.
 - License must be an SPDX identifier, never default to "Proprietary" for a public GitHub repository.

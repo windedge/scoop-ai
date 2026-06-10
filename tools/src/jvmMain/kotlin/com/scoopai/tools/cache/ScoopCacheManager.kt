@@ -26,7 +26,7 @@ private val logger = KotlinLogging.logger {}
  */
 class ScoopCacheManager(
     private val keepCache: Boolean = true,
-    private val maxDownloadBytes: Long = 500L * 1024 * 1024,
+    private val maxDownloadBytes: Long = 200L * 1024 * 1024,
     private val httpClient: HttpClient = HttpClient.newBuilder()
         .followRedirects(HttpClient.Redirect.NORMAL)
         .build(),
