@@ -5,6 +5,8 @@ import com.scoopai.core.ScoopManifestGenerator
 import com.scoopai.tools.cache.ScoopCacheManager
 import com.scoopai.tools.config.ProviderConfigResolver
 import com.scoopai.tools.DefaultToolRegistryFactory
+import com.scoopai.tools.archive.ZipArchiveInspector
+import com.scoopai.tools.github.JdkHttpGitHubApi
 import com.scoopai.tools.manifest.FileManifestIo
 import com.scoopai.tools.verify.ProcessScoopVerifier
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -139,9 +141,14 @@ fun main(args: Array<String>) {
 
     val cache = ScoopCacheManager(keepCache = keepCache)
 
+    // Create API instances for prefetch (shared between tool registry and generator)
+    val ghApi = JdkHttpGitHubApi(githubToken = effectiveGhToken)
+    val archiveInsp = ZipArchiveInspector(cache)
+
     val toolRegistry = DefaultToolRegistryFactory.create(
         cache = cache,
         githubToken = effectiveGhToken,
+        gitHubApi = ghApi,
         manifestIo = manifestIo,
         scoopVerifier = scoopVerifier,
     )
@@ -154,6 +161,8 @@ fun main(args: Array<String>) {
                 toolRegistry = toolRegistry,
                 maxIterations = 500,
                 manifestIo = manifestIo,
+                gitHubApi = ghApi,
+                archiveInspector = archiveInsp
             )
 
             val outputPath = resolvedOutput.ifBlank { null }

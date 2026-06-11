@@ -11,6 +11,7 @@ import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.llm.LLModel
 import com.scoopai.core.agent.AnalyzeOutput
 import com.scoopai.core.agent.PhaseTools
+import com.scoopai.core.agent.PrefetchResult
 import com.scoopai.core.agent.ResearchOutput
 
 import com.scoopai.core.agent.prompt.REVIEW_AGENT_SYSTEM_PROMPT
@@ -22,6 +23,8 @@ import com.scoopai.core.agent.scoopManifestStrategy
 import com.scoopai.core.utils.logLlmResponse
 import com.scoopai.core.utils.sanitizeForLog
 import com.scoopai.core.llm.LlmParamsBuilder
+import com.scoopai.core.tools.api.ArchiveInspector
+import com.scoopai.core.tools.api.GitHubApi
 import com.scoopai.core.tools.api.ManifestIo
 import com.scoopai.core.utils.sanitizeForLog
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -46,6 +49,10 @@ class ScoopManifestGenerator(
     private val thinkingLevel: String? = null,
     /** Validator for manifest JSON. Used by the verify node. */
     private val manifestIo: ManifestIo? = null,
+    /** GitHub API interface for prefetching research data before the LLM phase. */
+    private val gitHubApi: GitHubApi? = null,
+    /** Archive inspector for prefetching persist/search data before the LLM phase. */
+    private val archiveInspector: ArchiveInspector? = null,
 ) {
     /**
      * Model with [LLMCapability.ToolChoice] stripped so that Koog uses its
@@ -67,13 +74,13 @@ class ScoopManifestGenerator(
 
         // -- Phase-specific tool subsets -----------------------------------
         val allTools = toolRegistry.tools
-        val researchTools = allTools.filter { it.name in PhaseTools.RESEARCH_TOOL_NAMES }
+        var researchTools = allTools.filter { it.name in PhaseTools.RESEARCH_TOOL_NAMES }
         val analyzeTools = allTools.filter { it.name in PhaseTools.ANALYZE_TOOL_NAMES }
 
         logger.info { "[tools] Total: ${allTools.size}, Research: ${researchTools.map { it.name }}, Analyze: ${analyzeTools.map { it.name }}" }
 
         // -- Build prompt constructors for each phase ----------------------
-        val researchPrompt: suspend (String) -> String =
+        val researchPrompt: suspend (PrefetchResult) -> String =
             { buildResearchPrompt(it, outputPath, userPrompt) }
         val analyzePrompt: suspend (ResearchOutput) -> String =
             { buildAnalyzePrompt(it, userPrompt) }
@@ -114,6 +121,8 @@ class ScoopManifestGenerator(
             refinePromptBuilder = refinePrompt,
             manifestIo = manifestIo,
             reviewExecutor = reviewExecutor,
+            gitHubApi = gitHubApi,
+            archiveInspector = archiveInspector,
         )
 
         val agentConfig = AIAgentConfig(

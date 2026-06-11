@@ -2,22 +2,30 @@ package com.scoopai.core.agent.prompt
 
 import com.scoopai.core.RefineContext
 import com.scoopai.core.agent.AnalyzeOutput
+import com.scoopai.core.agent.PrefetchResult
 import com.scoopai.core.agent.ReferenceManifests
 import com.scoopai.core.agent.ResearchOutput
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 /**
  * Builds the prompt for the Research phase.
  *
- * @param url The project URL to research.
+ * @param prefetch Pre-collected project data. The original URL is accessed via [prefetch.originalUrl].
+ *   When [prefetch.isGitHub] is true, a data section is injected into the prompt so the LLM
+ *   can skip redundant API calls.
  * @param outputPath Optional output file path for the manifest.
+ * @param userPrompt Optional additional user requirements.
  */
-fun buildResearchPrompt(url: String, outputPath: String?, userPrompt: String? = null): String {
+fun buildResearchPrompt(prefetch: PrefetchResult, outputPath: String? = null, userPrompt: String? = null): String {
+    val url = prefetch.originalUrl
     val task = buildString {
         append("Research the project at: $url")
         if (outputPath != null) append("\nOutput file: $outputPath")
         if (!userPrompt.isNullOrBlank()) append("\n\n## Additional User Requirements\n$userPrompt")
     }
-    return """You are now in the RESEARCH phase. Your task is to gather information about the project using research tools (fetchRepoInfo, fetchLatestRelease, fetchAllReleases, fetchWebPage, etc).
+
+    val basePrompt = """You are now in the RESEARCH phase. Your task is to gather information about the project using research tools (fetchRepoInfo, fetchLatestRelease, fetchAllReleases, fetchWebPage, etc).
 
 $task
 
@@ -157,6 +165,39 @@ $task
 - Do NOT call any other tool names.
 
 ${PhaseSchemas.RESEARCH_SCHEMA}"""
+
+    // Append pre-collected data section when prefetch is available for a GitHub project
+    if (prefetch.isGitHub) {
+        val prefetchJson = Json.encodeToString<PrefetchResult>(prefetch)
+        return basePrompt + """
+
+## PRE-COLLECTED DATA (read-only, already gathered for you)
+
+The following data has been pre-collected for you. You do NOT need to call tools to gather this information.
+Read the data below and use it directly:
+
+```json
+$prefetchJson
+```
+
+## YOUR TASKS (simplified)
+
+1. **License**: If `repoInfo.license` is "NOASSERTION" or null, use `fetchFileContent` to read the LICENSE file.
+2. **Asset selection**: Review `windowsAssets`. If multiple candidates exist, pick the most appropriate one.
+3. **App name**: Determine `suggested_app_name` based on the project name.
+4. **Homepage**: Verify `homepageCleaned` is appropriate. If it points to GitHub but the project has a real website, correct it.
+5. **Version**: Use `version` from the pre-collected data (already stripped of 'v' prefix).
+6. **Missing data**: If any critical information is missing from the pre-collected data, use available tools to fill gaps.
+7. **Output**: Call `finalize_task_result` with a valid ResearchOutput JSON.
+
+## AVAILABLE TOOLS (for gap-filling only)
+
+You have: `fetchFileContent`, `fetchAllReleases`, `fetchWebPage`, `__ask_user__`
+Do NOT call: `fetchRepoInfo`, `fetchLatestRelease`, `parseGitHubUrl`, `searchTextInArchive` — data already collected.
+"""
+    }
+
+    return basePrompt
 }
 
 /**

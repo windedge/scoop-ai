@@ -15,6 +15,8 @@ import com.scoopai.core.agent.nodes.enforceArchitectureWrap
 import com.scoopai.core.agent.nodes.normalizeHomepage
 import com.scoopai.core.agent.nodes.removeInvalidTopLevelFields
 import com.scoopai.core.agent.nodes.normalizeBin
+import com.scoopai.core.tools.api.ArchiveInspector
+import com.scoopai.core.tools.api.GitHubApi
 import com.scoopai.core.tools.api.ManifestIo
 import ai.koog.agents.core.agent.entity.AIAgentStorageAPI
 import ai.koog.agents.core.agent.entity.AIAgentStorageKey
@@ -37,9 +39,10 @@ internal val phaseJson: Json = Json {
 /**
  * Creates a graph strategy for generating Scoop manifests.
  *
- * Flow (v3 — 3-phase + edge-based refine loop):
+ * Flow (v4 — prefetch + 3-phase + edge-based refine loop):
  * ```
- * nodeStart → research(LLM, research tools)
+ * nodeStart → prefetch(deterministic: pre-collect data)
+ *   → research(LLM, research tools)
  *   [no_windows] → finishNoAssets → nodeFinish
  *   [ok] → analyze(LLM, analysis tools)
  *        → prepareManifest(deterministic: skeleton assembly)
@@ -53,23 +56,27 @@ internal val phaseJson: Json = Json {
  * @param researchTools Tools available in the research phase.
  * @param analyzeTools Tools available in the analyze phase (hash/compute, archive listing, etc.).
  * @param llmParams LLM parameters (thinking mode, etc.).
- * @param researchPromptBuilder Builds the research prompt from a URL string.
+ * @param researchPromptBuilder Builds the research prompt from [PrefetchResult].
  * @param analyzePromptBuilder Builds the analyze prompt from [ResearchOutput].
  * @param generatePromptBuilder Builds the generate prompt from (skeleton, analyze, research).
  * @param refinePromptBuilder Builds the refine prompt from [RefineContext].
  * @param manifestIo Structural validate tool (used in verify node).
  * @param reviewExecutor Semantic review executor (independent LLM agent, used in verify node).
+ * @param gitHubApi GitHub API for prefetching project data before LLM phases.
+ * @param archiveInspector Archive inspector for prefetching persist/search data before LLM phases.
  */
 fun scoopManifestStrategy(
     researchTools: List<ToolBase<*, *>> = emptyList(),
     analyzeTools: List<ToolBase<*, *>> = emptyList(),
     llmParams: LLMParams? = null,
-    researchPromptBuilder: (suspend (String) -> String)? = null,
+    researchPromptBuilder: (suspend (PrefetchResult) -> String)? = null,
     analyzePromptBuilder: (suspend (ResearchOutput) -> String)? = null,
     generatePromptBuilder: (suspend (String, AnalyzeOutput, ResearchOutput?) -> String)? = null,
     refinePromptBuilder: (suspend (RefineContext) -> String)? = null,
     manifestIo: ManifestIo? = null,
     reviewExecutor: (suspend (String) -> String)? = null,
+    gitHubApi: GitHubApi? = null,
+    archiveInspector: ArchiveInspector? = null,
 ) = strategy<String, ManifestResult>("scoop_manifest_v3") {
 
     // ── Storage keys & captured state ─────────────────────────────
@@ -80,12 +87,17 @@ fun scoopManifestStrategy(
     var suggestedAppName: String? = null
     var finalManifest: String? = null
 
+    // ── Prefetch node (deterministic: pre-collect project data before LLM phases) ──
+    val prefetch by node<String, PrefetchResult>("prefetch") { url ->
+        executePrefetch(url, gitHubApi, archiveInspector)
+    }
+
     // ── Research phase (LLM) ──
-    val research by subgraphWithTask<String, ResearchOutput>(
+    val research by subgraphWithTask<PrefetchResult, ResearchOutput>(
         tools = researchTools,
         llmParams = llmParams,
-    ) { input ->
-        researchPromptBuilder?.invoke(input) ?: input
+    ) { prefetchResult ->
+        researchPromptBuilder?.invoke(prefetchResult) ?: prefetchResult.originalUrl
     }
 
     // ── Finish when no Windows assets exist ──
@@ -140,7 +152,9 @@ fun scoopManifestStrategy(
     }
 
     // ── Edges ──
-    edge(nodeStart forwardTo research)
+    // Prefetch first, then research
+    edge(nodeStart forwardTo prefetch)
+    edge(prefetch forwardTo research)
 
     // Conditional: no Windows assets → early finish
     edge(research forwardTo finishNoAssets onCondition { output ->
