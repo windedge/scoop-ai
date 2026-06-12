@@ -260,6 +260,8 @@ $researchJson
      4. If ANY of the above indicates a GUI app, add `shortcuts`. Unless the app is truly CLI-only (no GUI at all), add `bin` as well — users benefit from CLI access.
      5. When uncertain: add `shortcuts` + `bin` (extra bin entries are harmless for dual-mode apps).
 
+   - **`shortcuts` name**: Use the full application name as shown in the project's official title or branding (e.g. "Zed Attack Proxy" not "ZAP", "Visual Studio Code" not "VSCode").
+
 5. **Set persist, env_set, env_add_path, and pre_install from research findings**:
    - The research JSON may contain `persist_targets` and `env_targets`.
    - Use `listArchiveContents` to check which persist targets exist inside the archive.
@@ -349,6 +351,7 @@ IMPORTANT: You MUST call the analysis tools (computeSha256FromUrl, listArchiveCo
 **Before finalizing**, consider these commonly missed fields:
 - env_set: Does the app read config from a configurable directory? Check research findings for env vars like *_CONFIG_DIR, *_CONFIG_PATH, config_dir. If evidence exists, add to env_set.
 - persist: Is there user data that should survive updates?
+- `suggest`: If the app depends on external runtime at launch time (e.g. Java/JRE for Java apps, FFmpeg for media tools, VC++ runtime for C++ apps, Node.js for JS tools), add `{"Name": "bucket/name"}`. Only include when the dependency is clearly needed for basic functionality.
 If research did not report env_targets but you see evidence of config directories, add them yourself.
 
 ${PhaseSchemas.ANALYZE_SCHEMA}"""
@@ -451,6 +454,7 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
 
 - For dual-mode apps (editors, terminals, IDEs, note-taking apps that have both GUI and CLI modes): include the exe in BOTH `bin` and `shortcuts`.
 - For GUI apps with a main executable: include the main exe in BOTH `bin` AND `shortcuts`. Users may want to launch from CLI (e.g. `librecad file.dxf`). Only omit `bin` if the app has NO usable CLI interface (e.g. a system tray utility).
+- **`shortcuts` name**: Use the full application name as shown in the project's official title or branding (e.g. "Zed Attack Proxy" not "ZAP", "Visual Studio Code" not "VSCode").
 
 ### Fields to preserve exactly (copy verbatim):
 - `checkver` — keep the skeleton's format (either shorthand `"github"` or full `{"github":"https://..."}`)
@@ -465,6 +469,7 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
 - URL fragment transformations (NSIS `#/dl.7z`, portable `#/app.exe`). Note: MSIX/appx URLs already have `#/dl.7z` in the skeleton — do NOT add it again.
 - `"installer": { "script": ["..."] }` — only when `nsis_unsupported` is true, to add a silent install script for NSIS installers that 7z cannot extract
 - `notes` — user-facing setup instructions (env vars, config paths, post-install steps). If analysis notes contain setup instructions, include them here as an array of strings.
+- `suggest` — runtime dependencies (e.g. Java/JRE for Java apps, FFmpeg for media tools, VC++ runtime for C++ apps, Node.js for JS tools). Only include when the dependency is clearly needed for basic functionality.
 
 ### Fields you MUST NOT change:
 - Do NOT change the `checkver` format that the skeleton used.
