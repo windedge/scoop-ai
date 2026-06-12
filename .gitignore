@@ -61,3 +61,6 @@ tests/results.json
 
 # Agent
 .pi/APPEND_SYSTEM.md
+tests/test_config.json
+tests/extras_bucket.txt
+tests/main_bucket.txt

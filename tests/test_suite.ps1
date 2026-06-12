@@ -49,7 +49,8 @@ exit 0
 $ErrorActionPreference = "Continue"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoDir = Split-Path -Parent $ScriptDir
-$Cli = Join-Path $RepoDir "cli\build\install\scoop-ai\bin\scoop-ai.bat"
+$JarPath = Join-Path $RepoDir "cli\build\libs\cli-0.1.0-all.jar"
+$Cli = "java"
 $AppConfig = Join-Path $ScriptDir $AppFile
 $ResultsFile = Join-Path $ScriptDir "results.json"
 $LogDir = Join-Path $ScriptDir "logs"
@@ -357,7 +358,7 @@ $GenStart = Get-Date
 # ================================================================
 Write-Host "  Generating..." -ForegroundColor Gray
 try {
-$AllArgs = $CliBaseArgs + $Url
+$AllArgs = @("-jar", $JarPath) + $CliBaseArgs + $Url
 # Non-interactive mode: return default when LLM calls __ask_user__
 $env:SCOOP_AI_NON_INTERACTIVE = "true"
 $Proc = Start-Process -FilePath $Cli -ArgumentList $AllArgs -NoNewWindow -PassThru ` -RedirectStandardOutput $LogStdout -RedirectStandardError $LogStderr -Wait
