@@ -28,7 +28,9 @@ private val ALL_CONFIG_PATTERNS = listOf(
     "XDG_CONFIG_HOME", "APPDATA", "LOCALAPPDATA", "user.home", ".config",
     "env::var", "getenv", "os.Getenv", "System.getenv",
     "_CONFIG_DIR", "_CONFIG_PATH", "_CONFIG_HOME", "_DATA_DIR",
-    "_HOME", "_LIB", "_CFG", "_PATH", "_CACHE"
+    "_HOME", "_LIB", "_CFG", "_PATH", "_CACHE",
+    "QSettings", "QStandardPaths", ".ini", "config.ini", "app.config", "appsettings",
+    "SaveSettings", "LoadSettings", "WriteAllText", "preferences", "ConfigurationManager"
 ).joinToString(",")
 
 // Social/forum links that should not be used as homepage

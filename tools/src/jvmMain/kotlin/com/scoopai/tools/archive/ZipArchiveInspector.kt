@@ -409,7 +409,10 @@ class ZipArchiveInspector(
         onScanned(scanned)
     }
 
-    /** Search text content of a single file against all patterns. */
+    /** Search text content of a single file against all patterns.
+     * Returns a multi-line snippet with 5 lines of context before and after each match
+     * (similar to `grep -C 5`). Total snippet length is capped at 2000 characters.
+     */
     private fun searchContentForPatterns(
         filePath: String,
         content: String,
@@ -419,12 +422,27 @@ class ZipArchiveInspector(
     ) {
         var added = 0
         val lines = content.lines()
+        val totalLines = lines.size
         for ((regex, patternName) in patterns) {
             if (added >= remaining) break
             for ((idx, line) in lines.withIndex()) {
                 if (added >= remaining) break
                 if (regex.containsMatchIn(line)) {
-                    val snippet = line.take(200).trim()
+                    val contextBefore = ((idx - 5).coerceAtLeast(0) until idx)
+                        .joinToString("\n") { lines[it] }
+                    val contextAfter = ((idx + 1)..(idx + 5).coerceAtMost(totalLines - 1))
+                        .joinToString("\n") { lines[it] }
+                    val snippet = buildString {
+                        if (contextBefore.isNotEmpty()) {
+                            append(contextBefore)
+                            append("\n")
+                        }
+                        append(line)
+                        if (contextAfter.isNotEmpty()) {
+                            append("\n")
+                            append(contextAfter)
+                        }
+                    }.take(2000).trim()
                     matches.add(buildJsonObject {
                         put("file", filePath)
                         put("line", idx + 1)

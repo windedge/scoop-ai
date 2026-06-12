@@ -192,8 +192,8 @@ $prefetchJson
 
 ## AVAILABLE TOOLS (for gap-filling only)
 
-You have: `fetchFileContent`, `fetchAllReleases`, `fetchWebPage`, `__ask_user__`
-Do NOT call: `fetchRepoInfo`, `fetchLatestRelease`, `parseGitHubUrl`, `searchTextInArchive` — data already collected.
+You have: `fetchFileContent`, `fetchAllReleases`, `fetchWebPage`, `searchTextInArchive`, `__ask_user__`
+Do NOT call: `fetchRepoInfo`, `fetchLatestRelease`, `parseGitHubUrl` — data already collected.
 """
     }
 
@@ -278,6 +278,7 @@ $researchJson
      - Settings directories (Settings, Config, Data, etc.)
      - README or documentation mentioning config file locations
      If found, add them to persist_targets.
+   - If the source code shows patterns of config file creation (QSettings, app.config, appsettings, SaveSettings, ConfigurationManager), the app likely creates a config file at first run. Add the config filename to `persist_targets` and generate `pre_install` to create it if missing.
 
 6. **extract_dir strategy — ALWAYS strip the top-level version directory**:
    - **⚠️ CRITICAL: Scoop does NOT automatically strip single-root directories.** You MUST set `extract_dir` to the top-level directory name inside the archive.
