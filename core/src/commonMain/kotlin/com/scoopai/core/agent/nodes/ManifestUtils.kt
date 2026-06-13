@@ -583,6 +583,17 @@ internal fun isPortableArchiveUrl(url: String): Boolean {
 }
 
 /**
+ * Safely extracts a single URL string from a JSON element that may be
+ * a [JsonPrimitive] (single URL) or [JsonArray] (mirror list, takes first entry).
+ * Returns null if the element is absent or has an unexpected type.
+ */
+private fun getSingleUrl(jsonElement: JsonElement?): String? = when (jsonElement) {
+    is JsonPrimitive -> jsonElement.content
+    is JsonArray -> jsonElement.firstOrNull()?.jsonPrimitive?.content
+    else -> null
+}
+
+/**
  * Auto-fills `bin` from `shortcuts` for portable archive manifests.
  * If shortcuts exist but bin is empty/missing, and URL is a portable archive,
  * adds shortcut exe paths as bin entries. Does NOT modify installer-type manifests.
@@ -595,9 +606,9 @@ internal fun autoFillBinFromShortcuts(manifestJson: String): String {
     }
 
     // Only auto-fill for portable archives
-    val url = json["url"]?.jsonPrimitive?.content
-        ?: json["architecture"]?.jsonObject?.get("64bit")?.jsonObject?.get("url")?.jsonPrimitive?.content
-        ?: json["architecture"]?.jsonObject?.get("32bit")?.jsonObject?.get("url")?.jsonPrimitive?.content
+    val url = getSingleUrl(json["url"])
+        ?: getSingleUrl(json["architecture"]?.jsonObject?.get("64bit")?.jsonObject?.get("url"))
+        ?: getSingleUrl(json["architecture"]?.jsonObject?.get("32bit")?.jsonObject?.get("url"))
         ?: return manifestJson
 
     // NSIS/InnoSetup with #/dl.7z fragment is also extractable
@@ -728,7 +739,11 @@ internal fun enforceArchitectureWrap(manifestJson: String): String {
     // No url at top level — nothing to do
     if (!json.containsKey("url")) return manifestJson
 
-    val url = json["url"]?.jsonPrimitive?.content ?: return manifestJson
+    val urlElement = json["url"]
+    // Array url (multi-file noarch) — do NOT wrap in architecture
+    if (urlElement is JsonArray) return manifestJson
+
+    val url = urlElement?.jsonPrimitive?.content ?: return manifestJson
 
     // Noarch: URL has no architecture keywords → keep flat format
     if (!isArchSpecificUrl(url)) return manifestJson

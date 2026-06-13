@@ -113,22 +113,23 @@ class FileManifestIo(
                 }
             }
 
-            // ── Semantic validation ───────────────────────────────
-            validateBin(obj, errors, warnings)
-            validateArchitectureBlock(obj, errors, warnings)
-            validatePreInstallRename(obj, errors)
-            validateGuiBin(obj, errors, warnings)
-            validateExtractDir(obj, warnings)
-            validateAutoupdateVPrefix(obj, warnings)
-            validateVersion(obj, errors)
-            validateUnknownFields(obj, errors)
-            validateTemplateVariablesInStaticFields(obj, errors)
-            validateExeUrlFragment(obj, warnings)
-            validateInstallerScriptEscaping(obj, errors)
-            validatePersistPolicy(obj, errors)
+            // ── Semantic validation (per-function try/catch, one failure doesn't abort others) ──
+            safeValidate("bin", warnings) { validateBin(obj, errors, warnings) }
+            safeValidate("architecture block", warnings) { validateArchitectureBlock(obj, errors, warnings) }
+            safeValidate("pre_install rename", warnings) { validatePreInstallRename(obj, errors) }
+            safeValidate("GUI bin", warnings) { validateGuiBin(obj, errors, warnings) }
+            safeValidate("extract_dir", warnings) { validateExtractDir(obj, warnings) }
+            safeValidate("autoupdate v-prefix", warnings) { validateAutoupdateVPrefix(obj, warnings) }
+            safeValidate("version", warnings) { validateVersion(obj, errors) }
+            safeValidate("unknown fields", warnings) { validateUnknownFields(obj, errors) }
+            safeValidate("template variables in static fields", warnings) { validateTemplateVariablesInStaticFields(obj, errors) }
+            safeValidate("exe URL fragment", warnings) { validateExeUrlFragment(obj, warnings) }
+            safeValidate("installer script escaping", warnings) { validateInstallerScriptEscaping(obj, errors) }
+            safeValidate("persist policy", warnings) { validatePersistPolicy(obj, errors) }
 
         } catch (e: Exception) {
             errors.add("Invalid JSON: ${e.message}")
+            return validationResult(errors.isEmpty(), errors, warnings)
         }
 
         return validationResult(errors.isEmpty(), errors, warnings)
@@ -503,13 +504,13 @@ class FileManifestIo(
                 warnings.add("Field '$fieldPath' uses forward slashes ('$path'). Use backslashes only: '${path.replace('/', '\\')}')")
             }
         }
-        obj["extract_dir"]?.jsonPrimitive?.contentOrNull?.let { checkExtractDir(it, "extract_dir") }
+        stringListOrNull(obj["extract_dir"])?.forEach { checkExtractDir(it, "extract_dir") }
         val hasTopLevelExtractDir = obj.containsKey("extract_dir")
         obj["architecture"]?.jsonObject?.let { arch ->
             var anyArchExtractDir = false
             for ((archName, archElement) in arch) {
                 if (archElement !is JsonObject) continue
-                archElement["extract_dir"]?.jsonPrimitive?.contentOrNull?.let {
+                stringListOrNull(archElement["extract_dir"])?.forEach {
                     anyArchExtractDir = true
                     checkExtractDir(it, "architecture.$archName.extract_dir")
                 }
@@ -539,7 +540,7 @@ class FileManifestIo(
         val staticArch = obj["architecture"]?.jsonObject
 
         fun getUrl(archBlock: JsonObject?, archName: String): String? =
-            archBlock?.get(archName)?.jsonObject?.get("url")?.jsonPrimitive?.contentOrNull
+            firstUrlOrNull(archBlock?.get(archName)?.jsonObject?.get("url"))
 
         // Kotlin string templates: "v$version" interpolates the local variable,
         // "v\$version" is the literal string v$version.
@@ -628,10 +629,10 @@ class FileManifestIo(
         }
 
         // Check top-level url
-        obj["url"]?.jsonPrimitive?.contentOrNull?.let { checkUrl(it, "url") }
+        stringListOrNull(obj["url"])?.forEach { checkUrl(it, "url") }
         // Check architecture urls
         obj["architecture"]?.jsonObject?.forEach { (arch, archVal) ->
-            (archVal as? JsonObject)?.get("url")?.jsonPrimitive?.contentOrNull?.let {
+            stringListOrNull((archVal as? JsonObject)?.get("url"))?.forEach {
                 checkUrl(it, "architecture.$arch.url")
             }
         }
@@ -720,6 +721,35 @@ class FileManifestIo(
         obj["pre_install"]?.jsonArray?.let { arr ->
             val lines = arr.mapNotNull { it.jsonPrimitive.contentOrNull }
             checkScriptLines(lines, "pre_install")
+        }
+    }
+
+    /** Wraps a sub-validator in try/catch so one bad sub-validator doesn't abort the entire validation. */
+    private fun safeValidate(name: String, warnings: MutableList<String>, block: () -> Unit) {
+        try {
+            block()
+        } catch (e: Exception) {
+            warnings.add("Internal validation error in $name: ${e.message}")
+        }
+    }
+
+    /** Reads a JsonElement that may be a string or array of strings, returning null if absent. */
+    private fun stringListOrNull(element: JsonElement?): List<String>? {
+        if (element == null) return null
+        return when (element) {
+            is JsonPrimitive -> listOf(element.content)
+            is JsonArray -> element.mapNotNull { (it as? JsonPrimitive)?.content }
+            else -> null
+        }
+    }
+
+    /** Returns the first URL from an element that may be a string or array, null if absent. */
+    private fun firstUrlOrNull(element: JsonElement?): String? {
+        if (element == null) return null
+        return when (element) {
+            is JsonPrimitive -> element.content
+            is JsonArray -> (element.firstOrNull() as? JsonPrimitive)?.content
+            else -> null
         }
     }
 

@@ -1248,7 +1248,7 @@ class ManifestUtilsTest {
     fun `enforceArchitectureWrap skips noarch URL without arch keywords`() {
         val input = """{"version":"1.8","url":"https://example.com/audioswitcher-1.8.zip","hash":"abc123","bin":["AudioSwitcher.exe"]}"""
         val result = enforceArchitectureWrap(input)
-        assertEquals(input, result)  // 不变
+        assertEquals(input, result)  // unchanged
     }
 
     @Test
@@ -1286,15 +1286,15 @@ class ManifestUtilsTest {
         val input = """{"version":"1.0","url":"https://example.com/app-x64.zip","hash":"abc123","bin":["app.exe"]}"""
         val result = enforceArchitectureWrap(input)
         val json = parseJsonObject(result)
-        // 顶层不应有 url/hash
+        // top-level should NOT have url/hash
         assertFalse(json.containsKey("url"))
         assertFalse(json.containsKey("hash"))
-        // architecture.64bit 应有 url/hash
+        // architecture.64bit should have url/hash
         val arch = json["architecture"]!!.jsonObject
         val bit64 = arch["64bit"]!!.jsonObject
         assertEquals("https://example.com/app-x64.zip", bit64["url"]!!.jsonPrimitive.content)
         assertEquals("abc123", bit64["hash"]!!.jsonPrimitive.content)
-        // 其他字段保持
+        // other fields preserved
         assertEquals("1.0", json["version"]!!.jsonPrimitive.content)
     }
 
@@ -1306,7 +1306,7 @@ class ManifestUtilsTest {
         assertFalse(json.containsKey("url"))
         val bit64 = json["architecture"]!!.jsonObject["64bit"]!!.jsonObject
         assertEquals("https://example.com/app-x64.zip", bit64["url"]!!.jsonPrimitive.content)
-        // extract_dir 也应在 64bit 内
+        // extract_dir should also be inside 64bit
         assertEquals("myapp-1.0", bit64["extract_dir"]!!.jsonPrimitive.content)
     }
 
@@ -1314,14 +1314,14 @@ class ManifestUtilsTest {
     fun `enforceArchitectureWrap skips if architecture already exists`() {
         val input = """{"version":"1.0","architecture":{"64bit":{"url":"https://example.com/app.zip","hash":"abc"}}}"""
         val result = enforceArchitectureWrap(input)
-        assertEquals(input, result)  // 不变
+        assertEquals(input, result)  // unchanged
     }
 
     @Test
     fun `enforceArchitectureWrap handles manifest without url`() {
         val input = """{"version":"1.0","bin":["app.exe"]}"""
         val result = enforceArchitectureWrap(input)
-        assertEquals(input, result)  // 不变
+        assertEquals(input, result)  // unchanged
     }
 
     @Test
@@ -1506,6 +1506,47 @@ class ManifestUtilsTest {
         assertTrue(json.containsKey("bin"), "NSIS #/dl.7z manifest should get auto-filled bin")
     }
 
+    @Test
+    fun `autoFillBinFromShortcuts handles JsonArray shortcut gracefully`() {
+        val manifest = """{
+        "version":"1.0",
+        "architecture":{"64bit":{"url":"https://example.com/app.zip#/dl.7z","hash":"abc"}},
+        "shortcuts":[["app.exe","App Name","path/to/icon.png"]]
+    }"""
+        val result = autoFillBinFromShortcuts(manifest)
+        // Should not crash, and should extract bin from the shortcut
+        val json = parseJsonObject(result)
+        assertTrue(json.containsKey("bin"), "Should fill bin from shortcuts even with JsonArray")
+    }
+
+    @Test
+    fun `autoFillBinFromShortcuts handles array url gracefully`() {
+        val manifest = """{
+        "version":"7.4",
+        "url":["https://example.com/jsign-7.4.jar#/jsign.jar","https://example.com/jsign.cmd"],
+        "hash":["abc","def"],
+        "bin":"jsign.jar",
+        "shortcuts":[["jsign.bat","JSIGN"]]
+    }"""
+        val result = autoFillBinFromShortcuts(manifest)
+        // Should not throw, and should fill bin from shortcuts
+        val json = parseJsonObject(result)
+        assertTrue(json.containsKey("bin"), "Should not crash with array URL")
+    }
+
+    @Test
+    fun `autoFillBinFromShortcuts handles arch array url gracefully`() {
+        val manifest = """{
+        "version":"1.0",
+        "architecture":{"64bit":{"url":["https://example.com/app.zip","https://mirror.com/app.zip"],"hash":"abc"}},
+        "shortcuts":[["app.exe","App Name"]]
+    }"""
+        val result = autoFillBinFromShortcuts(manifest)
+        // Should not throw
+        val json = parseJsonObject(result)
+        assertTrue(json.containsKey("bin"), "Should not crash with arch array URL")
+    }
+
     // ---------------------------------------------------------------
     // assembleManifestSkeleton - suggest field
     // ---------------------------------------------------------------
@@ -1585,6 +1626,41 @@ class ManifestUtilsTest {
         val input = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc"}"""
         val result = normalizeBin(input)
         assertEquals(input, result)
+    }
+
+    // ---------------------------------------------------------------
+    // enforceArchitectureWrap
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `enforceArchitectureWrap handles array url gracefully`() {
+        // jsign scenario: top-level url is array (noarch multi-file)
+        val manifest = """{
+            "version":"7.4",
+            "url":["https://example.com/jsign-7.4.jar#/jsign.jar","https://example.com/jsign.cmd"],
+            "hash":["abc","def"]
+        }"""
+        // should not throw
+        val result = enforceArchitectureWrap(manifest)
+        // array url without arch keywords, should remain flat (no architecture wrapper)
+        val json = parseJsonObject(result)
+        assertFalse(json.containsKey("architecture"), "array url without arch keywords should stay flat")
+        assertTrue(json.containsKey("url"), "url should remain at top level")
+        assertEquals(2, json["url"]!!.jsonArray.size, "url array should be preserved")
+    }
+
+    @Test
+    fun `enforceArchitectureWrap handles array url with arch keyword in first url`() {
+        // even if first url has arch keyword, array url is treated as noarch, not wrapped
+        val manifest = """{
+            "version":"1.0",
+            "url":["https://example.com/app-x64.zip","https://example.com/app.cmd"],
+            "hash":["abc","def"]
+        }"""
+        val result = enforceArchitectureWrap(manifest)
+        val json = parseJsonObject(result)
+        assertFalse(json.containsKey("architecture"), "array url should never be wrapped in architecture")
+        assertTrue(json.containsKey("url"), "url should remain at top level")
     }
 }
 

@@ -235,4 +235,167 @@ class FileManifestIoValidateTest {
             "Should NOT flag top-level bin with clean exe names: $result"
         )
     }
+
+    // ---------------------------------------------------------------
+    // Array URL / Hash (top-level array url/hash should not crash)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `top-level url as array does not crash and is valid`() {
+        // jsign scenario: top-level array url + array hash
+        val manifest = """
+        {
+            "version":"7.4",
+            "description":"Jsign",
+            "homepage":"https://example.com",
+            "license":"Apache-2.0",
+            "url":["https://example.com/jsign-7.4.jar#/jsign.jar","https://example.com/jsign.cmd"],
+            "hash":["5c3b1e7c3e9b1a5f1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b","5c3b1e7c3e9b1a5f1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b"],
+            "bin":"jsign.cmd"
+        }
+        """.trimIndent()
+        val result = io.validate(manifest)
+        assertFalse(result.contains("Invalid JSON"), "Array URL should not be treated as invalid JSON: $result")
+        assertTrue(result.contains("\"valid\":true"), "Array URL manifest should be valid: $result")
+    }
+
+    @Test
+    fun `top-level url array with bare exe warns but is valid`() {
+        val manifest = """
+        {
+            "version":"1.0",
+            "description":"Test portable",
+            "homepage":"https://example.com",
+            "license":"MIT",
+            "url":["https://example.com/x.exe","https://example.com/y.exe"],
+            "hash":["5c3b1e7c3e9b1a5f1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b","5c3b1e7c3e9b1a5f1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b"],
+            "bin":"x.exe"
+        }
+        """.trimIndent()
+        val result = io.validate(manifest)
+        assertFalse(result.contains("Invalid JSON"), "Array URL should not crash: $result")
+        assertTrue(result.contains("\"valid\":true"), "Array URL manifest should be valid: $result")
+        assertTrue(result.contains("exe without a #/ fragment"), "Should warn about bare exe: $result")
+    }
+
+    @Test
+    fun `top-level hash array accepts valid sha256 list`() {
+        val manifest = """
+        {
+            "version":"1.0",
+            "description":"Test",
+            "homepage":"https://example.com",
+            "license":"MIT",
+            "url":["https://example.com/a.zip","https://example.com/b.zip"],
+            "hash":["5c3b1e7c3e9b1a5f1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b","5c3b1e7c3e9b1a5f1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b"],
+            "bin":"app.exe"
+        }
+        """.trimIndent()
+        val result = io.validate(manifest)
+        assertFalse(result.contains("Invalid JSON"), "Hash array should not crash: $result")
+        assertTrue(result.contains("\"valid\":true"), "Hash array manifest should be valid: $result")
+    }
+
+    @Test
+    fun `extract_dir as array does not crash`() {
+        val manifest = """
+        {
+            "version":"1.0",
+            "description":"Test",
+            "homepage":"https://example.com",
+            "license":"MIT",
+            "url":"https://example.com/app-1.0.zip",
+            "hash":"5c3b1e7c3e9b1a5f1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b",
+            "extract_dir":["top","inner"],
+            "bin":"app.exe"
+        }
+        """.trimIndent()
+        val result = io.validate(manifest)
+        assertFalse(result.contains("Invalid JSON"), "Array extract_dir should not crash: $result")
+        assertTrue(result.contains("\"valid\":true"), "Array extract_dir should be valid: $result")
+    }
+
+    @Test
+    fun `architecture url as array does not crash`() {
+        val manifest = """
+        {
+            "version":"1.0",
+            "description":"Test",
+            "homepage":"https://example.com",
+            "license":"MIT",
+            "architecture":{
+                "64bit":{
+                    "url":["https://example.com/app-1.0-64.zip"],
+                    "hash":"5c3b1e7c3e9b1a5f1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b"
+                }
+            },
+            "bin":"app.exe",
+            "checkver":{"github":"https://github.com/test/app"},
+            "autoupdate":{
+                "architecture":{
+                    "64bit":{
+                        "url":"https://github.com/test/app/releases/download/v${D}version/app-${D}version-win64.zip"
+                    }
+                }
+            }
+        }
+        """.trimIndent()
+        val result = io.validate(manifest)
+        assertFalse(result.contains("Invalid JSON"), "Architecture array URL should not crash: $result")
+        assertTrue(result.contains("\"valid\":true"), "Architecture array URL manifest should be valid: $result")
+    }
+
+    @Test
+    fun `autoupdate architecture url as array does not crash v-prefix check`() {
+        val manifest = """
+        {
+            "version":"1.47.2",
+            "description":"Test",
+            "homepage":"https://example.com",
+            "license":"MIT",
+            "architecture":{
+                "64bit":{
+                    "url":"https://example.com/v1.47.2/app-win64.zip",
+                    "hash":"5c3b1e7c3e9b1a5f1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b"
+                }
+            },
+            "bin":"app.exe",
+            "checkver":{"github":"https://github.com/test/app"},
+            "autoupdate":{
+                "architecture":{
+                    "64bit":{
+                        "url":["https://github.com/test/app/releases/download/v${D}version/app-${D}version-win64.zip"]
+                    }
+                }
+            }
+        }
+        """.trimIndent()
+        val result = io.validate(manifest)
+        assertFalse(result.contains("Invalid JSON"), "Autoupdate array URL should not crash: $result")
+        // Should be valid; array autoupdate URL means v-prefix check is skipped (warning-level)
+        assertTrue(result.contains("\"valid\":true"), "Autoupdate array URL manifest should be valid: $result")
+    }
+
+    @Test
+    fun `architecture extract_dir as array does not crash`() {
+        val manifest = """
+        {
+            "version":"1.0",
+            "description":"Test",
+            "homepage":"https://example.com",
+            "license":"MIT",
+            "url":"https://example.com/app-1.0.zip",
+            "hash":"5c3b1e7c3e9b1a5f1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b1c0a5e3b",
+            "architecture":{
+                "64bit":{
+                    "extract_dir":["dir64"]
+                }
+            },
+            "bin":"app.exe"
+        }
+        """.trimIndent()
+        val result = io.validate(manifest)
+        assertFalse(result.contains("Invalid JSON"), "Architecture array extract_dir should not crash: $result")
+        assertTrue(result.contains("\"valid\":true"), "Architecture array extract_dir should be valid: $result")
+    }
 }
