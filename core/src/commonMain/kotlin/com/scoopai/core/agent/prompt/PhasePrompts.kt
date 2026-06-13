@@ -86,6 +86,12 @@ $task
    - `fetchWebPage` is for **non-GitHub projects only** (where there is no API), or for finding the `checkver` pattern on the official site when GitHub releases are absent.
    - fetchWebPage has a hard budget of 5 calls per session. Repeated calls to the same URL are auto-rejected.
 
+### description quality rules (IMPORTANT):
+- **App-centric**: describe what the app DOES, not what the repo does. For mirror/repack/portable repos (names like *-archive, *-portable, *-installer, *-windows-versions), describe the actual application being distributed, NOT the repo's automation/update mechanism.
+- **Concise**: single short sentence, ideally under 100 characters. Do NOT copy long README introductions verbatim — summarize.
+- **No marketing fluff**: avoid subjective words like "fast", "secure", "powerful", "high-performance", "incredible". Prefer concrete facts.
+- **Technically precise**: for developer tools, mention the key technology (e.g., "using Cranelift", "built on Redis and S3") rather than generic praise.
+
 5. **Prefer the shortest path to Windows download URLs**:
    - **First** check GitHub release assets from `fetchLatestRelease`. If the returned assets already contain `.zip`, `.exe`, or `.msi` files for Windows, STOP immediately — you have everything needed. Only visit the homepage or official download page when GitHub releases have NO usable assets.
    - **License and description can be found via GitHub API (fetchRepoInfo, fetchJson, fetchFileContent) without visiting the project website.**
@@ -461,7 +467,7 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
 - `checkver` — keep the skeleton's format (either shorthand `"github"` or full `{"github":"https://..."}`)
 - `autoupdate` — URL templates, structure (flat vs architecture-wrapped), and `extract_dir` placement are correct
 - `extract_dir` — if at top level, keep at top level. Do NOT move into architecture blocks.
-- `version`, `description`, `homepage`, `license`, `url`, `hash` — copy verbatim.
+- `version`, `description`, `homepage`, `license`, `url`, `hash` — copy verbatim. For description, follow the quality rules from research: app-centric, concise, no marketing fluff, technically precise.
 - `bin`, `persist`, `shortcuts`, `pre_install`, `env_set` — copy verbatim.
 
 ### Fields you MAY add (only if missing from skeleton):
