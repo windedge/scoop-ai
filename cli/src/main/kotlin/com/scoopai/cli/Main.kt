@@ -165,6 +165,8 @@ fun main(args: Array<String>) {
                 archiveInspector = archiveInsp
             )
 
+            // Reset tool call budget for a fresh run
+            DefaultToolRegistryFactory.getToolBudget()?.reset()
             val outputPath = resolvedOutput.ifBlank { null }
             generator.generate(url, outputPath, userPrompt = effectiveUserPrompt)
         }

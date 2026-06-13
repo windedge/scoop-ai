@@ -5,6 +5,7 @@ import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.core.tools.ToolRegistryBuilder
 import ai.koog.agents.core.tools.reflect.ToolSet
 import com.scoopai.core.agent.PhaseTools
+import com.scoopai.core.agent.tools.ToolCallBudget
 import com.scoopai.core.tools.api.ArchiveInspector
 import com.scoopai.core.tools.api.GitHubApi
 import com.scoopai.core.tools.api.HashComputer
@@ -28,6 +29,7 @@ private val DYNAMIC_TOOL_NAMES: Set<String> = setOf(PhaseTools.REVIEW_MANIFEST)
 
 object DefaultToolRegistryFactory {
     private var cacheManager: ScoopCacheManager? = null
+    private var toolBudget: ToolCallBudget? = null
 
     fun create(
         cache: ScoopCacheManager = ScoopCacheManager(),
@@ -39,12 +41,20 @@ object DefaultToolRegistryFactory {
         extraTools: List<Tool<*, *>> = emptyList(),
     ): ToolRegistry {
         cacheManager = cache
+        toolBudget = ToolCallBudget()
+        val budget = toolBudget
         val hashComputer = StreamingHashComputer(cache)
-        val archiveInspector = ZipArchiveInspector(cache)
+        val archiveInspector = ZipArchiveInspector(cache, budget = budget)
+        // Wrap default webFetcher with budget if it's a JdkHttpWebFetcher without one
+        val effectiveWebFetcher = if (webFetcher is JdkHttpWebFetcher) {
+            JdkHttpWebFetcher(budget = budget)
+        } else {
+            webFetcher
+        }
 
         return ToolRegistry {
             registerIfToolSet(gitHubApi)
-            registerIfToolSet(webFetcher)
+            registerIfToolSet(effectiveWebFetcher)
             registerIfToolSet(hashComputer)
             registerIfToolSet(archiveInspector)
             registerIfToolSet(manifestIo)
@@ -56,6 +66,9 @@ object DefaultToolRegistryFactory {
 
     /** Get the cache manager used in the current run (for finalizing cache entries). */
     fun getCacheManager(): ScoopCacheManager? = cacheManager
+
+    /** Get the tool call budget used in the current run (for resetting between runs). */
+    fun getToolBudget(): ToolCallBudget? = toolBudget
 
     /**
      * Validates that the tools in this registry contain all tools referenced
@@ -74,6 +87,7 @@ object DefaultToolRegistryFactory {
     fun cleanup() {
         cacheManager?.cleanup()
         cacheManager = null
+        toolBudget = null
     }
 
     private fun ToolRegistryBuilder.registerIfToolSet(obj: Any?) {

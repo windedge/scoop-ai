@@ -24,7 +24,7 @@ interface ArchiveInspector {
         url: String? = null,
         patterns: String? = null,
         includeGlobs: String? = null,
-        maxResults: Int = 50,
+        maxResults: Int = 15,
         maxFileSizeBytes: Long = 256 * 1024,
     ): String
 }

@@ -4,6 +4,7 @@ import ai.koog.agents.core.tools.annotations.LLMDescription
 import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
 import ai.koog.agents.core.tools.validateNotNull
+import com.scoopai.core.agent.tools.ToolCallBudget
 import com.scoopai.core.tools.api.ArchiveInspector
 import com.scoopai.tools.cache.ScoopCacheManager
 import kotlinx.serialization.json.*
@@ -11,8 +12,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
-import kotlinx.serialization.json.*
-import java.io.File
 
 private val nsisLogger = io.github.oshai.kotlinlogging.KotlinLogging.logger {}
 
@@ -29,10 +28,13 @@ private val TEXT_EXTENSIONS = setOf(
 @LLMDescription("Archive inspection tools for ZIP, MSI and installer analysis")
 class ZipArchiveInspector(
     private val cache: ScoopCacheManager,
+    /** Optional per-run budget to limit expensive tool calls. */
+    private val budget: ToolCallBudget? = null,
 ) : ArchiveInspector, ToolSet {
 
     companion object {
         private const val MAX_DEPTH = 3
+        private const val MAX_VERIFICATION_SIZE_BYTES = 100L * 1024 * 1024 // 100MB
     }
 
     // -----------------------------------------------------------------------
@@ -143,12 +145,10 @@ class ZipArchiveInspector(
             // Deeper verification needs the full file — skip for very large files (>100MB)
             // where downloading the full file just for verification is wasteful.
             // peekHeader has already confirmed the installer type from the first 1MB.
-            val SKIP_VERIFICATION_SIZE = 100L * 1024 * 1024 // 100MB
-
             val installerType = when (suspectedType) {
                 "innosetup" -> {
                     val contentLength = cache.getContentLength(urlNotNull)
-                    if (contentLength > SKIP_VERIFICATION_SIZE) {
+                    if (contentLength > MAX_VERIFICATION_SIZE_BYTES) {
                         "innosetup"
                     } else {
                         val file = cache.getOrDownload(urlNotNull)
@@ -158,7 +158,7 @@ class ZipArchiveInspector(
                 }
                 "nsis" -> {
                     val contentLength = cache.getContentLength(urlNotNull)
-                    if (contentLength > SKIP_VERIFICATION_SIZE) {
+                    if (contentLength > MAX_VERIFICATION_SIZE_BYTES) {
                         "nsis"
                     } else {
                         val file = cache.getOrDownload(urlNotNull)
@@ -211,13 +211,18 @@ class ZipArchiveInspector(
         patterns: String?,
         @LLMDescription("Comma-separated glob patterns to restrict file types, e.g. '*.json,*.rs,*.go'. Empty = all text files.")
         includeGlobs: String?,
-        @LLMDescription("Maximum number of match results (default 50)")
+        @LLMDescription("Maximum number of match results (default 15)")
         maxResults: Int,
         @LLMDescription("Maximum file size to scan in bytes (default 262144 = 256KB)")
         maxFileSizeBytes: Long,
     ): String {
         val urlNotNull = validateNotNull(url) { "Parameter 'url' is required. Provide the URL of a source code archive." }
         val patternsNotNull = validateNotNull(patterns) { "Parameter 'patterns' is required. Provide comma-separated regex patterns to search for." }
+
+        // Check budget before making HTTP call
+        if (budget != null && !budget.tryAcquire("searchTextInArchive", ToolCallBudget.SEARCH_TEXT_IN_ARCHIVE_LIMIT)) {
+            return ToolCallBudget.exhaustedMessage("searchTextInArchive", ToolCallBudget.SEARCH_TEXT_IN_ARCHIVE_LIMIT)
+        }
 
         return try {
             val patternList = patternsNotNull.split(',').map { it.trim() }.filter { it.isNotBlank() }
@@ -235,7 +240,7 @@ class ZipArchiveInspector(
             val globList = includeGlobs?.split(',')?.map { it.trim().removePrefix("*.") }?.filter { it.isNotBlank() }?.toSet()
                 ?: emptySet()
 
-            val effectiveMaxResults = if (maxResults <= 0) 50 else maxResults
+            val effectiveMaxResults = if (maxResults <= 0) 15 else maxResults
             val effectiveMaxFileSize = if (maxFileSizeBytes <= 0) 256 * 1024 else maxFileSizeBytes
 
             val matches = searchZipForPatterns(
@@ -442,7 +447,7 @@ class ZipArchiveInspector(
                             append("\n")
                             append(contextAfter)
                         }
-                    }.take(2000).trim()
+                    }.take(800).trim()
                     matches.add(buildJsonObject {
                         put("file", filePath)
                         put("line", idx + 1)

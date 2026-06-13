@@ -4,6 +4,7 @@ import ai.koog.agents.core.tools.annotations.LLMDescription
 import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
 import ai.koog.agents.core.tools.validateNotNull
+import com.scoopai.core.agent.tools.ToolCallBudget
 import com.scoopai.core.tools.api.WebFetcher
 import com.scoopai.tools.http.RetryingHttpClient
 import kotlinx.serialization.json.*
@@ -13,7 +14,10 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 
 @LLMDescription("Web fetching tools for reading web pages and APIs")
-class JdkHttpWebFetcher : WebFetcher, ToolSet {
+class JdkHttpWebFetcher(
+    /** Optional per-run budget to limit expensive tool calls. */
+    private val budget: ToolCallBudget? = null,
+) : WebFetcher, ToolSet {
 
     private val httpClient = RetryingHttpClient()
 
@@ -29,8 +33,44 @@ class JdkHttpWebFetcher : WebFetcher, ToolSet {
     }
 
     // ---------------------------------------------------------------------------
+    // HTML content extraction (for fetchWebPage)
+    // ---------------------------------------------------------------------------
+
+    /**
+     * Extracts visible text content from HTML by removing script, style, noscript
+     * blocks, HTML comments, tags, and decoding common entities.
+     * Safe to call on non-HTML content (passes through unchanged).
+     */
+    internal fun extractMainContent(html: String): String {
+        var text = html
+        // Remove script and style blocks (with content)
+        text = text.replace(Regex("<script[^>]*>[\\s\\S]*?</script>", RegexOption.IGNORE_CASE), "")
+        text = text.replace(Regex("<style[^>]*>[\\s\\S]*?</style>", RegexOption.IGNORE_CASE), "")
+        text = text.replace(Regex("<noscript[^>]*>[\\s\\S]*?</noscript>", RegexOption.IGNORE_CASE), "")
+        // Remove HTML comments
+        text = text.replace(Regex("<!--[\\s\\S]*?-->"), "")
+        // Remove all HTML tags
+        text = text.replace(Regex("<[^>]+>"), " ")
+        // Decode common HTML entities
+        text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+            .replace("&quot;", "\"").replace("&#39;", "'").replace("&nbsp;", " ")
+        // Compress whitespace
+        text = text.replace(Regex("[ \\t]+"), " ").replace(Regex("\\n\\s*\\n+"), "\n").trim()
+        return text
+    }
+
+    // ---------------------------------------------------------------------------
     // Tool implementations
     // ---------------------------------------------------------------------------
+
+    /**
+     * Check the tool call budget for [toolName].
+     * @return the budget-exhausted message if the budget is exhausted, or `null` if the call may proceed.
+     */
+    private fun checkBudget(toolName: String, limit: Int): String? {
+        val b = budget ?: return null
+        return if (b.tryAcquire(toolName, limit)) null else ToolCallBudget.exhaustedMessage(toolName, limit)
+    }
 
     @Tool
     @LLMDescription("Fetch a web page and return its text content (HTML stripped)")
@@ -39,12 +79,18 @@ class JdkHttpWebFetcher : WebFetcher, ToolSet {
         url: String?
     ): String {
         val urlNotNull = validateNotNull(url) { "Parameter 'url' is required. Provide the URL of the web page to fetch." }
+        checkBudget("fetchWebPage", ToolCallBudget.FETCH_WEB_PAGE_LIMIT)?.let { return it }
         return try {
             val body = httpGetString(urlNotNull)
-            // Strip HTML tags: replace <...> with a space, collapse whitespace
-            val text = body.replace(Regex("<[^>]+>"), " ")
-                .replace(Regex("\\s+"), " ")
-                .trim()
+            // For HTML content, extract main text before truncation
+            val text = if (body.trimStart().startsWith("<")) {
+                extractMainContent(body)
+            } else {
+                // Non-HTML (JSON, etc.): just strip any accidental HTML, collapse whitespace
+                body.replace(Regex("<[^>]+>"), " ")
+                    .replace(Regex("\\s+"), " ")
+                    .trim()
+            }
             if (text.length > 5000) text.substring(0, 5000) else text
         } catch (e: Exception) {
             buildJsonObject {
@@ -77,6 +123,7 @@ class JdkHttpWebFetcher : WebFetcher, ToolSet {
         url: String?
     ): String {
         val urlNotNull = validateNotNull(url) { "Parameter 'url' is required. Provide the URL that may redirect." }
+        checkBudget("resolveRedirect", ToolCallBudget.RESOLVE_REDIRECT_LIMIT)?.let { return it }
         return try {
             val client = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.NORMAL)

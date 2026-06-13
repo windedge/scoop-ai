@@ -230,6 +230,59 @@ class ZipArchiveInspectorSearchTest {
     }
 
     // ---------------------------------------------------------------
+    // Default maxResults (default 15, not 50)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `searchTextInArchive defaults to maxResults 15 when not specified`() = kotlinx.coroutines.runBlocking {
+        // Create a file with 20 matching lines — default should cap at 15
+        val lines = (1..20).joinToString("\n") { "XDG_CONFIG_HOME line $it" }
+        val zipFile = createTestZip(
+            "src/config.rs" to lines,
+        )
+        val url = "https://example.com/test-default-max.zip"
+        try {
+            val inspector = createInspector(zipFile, url)
+            // Call without maxResults parameter (uses default)
+            val result = inspector.searchTextInArchive(
+                url = url,
+                patterns = "XDG_CONFIG_HOME",
+            )
+            val obj = json.parseToJsonElement(result).jsonObject
+            val matches = obj["matches"]!!.jsonArray
+            assertTrue(matches.size <= 15, "Default maxResults should cap at 15, got ${matches.size}")
+        } finally {
+            Files.deleteIfExists(zipFile)
+            cleanupInspector(url)
+        }
+    }
+
+    @Test
+    fun `searchTextInArchive snippet is capped at 800 characters`() = kotlinx.coroutines.runBlocking {
+        // Create a file with a very long line to test snippet truncation
+        val longLine = "XDG_CONFIG_HOME " + "A".repeat(3000)
+        val zipFile = createTestZip(
+            "src/config.rs" to longLine,
+        )
+        val url = "https://example.com/test-snippet-cap.zip"
+        try {
+            val inspector = createInspector(zipFile, url)
+            val result = inspector.searchTextInArchive(
+                url = url,
+                patterns = "XDG_CONFIG_HOME",
+            )
+            val obj = json.parseToJsonElement(result).jsonObject
+            val matches = obj["matches"]!!.jsonArray
+            assertTrue(matches.size >= 1, "Should find the match")
+            val snippet = matches[0].jsonObject["snippet"]?.jsonPrimitive?.content ?: ""
+            assertTrue(snippet.length <= 800, "Snippet should be capped at 800 chars, got ${snippet.length}")
+        } finally {
+            Files.deleteIfExists(zipFile)
+            cleanupInspector(url)
+        }
+    }
+
+    // ---------------------------------------------------------------
     // Error handling
     // ---------------------------------------------------------------
 
