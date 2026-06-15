@@ -29,6 +29,7 @@ kotlin {
             implementation(libs.koog.openrouter.client)
             implementation(libs.koog.anthropic.client)
             implementation(libs.koog.ollama.client)
+            implementation("ai.koog:http-client-java:${libs.versions.koog.get()}")
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.logback.classic)

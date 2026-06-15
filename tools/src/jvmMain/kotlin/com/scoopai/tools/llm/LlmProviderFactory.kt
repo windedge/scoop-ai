@@ -1,6 +1,7 @@
 package com.scoopai.tools.llm
 
 import ai.koog.http.client.KoogHttpClient
+import ai.koog.http.client.java.JavaKoogHttpClient
 import ai.koog.prompt.executor.clients.anthropic.AnthropicLLMClient
 import ai.koog.prompt.executor.clients.deepseek.DeepSeekClientSettings
 import ai.koog.prompt.executor.clients.deepseek.DeepSeekLLMClient
@@ -44,7 +45,7 @@ object LlmProviderFactory {
             val baseHttpClient: KoogHttpClient = AbstractOpenAILLMClient.createConfiguredHttpClient(
                 apiKey = apiKey,
                 settings = deepSeekSettings,
-                httpClientFactory = ai.koog.http.client.ktor.KtorKoogHttpClient.Factory(),
+                httpClientFactory = JavaKoogHttpClient.Factory(),
                 clientName = "OpenAICompatibleLLMClient",
             )
             // Compose interceptors based on model requirements:
