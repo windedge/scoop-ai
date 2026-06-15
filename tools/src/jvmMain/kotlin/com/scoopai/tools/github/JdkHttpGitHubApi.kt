@@ -106,7 +106,8 @@ class JdkHttpGitHubApi(
         url: String?
     ): String {
         val urlNotNull = requireParam(url, "url", "a GitHub URL such as https://github.com/owner/repo")
-        val regex = Regex("""(?:https?://)?github\.com/([^/]+)/([^/]+?)(?:/|$|\?|#)""")
+        // Support both github.com/owner/repo and api.github.com/repos/owner/repo
+        val regex = Regex("""(?:https?://)?(?:api\.)?github\.com/(?:repos/)?([^/?#\s]+)/([^/?#\s]+)""")
         val match = regex.find(urlNotNull)
         if (match != null) {
             val owner = match.groupValues[1]

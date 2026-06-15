@@ -356,7 +356,7 @@ fun detectArchitecture(filename: String): String {
 // Windows asset filtering
 // ---------------------------------------------------------------------------
 
-private val WINDOWS_EXTENSIONS = setOf(".zip", ".exe", ".msi")
+private val WINDOWS_EXTENSIONS = setOf(".zip", ".exe", ".msi", ".nupkg")
 private val EXCLUDED_EXTENSIONS = setOf(".sha256", ".sig", ".asc", ".pem")
 private val EXCLUDED_PLATFORM_KEYWORDS = listOf("darwin", "linux", "macos")
 

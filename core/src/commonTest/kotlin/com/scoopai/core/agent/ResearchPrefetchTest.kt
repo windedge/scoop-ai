@@ -189,6 +189,238 @@ class ResearchPrefetchTest {
         assertEquals("1.0.0", result.version)
     }
 
+    // ---------------------------------------------------------------
+    // ALL_CONFIG_PATTERNS contains required patterns
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `ALL_CONFIG_PATTERNS contains SettingStore`() {
+        assertTrue(ALL_CONFIG_PATTERNS.contains("SettingStore"), "ALL_CONFIG_PATTERNS should include SettingStore")
+    }
+
+    @Test
+    fun `ALL_CONFIG_PATTERNS contains GetConfigPath`() {
+        assertTrue(ALL_CONFIG_PATTERNS.contains("GetConfigPath"), "ALL_CONFIG_PATTERNS should include GetConfigPath")
+    }
+
+    @Test
+    fun `ALL_CONFIG_PATTERNS contains ProgramData`() {
+        assertTrue(ALL_CONFIG_PATTERNS.contains("ProgramData"), "ALL_CONFIG_PATTERNS should include ProgramData")
+    }
+
+    // ---------------------------------------------------------------
+    // parseOwnerRepo
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `parses standard github URL`() {
+        val result = parseOwnerRepo("https://github.com/openai/codex")
+        assertNotNull(result)
+        assertEquals("openai", result!!.first)
+        assertEquals("codex", result.second)
+    }
+
+    @Test
+    fun `parses api github com URL`() {
+        val result = parseOwnerRepo("https://api.github.com/repos/openai/codex/releases")
+        assertNotNull(result)
+        assertEquals("openai", result!!.first)
+        assertEquals("codex", result.second)
+    }
+
+    @Test
+    fun `parses api github com releases latest URL`() {
+        val result = parseOwnerRepo("https://api.github.com/repos/openai/codex/releases/latest")
+        assertNotNull(result)
+        assertEquals("openai", result!!.first)
+        assertEquals("codex", result.second)
+    }
+
+    @Test
+    fun `parses github URL with trailing releases path`() {
+        val result = parseOwnerRepo("https://github.com/openai/codex/releases/latest")
+        assertNotNull(result)
+        assertEquals("openai", result!!.first)
+        assertEquals("codex", result.second)
+    }
+
+    @Test
+    fun `parses github URL with trailing tags path`() {
+        val result = parseOwnerRepo("https://github.com/openai/codex/tags")
+        assertNotNull(result)
+        assertEquals("openai", result!!.first)
+        assertEquals("codex", result.second)
+    }
+
+    @Test
+    fun `parses github URL with query string`() {
+        val result = parseOwnerRepo("https://github.com/openai/codex?tab=readme")
+        assertNotNull(result)
+        assertEquals("openai", result!!.first)
+        assertEquals("codex", result.second)
+    }
+
+    @Test
+    fun `parses github URL with fragment`() {
+        val result = parseOwnerRepo("https://github.com/openai/codex#readme")
+        assertNotNull(result)
+        assertEquals("openai", result!!.first)
+        assertEquals("codex", result.second)
+    }
+
+    @Test
+    fun `parses github URL without protocol`() {
+        val result = parseOwnerRepo("github.com/openai/codex")
+        assertNotNull(result)
+        assertEquals("openai", result!!.first)
+        assertEquals("codex", result.second)
+    }
+
+    @Test
+    fun `returns null for non-github URLs`() {
+        assertNull(parseOwnerRepo("https://example.com/tool"))
+    }
+
+    @Test
+    fun `returns null for invalid URLs`() {
+        assertNull(parseOwnerRepo("not a url"))
+    }
+
+    @Test
+    fun `handles git suffix in repo name`() {
+        val result = parseOwnerRepo("https://github.com/openai/codex.git")
+        assertNotNull(result)
+        assertEquals("openai", result!!.first)
+        assertEquals("codex", result.second)
+    }
+
+    @Test
+    fun `parses api github com URL without trailing path`() {
+        val result = parseOwnerRepo("https://api.github.com/repos/cli/cli")
+        assertNotNull(result)
+        assertEquals("cli", result!!.first)
+        assertEquals("cli", result.second)
+    }
+
+    // ---------------------------------------------------------------
+    // isPrereleaseVersion
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `isPrereleaseVersion detects alpha`() {
+        assertTrue(isPrereleaseVersion("0.140.0-alpha.19"))
+    }
+
+    @Test
+    fun `isPrereleaseVersion detects rc`() {
+        assertTrue(isPrereleaseVersion("1.0.0-rc1"))
+        assertTrue(isPrereleaseVersion("2.0-rc.3"))
+    }
+
+    @Test
+    fun `isPrereleaseVersion detects beta`() {
+        assertTrue(isPrereleaseVersion("1.0.0-beta"))
+    }
+
+    @Test
+    fun `isPrereleaseVersion detects pre`() {
+        assertTrue(isPrereleaseVersion("3.0.0-pre"))
+    }
+
+    @Test
+    fun `isPrereleaseVersion detects preview`() {
+        assertTrue(isPrereleaseVersion("1.0-preview"))
+    }
+
+    @Test
+    fun `isPrereleaseVersion detects dev`() {
+        assertTrue(isPrereleaseVersion("0.9-dev"))
+    }
+
+    @Test
+    fun `isPrereleaseVersion detects snapshot`() {
+        assertTrue(isPrereleaseVersion("1.0-SNAPSHOT"))
+    }
+
+    @Test
+    fun `isPrereleaseVersion returns false for stable`() {
+        assertFalse(isPrereleaseVersion("0.139.0"))
+        assertFalse(isPrereleaseVersion("1.2.3"))
+        assertFalse(isPrereleaseVersion("2.1.0"))
+    }
+
+    @Test
+    fun `isPrereleaseVersion handles empty and edge cases`() {
+        assertFalse(isPrereleaseVersion(""))
+        assertFalse(isPrereleaseVersion("1"))
+        assertFalse(isPrereleaseVersion("1.0"))
+    }
+
+    @Test
+    fun `isPrereleaseVersion does not match non version segments`() {
+        assertFalse(isPrereleaseVersion("1.0.0-windows"))
+        assertTrue(isPrereleaseVersion("1.0.0-rc-windows"))
+    }
+
+    // ---------------------------------------------------------------
+    // detectReleasesFile
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `detectReleasesFile finds uppercase RELEASES`() {
+        val assets = listOf(
+            AssetSnapshot("app-1.0.nupkg", "url1"),
+            AssetSnapshot("RELEASES", "url2"),
+        )
+        assertEquals("RELEASES", detectReleasesFile(assets))
+    }
+
+    @Test
+    fun `detectReleasesFile returns empty when no RELEASES`() {
+        val assets = listOf(
+            AssetSnapshot("app-1.0.nupkg", "url1"),
+            AssetSnapshot("checksums.txt", "url2"),
+        )
+        assertEquals("", detectReleasesFile(assets))
+    }
+
+    @Test
+    fun `detectReleasesFile is case sensitive`() {
+        val assets = listOf(
+            AssetSnapshot("app-1.0.nupkg", "url1"),
+            AssetSnapshot("releases", "url2"),
+            AssetSnapshot("RELEASES", "url3"),
+        )
+        assertEquals("RELEASES", detectReleasesFile(assets))
+    }
+
+    @Test
+    fun `detectReleasesFile returns empty on empty list`() {
+        assertEquals("", detectReleasesFile(emptyList()))
+    }
+
+    // ---------------------------------------------------------------
+    // detectChecksumsFile (patched patterns)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `detectChecksumsFile matches sha256sums dot txt`() {
+        val assets = listOf(AssetSnapshot("sha256sums.txt", "url1"))
+        assertEquals("sha256sums.txt", detectChecksumsFile(assets))
+    }
+
+    @Test
+    fun `detectChecksumsFile matches checksums dot txt`() {
+        val assets = listOf(AssetSnapshot("checksums.txt", "url1"))
+        assertEquals("checksums.txt", detectChecksumsFile(assets))
+    }
+
+    @Test
+    fun `detectChecksumsFile matches checksums txt via extensions`() {
+        val assets = listOf(AssetSnapshot("app-1.0.zip.sha256", "url1"))
+        assertEquals("app-1.0.zip.sha256", detectChecksumsFile(assets))
+    }
+
     @Test
     fun `executePrefetch handles API failure gracefully`() = runBlocking {
         val api: GitHubApi = object : GitHubApi {

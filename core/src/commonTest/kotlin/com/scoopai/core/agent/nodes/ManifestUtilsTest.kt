@@ -134,6 +134,26 @@ class ManifestUtilsTest {
         assertEquals("app.zip", result[0].filename)
     }
 
+    @Test
+    fun `filterWindowsAssets includes nupkg`() {
+        val assets = listOf(
+            RawAssetInfo("https://example.com/app.nupkg", "app.nupkg"),
+        )
+        val result = filterWindowsAssets(assets)
+        assertEquals(1, result.size)
+        assertEquals("app.nupkg", result[0].filename)
+    }
+
+    @Test
+    fun `filterWindowsAssets marks nupkg asset type`() {
+        val assets = listOf(
+            RawAssetInfo("https://example.com/app.nupkg", "app.nupkg"),
+        )
+        val result = filterWindowsAssets(assets)
+        assertEquals(1, result.size)
+        assertEquals("nupkg", result[0].asset_type)
+    }
+
     // ---------------------------------------------------------------
     // filterExecutables
     // ---------------------------------------------------------------

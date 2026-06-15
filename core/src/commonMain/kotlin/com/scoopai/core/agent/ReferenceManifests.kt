@@ -239,6 +239,37 @@ object ReferenceManifests {
     }
     """.trimIndent()
 
+    val CARNAC_NUPKG = """
+{
+    "version": "4.5.583",
+    "description": "A keyboard shortcut manager that displays contextual shortcut hints in overlays",
+    "homepage": "https://code52.org/carnac/",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/Code52/carnac/releases/download/4.5.583/carnac.core.4.5.583.nupkg",
+            "hash": "0e79f22b1b38b2e490b8cca4e15cad89ba29a6f9",
+            "extract_dir": "lib\\net45"
+        }
+    },
+    "bin": "carnac.exe",
+    "shortcuts": [["carnac.exe", "Carnac"]],
+    "persist": "Keymaps",
+    "checkver": { "github": "https://github.com/Code52/carnac" },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/Code52/carnac/releases/download/${'$'}version/carnac.core.${'$'}version.nupkg"
+            }
+        },
+        "hash": {
+            "url": "${'$'}baseurl/RELEASES",
+            "find": "${'$'}basename"
+        }
+    }
+}
+""".trimIndent()
+
     val ALL = listOf(
         "### Simple GitHub autoupdate (no checksum)\n$RIPGREP",
         "### GitHub autoupdate + checksums.txt (bundle hash)\n$LAZYGIT",
@@ -246,6 +277,7 @@ object ReferenceManifests {
         "### GUI zip with single primary executable\n$WINMERGE",
         "### GUI zip with pre_install rename + persist\n$SUMATRAPDF",
         "### CLI with env_set + pre_install copy + persist (config from %APPDATA%)\n$BAT_CLI",
-        "### env_add_path instead of bin (version manager with shims)\n$PYENV_WIN"
+        "### env_add_path instead of bin (version manager with shims)\n$PYENV_WIN",
+        "### NuGet nupkg with RELEASES hash (Squirrel AutoUpdater)\n$CARNAC_NUPKG"
     ).joinToString("\n\n---\n\n")
 }

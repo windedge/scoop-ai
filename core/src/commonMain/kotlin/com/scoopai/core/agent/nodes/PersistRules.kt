@@ -44,6 +44,7 @@ private val CONFIG_DIR_NAMES = setOf(
     "plugins", "extensions",
     "data", "Data",
     "settings", "userdata",
+    "programdata",
 )
 
 /**
@@ -193,7 +194,7 @@ fun inferPersistHints(
 
     // ---- Archive-internal config file scanning ----
 
-    val archiveConfigExtensions = setOf(".ini", ".cfg", ".conf", ".xml")
+    val archiveConfigExtensions = setOf(".ini", ".cfg", ".conf", ".xml", ".json")
     val nonConfigStems = setOf("uninstall", "install", "setup", "readme")
 
     for (path in filePaths) {

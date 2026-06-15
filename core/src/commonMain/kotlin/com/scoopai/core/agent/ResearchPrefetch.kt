@@ -11,7 +11,21 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 /**
- * GitHub URL 解析正则
+ * Parse owner and repo from various GitHub URL formats.
+ * Supports both github.com/owner/repo and api.github.com/repos/owner/repo.
+ * Returns null if the URL is not a valid GitHub URL.
+ */
+internal fun parseOwnerRepo(url: String): Pair<String, String>? {
+    val regex = Regex("""(?:https?://)?(?:api\.)?github\.com/(?:repos/)?([^/?#\s]+)/([^/?#\s]+)""")
+    val match = regex.find(url) ?: return null
+    val owner = match.groupValues[1]
+    val repo = match.groupValues[2].removeSuffix(".git")
+    if (repo.isBlank()) return null
+    return Pair(owner, repo)
+}
+
+/**
+ * GitHub URL 解析正则 (kept for backward compatibility, use parseOwnerRepo for new code)
  */
 private val GITHUB_URL_REGEX = Regex("""github\.com/([^/]+)/([^/\s?#]+)""")
 
@@ -24,13 +38,14 @@ private fun sourceArchiveUrl(owner: String, repo: String, tag: String): String =
 /**
  * prefetch 搜索的所有配置模式（一次性搜索）
  */
-private val ALL_CONFIG_PATTERNS = listOf(
+internal val ALL_CONFIG_PATTERNS = listOf(
     "XDG_CONFIG_HOME", "APPDATA", "LOCALAPPDATA", "user.home", ".config",
     "env::var", "getenv", "os.Getenv", "System.getenv",
     "_CONFIG_DIR", "_CONFIG_PATH", "_CONFIG_HOME", "_DATA_DIR",
     "_HOME", "_LIB", "_CFG", "_PATH", "_CACHE",
     "QSettings", "QStandardPaths", ".ini", "config.ini", "app.config", "appsettings",
-    "SaveSettings", "LoadSettings", "WriteAllText", "preferences", "ConfigurationManager"
+    "SaveSettings", "LoadSettings", "WriteAllText", "preferences", "ConfigurationManager",
+    "SettingStore", "GetConfigPath", "ProgramData"
 ).joinToString(",")
 
 // Social/forum links that should not be used as homepage
@@ -45,7 +60,7 @@ private val SOCIAL_HOSTNAMES = setOf(
 
 // Checksums file patterns (case-insensitive matching)
 private val CHECKSUMS_PATTERNS = listOf(
-    Regex("""(?i)^(checksums?\.txt|sha256sums?|md5sums?|sha512sums?|\.sha256|\.sha512|\.md5)$"""),
+    Regex("""(?i)^(checksums?\.txt|sha256sums?(\.txt)?|md5sums?(\.txt)?|sha512sums?(\.txt)?|\.sha256|\.sha512|\.md5)$"""),
     Regex("""(?i)\.(sha256|sha512|md5)$"""),
 )
 
@@ -81,11 +96,36 @@ internal fun detectChecksumsFile(assets: List<AssetSnapshot>): String {
 }
 
 /**
+ * Detect a RELEASES file (Squirrel format) among release assets.
+ * Case-sensitive: only matches exactly "RELEASES" (Squirrel convention uses uppercase).
+ * Returns the asset name if found, empty string otherwise.
+ */
+internal fun detectReleasesFile(assets: List<AssetSnapshot>): String {
+    for (asset in assets) {
+        if (asset.name == "RELEASES") {
+            return asset.name
+        }
+    }
+    return ""
+}
+
+/**
  * Extract version number from a git tag, stripping the common 'v' prefix.
  */
 internal fun extractVersion(tagName: String?): String {
     if (tagName.isNullOrBlank()) return ""
     return tagName.removePrefix("v")
+}
+
+/**
+ * Check if a version string contains a pre-release suffix.
+ * Matches: alpha, beta, rc, pre, preview, dev, snapshot (case-insensitive)
+ * in the segment after the first `-`.
+ */
+internal fun isPrereleaseVersion(version: String): Boolean {
+    if (version.isBlank()) return false
+    val regex = Regex("""(?i)(?:-alpha[\d.]*|-beta[\d.]*|-rc[\d.]*|-preview[\d.]*|-pre[\d.]*|-dev[\d.]*|-snapshot[\d.]*)""")
+    return regex.containsMatchIn(version)
 }
 
 /**
@@ -225,15 +265,15 @@ suspend fun prefetchResearchData(
     archiveInspector: ArchiveInspector? = null,
 ): PrefetchResult = coroutineScope {
     // 1. 解析 GitHub URL
-    val match = GITHUB_URL_REGEX.find(url)
-    if (match == null) {
+    val parsed = parseOwnerRepo(url)
+    if (parsed == null) {
         return@coroutineScope PrefetchResult(
             isGitHub = false,
             originalUrl = url,
         )
     }
-    val owner = match.groupValues[1]
-    val repo = match.groupValues[2].removeSuffix(".git")
+    val owner = parsed.first
+    val repo = parsed.second
 
     val errors = mutableListOf<String>()
 
@@ -288,6 +328,7 @@ suspend fun prefetchResearchData(
 
     val homepageCleaned = cleanHomepage(repoInfo?.homepage, owner, repo)
     val detectedChecksumsFile = detectChecksumsFile(effectiveRelease?.assets ?: emptyList())
+    val detectedReleasesFile = detectReleasesFile(effectiveRelease?.assets ?: emptyList())
     val version = extractVersion(tagName)
 
     PrefetchResult(
@@ -301,6 +342,7 @@ suspend fun prefetchResearchData(
         persistSearch = persistSearch,
         windowsAssets = windowsAssets,
         detectedChecksumsFile = detectedChecksumsFile,
+        detectedReleasesFile = detectedReleasesFile,
         homepageCleaned = homepageCleaned,
         version = version,
         errors = errors,

@@ -17,6 +17,7 @@ data class PrefetchResult(
 
     val windowsAssets: List<PrefetchedAsset> = emptyList(),
     val detectedChecksumsFile: String = "",
+    val detectedReleasesFile: String = "",
     val homepageCleaned: String = "",
     val version: String = "",
 

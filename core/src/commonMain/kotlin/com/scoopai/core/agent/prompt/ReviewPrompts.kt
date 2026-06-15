@@ -20,6 +20,7 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
 - CLI tools (command-line utilities like ripgrep, fd, delta, jq, yq) rarely need persist. However, some CLI tools DO need persist for user config, themes, syntaxes, or history databases (e.g. bat, starship, zoxide). Verify each case individually.
 - If `persist` contains only an empty directory name (e.g. `"persist": ["config"]`) without corresponding `pre_install` to create initial config, it is suspicious.
 - Acceptable persist: Electron config directories, plugin directories for IDEs, profile directories for terminals.
+- If the manifest is for a config-intensive GUI tool (description indicates editor, IDE, diff/merge tool, media player, or similar desktop app that persists user settings), and `persist` is empty or missing, flag as WARNING. These apps almost always need to persist configuration files or data directories. The only exception is apps that store config in %APPDATA% or the registry.
 
 ### 2. env_set necessity
 - Only app-specific environment variables should be set in `env_set`. For example: `BAT_CONFIG_DIR`, `RIPGREP_CONFIG_PATH`, `CARGO_HOME`.
@@ -80,6 +81,12 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
 
 ### 11. homepage protocol
 - If `homepage` uses `http://`, suggest `https://` unless the site is known not to support HTTPS.
+
+### 12. version pre-release suffix
+- If `version` contains a pre-release suffix (`-alpha`, `-beta`, `-rc`, `-pre`, `-preview`, `-dev`, `-snapshot`) and the source is GitHub: flag as WARNING with message "version contains a pre-release suffix; verify no stable release exists in the release list before accepting."
+
+### 13. nupkg extract_dir correctness
+- If the download URL ends with `.nupkg` but `extract_dir` is missing, OR `pre_install` contains `Move-Item` targeting `lib\net` path: flag as WARNING — nupkg should use `extract_dir` instead of manual file relocation.
 
 ### License validation
 - If `license` is `"Proprietary"`, flag as a **warning**. Some apps are genuinely proprietary.

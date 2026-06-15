@@ -55,8 +55,10 @@ $task
    - Use fetchLatestRelease to find the latest version and assets.
    - **⚠️ RELEASE CHANNEL RULE**: Some projects publish releases on multiple channels: `stable`, `edge`, `nightly`, `beta`, `rc`, `pre-release`. **Prefer the latest stable release** for your final `windows_assets` field. If `fetchLatestRelease` returns a non-stable tag (contains `edge-`, `nightly-`, `beta`, `rc`, `alpha`), use `fetchAllReleases` to find the latest **stable** release tag (without those prefixes) and use that version's assets instead. If no stable release exists (returns ONLY edge/nightly/beta/rc releases), use the latest edge/nightly release as a fallback and note it.
    - **⚠️ EDGE/NIGHTLY FALLBACK**: If `fetchAllReleases` returns ONLY edge/nightly/beta releases and NO stable releases are found, then use the **latest edge/nightly release** as a fallback. This means the project only publishes edge releases as downloadable assets — do NOT waste token budget browsing the project website, git tags, or documentation looking for stable releases that may not exist as downloadable assets. Just note in the `notes` field: "Only edge releases available; using latest."
+   - **⚠️ GITHUB LATEST BADGE RULE (web fallback)**: When the API path is unavailable (rate limited) and you fall back to `fetchWebPage` on `github.com/{owner}/{repo}/releases`: a release with the green "Latest" badge is the official stable release; releases with "Pre-release" badge are NOT stable. Even if a pre-release appears first in the list, look down the page for the release carrying the "Latest" badge and use its tag. Only fall back to a pre-release if EVERY release on the page is marked "Pre-release" (no "Latest" badge exists), and note this in the manifest notes.
    - **Only output Windows assets from the latest stable (or fallback edge/nightly) release** in your final `windows_assets` field. Do NOT include assets from older or unrelated releases, even if they have a portable ZIP variant. Older releases are only useful for `checkver`/`autoupdate` pattern inference.
    - **Important**: If the release assets contain checksums files (e.g. `checksums.txt`, `sha256sums.txt`, or files ending with `.sha256`), record the exact filename in the `checksums_filename` field. This will be used later to add an `autoupdate.hash` block.
+   - **Important**: If a `RELEASES` file (Squirrel format) is present among release assets, note it — this file contains SHA-1 hashes for nupkg packages and will be used for autoupdate.hash in the generate phase.
    - If fetchLatestRelease returns empty, use fetchAllReleases as fallback.
    - For non-GitHub projects, use fetchWebPage to read the project page.
 
@@ -247,6 +249,8 @@ $researchJson
    - **InnoSetup handling**: If `detectInstallerType` returns `innosetup`, set `"installer_type": "innosetup"` regardless. If `listArchiveContents` returns files, use them to set `bin`. If `listArchiveContents` returns empty (innounp cannot list this version), still report `innosetup` — Scoop may still be able to extract. In this case, set `bin` based on common InnoSetup conventions (main exe usually named after the app), or omit `bin` if uncertain.
    - **NSIS unsupported handling**: If `detectInstallerType` returns `nsis_unsupported` (the NSIS installer cannot be extracted by 7z), set `"installer_type": "nsis"` AND `"nsis_unsupported": true` in your output. This tells the generate phase that `#/dl.7z` will NOT work. In this case, look for alternative ZIP or MSI assets for the same version. If no alternative exists, you may need to use a silent install script strategy.
 
+   ⚠️ **CRITICAL: Re-inspect after adding `#/dl.7z` suffix**: When you decide to use a `#/dl.7z` (or any `#/` fragment) URL suffix to extract an installer, you MUST call `listArchiveContents` on that SUFFIXED URL afterward to verify what files the archive contains. A bare installer URL (e.g. `.exe`, `.cpl`, `.msi`) often fails to extract, but the same URL with a `#/dl.7z` suffix typically succeeds because it targets the inner 7z payload. Do NOT conclude "cannot extract" after only trying the bare URL — if you add a fragment suffix, re-run the archive inspection on the suffixed URL to discover internal files like config files, persist targets, and the real executable layout.
+
 4. **Filter executables aggressively**:
    - Prefer the main end-user executable for the app.
    - Exclude names containing terms like: `helper`, `proxy`, `updater`, `update`, `uninstall`, `setup`, `crash`, `service`, `broker`, `elevat`, `patch`, `pluginproxy`.
@@ -352,6 +356,13 @@ When the installer type is NSIS or InnoSetup (detected via `#/dl.7z` suffix or `
 - Use `listArchiveContents` to inspect inner files for cleanup targets: `Uninst*`, `vc_redist*`, `${'$'}PLUGINSDIR`, `${'$'}*`
 - If found, generate a `pre_install` script to remove these unnecessary files
 - Check for `vcruntime*.dll` or `msvcp*.dll` in the archive — if present, add `suggest: {"vcredist": "extras/vcredist2022"}` to the output
+
+### NuGet (nupkg) / Squirrel AutoUpdater
+When a release asset is a `.nupkg` file (NuGet/Squirrel AutoUpdater package):
+- Use the nupkg directly as the download URL. Scoop can extract nupkg (it is a zip).
+- Set `extract_dir` to the .NET framework subdirectory inside the nupkg. Call `listArchiveContents` on the nupkg URL to confirm the path (commonly `lib\net45`, `lib\net462`, `lib\net6.0`, `lib\net8.0` — do NOT assume, verify).
+- Do NOT use `pre_install` with `Move-Item "\${'$'}dir\lib\netXX\*"` to relocate files — use `extract_dir` instead.
+- The hash for nupkg packages usually comes from a sibling `RELEASES` file in the same release (Squirrel format), which uses SHA-1 (not SHA-256). Prefer `RELEASES` over `sha256sums.txt` when both exist.
 
 IMPORTANT: You MUST call the analysis tools (computeSha256FromUrl, listArchiveContents, findExecutables) to compute real values. Do not guess or estimate hashes.
 
@@ -498,6 +509,7 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
    - Separate checksums file: `{"url": "${'$'}baseurl/checksums.txt", "regex": "${'$'}basename.*?([a-f0-9]{32,})"}`
    - SHA256SUMS/MD5SUMS in release assets: `{"url": "${'$'}baseurl/SHA256SUMS", "find": "${'$'}basename"}`
    - GitHub release HTML page with hash: `{"url": "${'$'}baseurl", "regex": "${'$'}basename.*?([a-f0-9]{32,})"}`
+   - RELEASES file for nupkg/Squirrel packages: `{"url": "${'$'}baseurl/RELEASES", "find": "${'$'}basename"}` (Squirrel RELEASES format: `<sha1-hash> <filename>` per line)
    - No checksums available: omit hash block entirely
 4. **Finalize**: Call `finalize_task_result` with one parameter `result` whose value is a **STRING containing the manifest JSON text** (NOT a JSON object).
 

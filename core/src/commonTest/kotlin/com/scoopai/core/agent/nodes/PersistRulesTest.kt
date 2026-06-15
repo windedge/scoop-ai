@@ -354,6 +354,32 @@ class PersistRulesTest {
     // Existing functionality regression
     // ---------------------------------------------------------------
 
+    // ---------------------------------------------------------------
+    // ProgramData directory recognition
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `ProgramData directory is recognized as config dir`() {
+        val hints = inferPersistHints(
+            filePaths = listOf("ProgramData/settings.conf"),
+            fileSnippets = emptyMap(),
+        )
+        assertTrue(hints.persistTargets.contains("ProgramData"), "ProgramData should be recognized as a config directory")
+    }
+
+    // ---------------------------------------------------------------
+    // .json extension in archive config scanning
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `json extension in subdirectory yields archive config note`() {
+        val hints = inferPersistHints(
+            filePaths = listOf("Resources/settings.json"),
+            fileSnippets = emptyMap(),
+        )
+        assertTrue(hints.notes.any { it.contains("settings.json") }, ".json files in archive should be flagged as config files")
+    }
+
     @Test
     fun `config json at root still detected as root config`() {
         val hints = inferPersistHints(
