@@ -17,6 +17,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ManifestUtilsTest {
@@ -1681,6 +1682,60 @@ class ManifestUtilsTest {
         val json = parseJsonObject(result)
         assertFalse(json.containsKey("architecture"), "array url should never be wrapped in architecture")
         assertTrue(json.containsKey("url"), "url should remain at top level")
+    }
+
+    // ---------------------------------------------------------------
+    // checkAutoupdateVersionPlaceholder
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `checkAutoupdateVersionPlaceholder passes when url contains dollar-version`() {
+        val manifest = """{"version":"1.0.0","autoupdate":{"architecture":{"64bit":{"url":"https://github.com/o/r/releases/download/v${'$'}version/app-v${'$'}version.zip"}}}}"""
+        assertNull(checkAutoupdateVersionPlaceholder(manifest))
+    }
+
+    @Test
+    fun `checkAutoupdateVersionPlaceholder flags hardcoded version in architecture url`() {
+        val manifest = """{"version":"1.0.0","autoupdate":{"architecture":{"64bit":{"url":"https://github.com/o/r/releases/download/v1.0.0/app-v1.0.0.zip"}}}}"""
+        val err = checkAutoupdateVersionPlaceholder(manifest)
+        assertNotNull(err)
+        assertTrue(err!!.contains("autoupdate"), err)
+    }
+
+    @Test
+    fun `checkAutoupdateVersionPlaceholder flags flat autoupdate without placeholder`() {
+        val manifest = """{"version":"1.8","autoupdate":{"url":"https://example.com/app-1.8.zip"}}"""
+        assertNotNull(checkAutoupdateVersionPlaceholder(manifest))
+    }
+
+    @Test
+    fun `checkAutoupdateVersionPlaceholder passes rolling latest url`() {
+        val manifest = """{"version":"1.0","autoupdate":{"url":"https://github.com/o/r/releases/download/latest/app.exe"}}"""
+        assertNull(checkAutoupdateVersionPlaceholder(manifest))
+    }
+
+    @Test
+    fun `checkAutoupdateVersionPlaceholder passes rolling stable path url`() {
+        val manifest = """{"version":"1.0","autoupdate":{"url":"https://example.com/dist/stable/app.zip"}}"""
+        assertNull(checkAutoupdateVersionPlaceholder(manifest))
+    }
+
+    @Test
+    fun `checkAutoupdateVersionPlaceholder returns null when no autoupdate`() {
+        val manifest = """{"version":"1.0","url":"https://example.com/app-1.0.zip","bin":"app.exe"}"""
+        assertNull(checkAutoupdateVersionPlaceholder(manifest))
+    }
+
+    @Test
+    fun `checkAutoupdateVersionPlaceholder flags when any arch entry is hardcoded`() {
+        val manifest = """{"version":"1.0","autoupdate":{"architecture":{"64bit":{"url":"https://github.com/o/r/releases/download/v${'$'}version/app64.zip"},"32bit":{"url":"https://github.com/o/r/releases/download/app32-1.0.zip"}}}}"""
+        assertNotNull(checkAutoupdateVersionPlaceholder(manifest))
+    }
+
+    @Test
+    fun `checkAutoupdateVersionPlaceholder flags real herdr preview-tag case`() {
+        val manifest = """{"version":"0.7.0","autoupdate":{"architecture":{"64bit":{"url":"https://github.com/ogulcancelik/herdr/releases/download/preview-2026-06-15-517ca8163f7c/herdr-windows-x86_64.exe#/herdr.exe"}}}}"""
+        assertNotNull(checkAutoupdateVersionPlaceholder(manifest))
     }
 }
 

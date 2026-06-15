@@ -304,6 +304,75 @@ internal fun generateCheckver(homepage: String, project: String = ""): JsonObjec
 }
 
 // ---------------------------------------------------------------------------
+// autoupdate URL placeholder check (deterministic verify backstop)
+// ---------------------------------------------------------------------------
+
+/**
+ * Checks whether all `autoupdate` download URLs carry a version placeholder
+ * (such as `$version`, `$matchHead`, ...).
+ *
+ * Returns an error message describing the first hard-coded URL, or `null` when
+ * every URL either uses a placeholder or is a rolling URL (latest/stable/nightly
+ * that never changes with the version). This catches manifests whose `version`
+ * does not match the release the Windows asset was taken from, which leaves the
+ * `autoupdate.url` pinned to a single, concrete version string (e.g. a
+ * `preview-<date>-<hash>` tag) so autoupdate silently never updates.
+ *
+ * Returns `null` (no error) when:
+ * - the JSON cannot be parsed,
+ * - there is no `autoupdate` field,
+ * - `autoupdate` has no `url`.
+ */
+internal fun checkAutoupdateVersionPlaceholder(manifestJson: String): String? {
+    val json = try {
+        Json.parseToJsonElement(manifestJson) as? JsonObject ?: return null
+    } catch (_: Exception) {
+        return null
+    }
+    val autoupdate = json["autoupdate"] as? JsonObject ?: return null
+    val urls = collectAutoupdateUrls(autoupdate)
+    for (url in urls) {
+        if (!hasVersionVariable(url) && !isRollingUrl(url)) {
+            return "autoupdate.url has no \$version placeholder and is not a rolling URL " +
+                "(latest/stable/nightly); it is hard-coded to a fixed version so autoupdate " +
+                "will not work. Likely the version does not match the release the Windows " +
+                "asset belongs to: $url"
+        }
+    }
+    return null
+}
+
+/** Collects every `url` inside an `autoupdate` block (flat `url` and per-architecture). */
+private fun collectAutoupdateUrls(autoupdate: JsonObject): List<String> {
+    val urls = mutableListOf<String>()
+    (autoupdate["url"] as? JsonPrimitive)?.content?.let { urls.add(it) }
+    (autoupdate["architecture"] as? JsonObject)?.forEach { (_, entry) ->
+        (entry as? JsonObject)?.let { archEntry ->
+            (archEntry["url"] as? JsonPrimitive)?.content?.let { urls.add(it) }
+        }
+    }
+    return urls
+}
+
+/** Scoop autoupdate variables that change with the detected version. */
+private val SCOOP_VERSION_VARIABLES = listOf(
+    "\$version", "\$matchHead", "\$match1", "\$cleanVersion", "\$dashVersion",
+    "\$underscoreVersion", "\$majorVersion", "\$minorVersion", "\$patchVersion",
+)
+
+private fun hasVersionVariable(url: String): Boolean =
+    SCOOP_VERSION_VARIABLES.any { url.contains(it) }
+
+/**
+ * A "rolling" download URL never embeds the version (e.g. `/latest`, `/stable/`,
+ * `/nightly`); for these, autoupdate legitimately has no `$version` placeholder.
+ */
+private fun isRollingUrl(url: String): Boolean {
+    val clean = url.substringBefore('#').lowercase()
+    return clean.contains("/latest") || clean.contains("/stable/") || clean.contains("/nightly")
+}
+
+// ---------------------------------------------------------------------------
 // Raw asset info from release API (before filtering)
 // ---------------------------------------------------------------------------
 

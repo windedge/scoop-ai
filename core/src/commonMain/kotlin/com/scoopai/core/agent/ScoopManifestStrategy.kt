@@ -15,6 +15,7 @@ import com.scoopai.core.agent.nodes.enforceArchitectureWrap
 import com.scoopai.core.agent.nodes.normalizeHomepage
 import com.scoopai.core.agent.nodes.removeInvalidTopLevelFields
 import com.scoopai.core.agent.nodes.normalizeBin
+import com.scoopai.core.agent.nodes.checkAutoupdateVersionPlaceholder
 import com.scoopai.core.tools.api.ArchiveInspector
 import com.scoopai.core.tools.api.GitHubApi
 import com.scoopai.core.tools.api.ManifestIo
@@ -287,6 +288,13 @@ internal suspend fun validateManifest(
         }
     } else {
         logger.info { "[verify] No manifestIo, skipping structural validation" }
+    }
+
+    // Step 1.5: Deterministic autoupdate placeholder backstop
+    // (runs even when structural validation is skipped — it only needs the manifest JSON)
+    checkAutoupdateVersionPlaceholder(manifest)?.let { msg ->
+        errors.add(msg)
+        logger.info { "[verify] Autoupdate placeholder check: hard-coded autoupdate.url found" }
     }
 
     // Step 2: Semantic review (only when validate passes)

@@ -54,6 +54,13 @@ $task
      4. If the spdx_id is a generic umbrella identifier like `"GPL-3.0"`, `"GPL-2.0"`, or `"AGPL-3.0"`, you may optionally use `fetchJson` to fetch the full repo tree (`https://api.github.com/repos/{owner}/{repo}/git/trees/{default_branch}?recursive=1`) — this returns every file path in ONE call. Find the actual license filename from the listing (e.g. `LICENSE`, `LICENSE.txt`, `COPYING`, `COPYRIGHT`), then use `fetchFileContent` to read exactly that file to determine the correct `-only` or `-or-later` suffix. For multi-licensed projects, list all identifiers comma-separated.
    - Use fetchLatestRelease to find the latest version and assets.
    - **⚠️ RELEASE CHANNEL RULE**: Some projects publish releases on multiple channels: `stable`, `edge`, `nightly`, `beta`, `rc`, `pre-release`. **Prefer the latest stable release** for your final `windows_assets` field. If `fetchLatestRelease` returns a non-stable tag (contains `edge-`, `nightly-`, `beta`, `rc`, `alpha`), use `fetchAllReleases` to find the latest **stable** release tag (without those prefixes) and use that version's assets instead. If no stable release exists (returns ONLY edge/nightly/beta/rc releases), use the latest edge/nightly release as a fallback and note it.
+   - **⚠️ VERSION-ASSET ALIGNMENT RULE (CRITICAL)**: The `version` field MUST equal the tag of the release the chosen Windows asset actually belongs to. Scoop substitutes `version` into `autoupdate.url` via `${'$'}version`, so any mismatch silently breaks autoupdate (the URL stays pinned to one concrete version).
+     * **Common trap**: the latest *stable* release exists but ships **NO Windows assets** (Linux/macOS only), while a *preview* / *nightly* / *rolling* release on a different tag carries the Windows binary. In that case you MUST:
+       1. Take the Windows asset from the preview/nightly release, AND
+       2. Set `version` to **that release's tag** verbatim (e.g. `preview-2026-06-15-517ca8163f7c`), NOT the stable semver (e.g. `0.7.0`).
+       3. Write a recommended `checkver.regex` in your `notes` that matches this channel's tag (e.g. `releases/tag/((?:preview|nightly)-[0-9a-zA-Z_-]+)`), because plain `{"github":"..."}` would otherwise match the stable tag.
+       4. Add to `notes`: "Stable releases lack Windows builds; using <channel> build."
+     * **Self-check before finalizing**: confirm the `version` string appears literally inside every chosen Windows asset's `browser_download_url`. If `version` is absent from a URL, the version is misaligned - re-derive it from that asset's actual release tag.
    - **⚠️ EDGE/NIGHTLY FALLBACK**: If `fetchAllReleases` returns ONLY edge/nightly/beta releases and NO stable releases are found, then use the **latest edge/nightly release** as a fallback. This means the project only publishes edge releases as downloadable assets — do NOT waste token budget browsing the project website, git tags, or documentation looking for stable releases that may not exist as downloadable assets. Just note in the `notes` field: "Only edge releases available; using latest."
    - **⚠️ GITHUB LATEST BADGE RULE (web fallback)**: When the API path is unavailable (rate limited) and you fall back to `fetchWebPage` on `github.com/{owner}/{repo}/releases`: a release with the green "Latest" badge is the official stable release; releases with "Pre-release" badge are NOT stable. Even if a pre-release appears first in the list, look down the page for the release carrying the "Latest" badge and use its tag. Only fall back to a pre-release if EVERY release on the page is marked "Pre-release" (no "Latest" badge exists), and note this in the manifest notes.
    - **Only output Windows assets from the latest stable (or fallback edge/nightly) release** in your final `windows_assets` field. Do NOT include assets from older or unrelated releases, even if they have a portable ZIP variant. Older releases are only useful for `checkver`/`autoupdate` pattern inference.
@@ -457,6 +464,10 @@ You are only allowed to ADD missing fields, not MODIFY or RESTRUCTURE existing o
 - ✅ **Recommended**: `"checkver": { "github": "https://github.com/owner/repo" }` — explicitly specifies the repo, works regardless of homepage field
 - ⚠️ `"checkver": "github"` — shorthand form, Scoop-supported but **not recommended** because it infers the GitHub URL from the `homepage` field. If homepage is a non-GitHub URL (e.g. project website), Scoop's checkver will fail.
 - Always prefer the explicit `{"github":"https://..."}` form to avoid homepage dependency issues.
+- **⚠️ Non-semver `version` (channel tags) REQUIRES a `regex`**: When `version` is not a plain semver (e.g. it is a `preview-<date>-<hash>`, `nightly-<date>`, or other rolling tag), plain `{"github":"..."}` checkver would match the wrong (stable) release, and `autoupdate.url` (which uses `${'$'}version`) would point at a release that has no Windows asset. In that case you MUST add a `"regex"` that matches this channel's tag. If the analysis notes recommend a regex (see the VERSION-ASSET ALIGNMENT RULE from research), use it verbatim. Example:
+  ```json
+  "checkver": { "github": "https://github.com/owner/repo", "regex": "releases/tag/((?:preview|nightly)-[0-9a-zA-Z_-]+)" }
+  ```
 
 ### ⚠️ CRITICAL: autoupdate structure and extract_dir
 
@@ -490,7 +501,7 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
 - `suggest` — runtime dependencies (e.g. Java/JRE for Java apps, FFmpeg for media tools, VC++ runtime for C++ apps, Node.js for JS tools). Only include when the dependency is clearly needed for basic functionality.
 
 ### Fields you MUST NOT change:
-- Do NOT change the `checkver` format that the skeleton used.
+- Do NOT change the `checkver` format that the skeleton used - EXCEPT when `version` is a non-semver channel tag (see "Non-semver version REQUIRES a regex" above); in that single case you MUST add a `regex` to `checkver`.
 - Do NOT move `extract_dir` between top-level and architecture blocks.
 - Do NOT add/remove the `architecture` wrapper inside `autoupdate`.
 - Do NOT add `extract_dir` inside `autoupdate` if the skeleton does not have it there.

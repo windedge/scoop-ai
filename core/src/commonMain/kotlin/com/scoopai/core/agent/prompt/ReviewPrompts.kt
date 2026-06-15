@@ -48,6 +48,11 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
 - If `autoupdate` exists but is missing `hash`, flag it as a warning.
 - If `autoupdate` has `hash`, verify the URL pattern looks reasonable.
 
+### 5b. autoupdate.url version placeholder & version alignment
+- Every `autoupdate` download URL MUST contain a `${'$'}version` (or `${'$'}matchHead` / `${'$'}cleanVersion` / `${'$'}match1`) placeholder, OR be a rolling URL (`/latest`, `/stable/`, `/nightly`) that never embeds the version.
+- If `autoupdate.url` is hard-coded to a concrete version/tag (e.g. contains a `preview-<date>-<hash>` or a `1.2.3` literal but no `${'$'}version`), flag as **error** - autoupdate will silently never update.
+- This almost always means `version` does not match the release the Windows asset came from: the manifest's `version` string should appear literally inside each `autoupdate.url`. If `version` is absent from the URL, flag as **error**. Example of an ERROR: `version` is `0.7.0` but `autoupdate.url` contains `preview-2026-06-15-517ca8163f7c` with no `${'$'}version`.
+
 ### 6. extract_dir depth
 - If `extract_dir` contains two or more path separators (backslashes), it is likely too deep.
   The `extract_dir` should typically only strip the top-level version directory (e.g. `project-1.2.3`).
