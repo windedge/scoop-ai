@@ -540,7 +540,7 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
 ## Rules
 
 - For GUI apps with a main executable: add BOTH `bin` AND `shortcuts`. Only omit `bin` if the app has NO usable CLI interface (e.g. a system tray utility).
-- `persist`: Use for apps that store user config, themes, plugins, or data in the app directory. Most CLI tools don't need persist, but some config-intensive ones do (e.g. bat, starship).
+- `persist`: Keep the skeleton's `persist` entries as-is. They were derived from source-code analysis during research. Use for apps that store user config, themes, plugins, or data; some config-intensive CLI tools need it (e.g. bat, starship).
 - `env_set`: only for app-specific env vars (BAT_CONFIG_DIR, etc.). Never set XDG_CONFIG_HOME, HOME, APPDATA.
 - License must be an SPDX identifier, never default to "Proprietary" for a public GitHub repository.
 - NEVER end your turn with only reasoning text. Always follow with `finalize_task_result`.
