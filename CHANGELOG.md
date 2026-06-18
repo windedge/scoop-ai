@@ -9,11 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `scoop-ai doctor` subcommand: 7 health checks (JDK version, OS, Scoop install, API key, cache dir, write permission, version)
+- `scoop-ai config show` subcommand: display runtime configuration (API keys masked)
+- `scoop-ai completion bash|zsh|fish|powershell` subcommand: shell completion scripts
+- `scoop-ai version` subcommand: print version info
+- `--debug` flag: print stack traces on errors (credentials still masked)
+- `--no-progress` flag: disable TTY progress overlay
+- `CompositionRoot.kt`: lazy dependency injection root
+- `EnvArgs.kt`: pure CLI args parser
+- Comprehensive CLI test suite: GenerateCommandTest (42), DoctorCommandTest (13), ConfigShowCommandTest (13), CompletionCommandTest (19), VersionCommandTest (9), VersionOptionIntegrationTest (2)
+
 ### Changed
 
-### Fixed
+- CLI refactored to clikt 4.4.0 with subcommand architecture (`ScoopAi.kt`)
+- `scoop-ai generate <url>` is now the canonical form; `scoop-ai <url>` still works via automatic routing
+- `--version` and `scoop-ai version` subcommand both print version info via clikt
+- Help output is now clikt-style (replaces hand-written `HELP_TEXT` and custom help printers)
+- `Main.kt` reduced to 7 lines (delegates to `CliRunner`)
+- Removed dead `CliRunner.kt` (pre-clikt implementation)
 
 ### Known Limitations
+
+- No persistent configuration file (`~/.scoopai/config.toml` planned for v0.4.0)
+- No keyring integration for API key storage (planned for v0.4.0)
+- No structured JSON output (`--output-format json` planned for v0.3.0)
+- No run artifacts / checkpoint recovery (spike planned for v0.3.0)
+- No self-bootstrapping Scoop manifest (`bucket/scoop-ai.json` planned for v0.3.0)
+- No man page (planned for v0.3.0)
 
 ## [0.1.0] - 2026-06-16
 

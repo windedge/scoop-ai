@@ -39,6 +39,7 @@ dependencies {
     implementation("ai.koog:koog-agents:${libs.versions.koog.get()}")
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.logback.classic)
+    implementation(libs.clikt)
 
     testImplementation(kotlin("test"))
     testImplementation(libs.junit.jupiter)

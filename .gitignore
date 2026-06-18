@@ -9,6 +9,9 @@ out/
 *.kotlin_module
 .kotlin/
 
+# Java / Kotlin compiled output
+*.class
+
 # IDE - IntelliJ
 .idea/
 *.iml

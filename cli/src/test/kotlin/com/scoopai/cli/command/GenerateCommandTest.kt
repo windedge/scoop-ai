@@ -1,0 +1,394 @@
+package com.scoopai.cli.command
+
+import com.github.ajalt.clikt.core.PrintHelpMessage
+import com.github.ajalt.clikt.core.UsageError
+import com.github.ajalt.clikt.testing.test
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
+
+class GenerateCommandTest {
+
+    // ---------------------------------------------------------------
+    // Help
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `--help shows usage with clikt formatting`() {
+        val result = GenerateCommand().test("--help")
+        assertEquals(0, result.statusCode)
+        assertTrue(result.output.contains("Usage:"), "Output should contain 'Usage:'")
+        assertTrue(result.output.contains("generate"), "Output should mention 'generate'")
+        assertTrue(result.output.contains("--output"), "Output should contain --output")
+        assertTrue(result.output.contains("--provider"), "Output should contain --provider")
+    }
+
+    @Test
+    fun `-h shows usage`() {
+        val result = GenerateCommand().test("-h")
+        assertEquals(0, result.statusCode)
+        assertTrue(result.output.contains("Usage:"))
+    }
+
+    // ---------------------------------------------------------------
+    // Missing URL
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `missing url throws usage error`() {
+        val result = GenerateCommand().test("")
+        assertEquals(1, result.statusCode) // clikt's default UsageError exit code
+        assertTrue(result.output.contains("Error:"), "Output should contain 'Error:' for missing url")
+    }
+
+    @Test
+    fun `missing url with flag still fails`() {
+        val result = GenerateCommand().test("--debug")
+        assertEquals(1, result.statusCode)
+    }
+
+    // ---------------------------------------------------------------
+    // Missing flag value
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `flag without value throws usage error`() {
+        val result = GenerateCommand().test("-o", "https://github.com/x/y")
+        assertTrue(result.statusCode != 0, "Flag -o without value must fail")
+    }
+
+    @Test
+    fun `long flag without value throws usage error`() {
+        val result = GenerateCommand().test("--output", "https://github.com/x/y")
+        assertTrue(result.statusCode != 0, "Flag --output without value must fail")
+    }
+
+    @Test
+    fun `persist flag without value throws usage error`() {
+        val result = GenerateCommand().test("-s", "https://github.com/x/y")
+        assertTrue(result.statusCode != 0, "Flag -s without value must fail")
+    }
+
+    // ---------------------------------------------------------------
+    // URL argument
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `url argument is parsed`() {
+        val cmd = GenerateCommand()
+        cmd.test("https://github.com/owner/repo")
+        assertEquals("https://github.com/owner/repo", cmd.url)
+    }
+
+    @Test
+    fun `url argument parsed with options`() {
+        val cmd = GenerateCommand()
+        cmd.test("-o", "out.json", "https://github.com/x/y")
+        assertEquals("https://github.com/x/y", cmd.url)
+    }
+
+    // ---------------------------------------------------------------
+    // String options
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `output option with -o`() {
+        val cmd = GenerateCommand()
+        cmd.test("-o", "result.json", "https://github.com/x/y")
+        assertEquals("result.json", cmd.output)
+    }
+
+    @Test
+    fun `output option with --output`() {
+        val cmd = GenerateCommand()
+        cmd.test("--output", "result.json", "https://github.com/x/y")
+        assertEquals("result.json", cmd.output)
+    }
+
+    @Test
+    fun `provider option with -P`() {
+        val cmd = GenerateCommand()
+        cmd.test("-P", "anthropic", "https://github.com/x/y")
+        assertEquals("anthropic", cmd.provider)
+    }
+
+    @Test
+    fun `provider option with --provider`() {
+        val cmd = GenerateCommand()
+        cmd.test("--provider", "ollama", "https://github.com/x/y")
+        assertEquals("ollama", cmd.provider)
+    }
+
+    @Test
+    fun `api-key option`() {
+        val cmd = GenerateCommand()
+        cmd.test("--api-key", "sk-test123", "https://github.com/x/y")
+        assertEquals("sk-test123", cmd.apiKey)
+    }
+
+    @Test
+    fun `base-url option`() {
+        val cmd = GenerateCommand()
+        cmd.test("--base-url", "http://localhost:8080/v1", "https://github.com/x/y")
+        assertEquals("http://localhost:8080/v1", cmd.baseUrl)
+    }
+
+    @Test
+    fun `model option with -m`() {
+        val cmd = GenerateCommand()
+        cmd.test("-m", "gpt-4", "https://github.com/x/y")
+        assertEquals("gpt-4", cmd.model)
+    }
+
+    @Test
+    fun `model option with --model`() {
+        val cmd = GenerateCommand()
+        cmd.test("--model", "claude-3", "https://github.com/x/y")
+        assertEquals("claude-3", cmd.model)
+    }
+
+    @Test
+    fun `app-name option`() {
+        val cmd = GenerateCommand()
+        cmd.test("--app-name", "my-app", "https://github.com/x/y")
+        assertEquals("my-app", cmd.appName)
+    }
+
+    @Test
+    fun `prompt option with -p`() {
+        val cmd = GenerateCommand()
+        cmd.test("-p", "use portable exe", "https://github.com/x/y")
+        assertEquals("use portable exe", cmd.prompt)
+    }
+
+    @Test
+    fun `prompt option with --prompt`() {
+        val cmd = GenerateCommand()
+        cmd.test("https://github.com/x/y", "--prompt", "minimal bin")
+        assertEquals("minimal bin", cmd.prompt)
+    }
+
+    @Test
+    fun `github-token option`() {
+        val cmd = GenerateCommand()
+        cmd.test("--github-token", "ghp_abc123", "https://github.com/x/y")
+        assertEquals("ghp_abc123", cmd.githubToken)
+    }
+
+    // ---------------------------------------------------------------
+    // Boolean flags
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `verify flag with -V`() {
+        val cmd = GenerateCommand()
+        cmd.test("-V", "https://github.com/x/y")
+        assertTrue(cmd.verify)
+    }
+
+    @Test
+    fun `verify flag with --verify`() {
+        val cmd = GenerateCommand()
+        cmd.test("--verify", "https://github.com/x/y")
+        assertTrue(cmd.verify)
+    }
+
+    @Test
+    fun `verify not set by default`() {
+        val cmd = GenerateCommand()
+        cmd.test("https://github.com/x/y")
+        assertFalse(cmd.verify)
+    }
+
+    @Test
+    fun `debug flag with --debug`() {
+        val cmd = GenerateCommand()
+        cmd.test("--debug", "https://github.com/x/y")
+        assertTrue(cmd.debug)
+    }
+
+    @Test
+    fun `debug not set by default`() {
+        val cmd = GenerateCommand()
+        cmd.test("https://github.com/x/y")
+        assertFalse(cmd.debug)
+    }
+
+    @Test
+    fun `no-progress flag`() {
+        val cmd = GenerateCommand()
+        cmd.test("--no-progress", "https://github.com/x/y")
+        assertTrue(cmd.noProgress)
+    }
+
+    @Test
+    fun `non-interactive flag with -n`() {
+        val cmd = GenerateCommand()
+        cmd.test("-n", "https://github.com/x/y")
+        assertTrue(cmd.nonInteractive)
+    }
+
+    @Test
+    fun `non-interactive flag with --non-interactive`() {
+        val cmd = GenerateCommand()
+        val result = cmd.test("--non-interactive", "https://github.com/x/y")
+        assertTrue(cmd.nonInteractive) { "nonInteractive should be true with --non-interactive" }
+    }
+
+    @Test
+    fun `non-interactive not set by default`() {
+        val cmd = GenerateCommand()
+        cmd.test("https://github.com/x/y")
+        assertFalse(cmd.nonInteractive)
+    }
+
+    @Test
+    fun `no-cache flag`() {
+        val cmd = GenerateCommand()
+        cmd.test("--no-cache", "https://github.com/x/y")
+        assertTrue(cmd.noCache)
+    }
+
+    @Test
+    fun `no-cache not set by default`() {
+        val cmd = GenerateCommand()
+        cmd.test("https://github.com/x/y")
+        assertFalse(cmd.noCache)
+    }
+
+    // ---------------------------------------------------------------
+    // Persist mode (choice)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `persist with -s force`() {
+        val cmd = GenerateCommand()
+        cmd.test("-s", "force", "https://github.com/x/y")
+        assertEquals("force", cmd.persist)
+    }
+
+    @Test
+    fun `persist with -s none`() {
+        val cmd = GenerateCommand()
+        cmd.test("-s", "none", "https://github.com/x/y")
+        assertEquals("none", cmd.persist)
+    }
+
+    @Test
+    fun `persist with -s auto`() {
+        val cmd = GenerateCommand()
+        cmd.test("-s", "auto", "https://github.com/x/y")
+        assertEquals("auto", cmd.persist)
+    }
+
+    @Test
+    fun `persist with -s no`() {
+        val cmd = GenerateCommand()
+        cmd.test("-s", "no", "https://github.com/x/y")
+        assertEquals("no", cmd.persist)
+    }
+
+    @Test
+    fun `persist with --persist`() {
+        val cmd = GenerateCommand()
+        cmd.test("https://github.com/x/y", "--persist", "force")
+        assertEquals("force", cmd.persist)
+    }
+
+    @Test
+    fun `persist default is auto`() {
+        val cmd = GenerateCommand()
+        cmd.test("https://github.com/x/y")
+        assertEquals("auto", cmd.persist)
+    }
+
+    @Test
+    fun `invalid persist value throws`() {
+        val result = GenerateCommand().test("-s", "invalid", "https://github.com/x/y")
+        assertTrue(result.statusCode != 0, "Invalid persist must fail")
+        assertTrue(result.output.lowercase().contains("invalid choice") ||
+                   result.output.lowercase().contains("error"),
+               "Output should contain error about invalid choice")
+    }
+
+    // ---------------------------------------------------------------
+    // Combined flags
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `all 14 flags parsed`() {
+        val cmd = GenerateCommand()
+        cmd.test(
+            "-o", "out.json",
+            "-P", "openai-compatible",
+            "--api-key", "key123",
+            "--base-url", "http://x",
+            "-m", "model-x",
+            "-V",
+            "--app-name", "myapp",
+            "--no-cache",
+            "-p", "use portable",
+            "-n",
+            "--github-token", "ghp_tok",
+            "-s", "force",
+            "--debug",
+            "--no-progress",
+            "https://github.com/x/y"
+        )
+        assertEquals("https://github.com/x/y", cmd.url)
+        assertEquals("out.json", cmd.output)
+        assertEquals("openai-compatible", cmd.provider)
+        assertEquals("key123", cmd.apiKey)
+        assertEquals("http://x", cmd.baseUrl)
+        assertEquals("model-x", cmd.model)
+        assertTrue(cmd.verify)
+        assertEquals("myapp", cmd.appName)
+        assertTrue(cmd.noCache)
+        assertEquals("use portable", cmd.prompt)
+        assertTrue(cmd.nonInteractive)
+        assertEquals("ghp_tok", cmd.githubToken)
+        assertEquals("force", cmd.persist)
+        assertTrue(cmd.debug)
+        assertTrue(cmd.noProgress)
+    }
+
+    // ---------------------------------------------------------------
+    // Default values
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `default values are empty or false`() {
+        val cmd = GenerateCommand()
+        cmd.test("https://github.com/x/y")
+        assertEquals("", cmd.output)
+        assertEquals("", cmd.provider)
+        assertEquals("", cmd.apiKey)
+        assertNull(cmd.baseUrl)
+        assertNull(cmd.model)
+        assertFalse(cmd.verify)
+        assertNull(cmd.appName)
+        assertFalse(cmd.noCache)
+        assertNull(cmd.prompt)
+        assertFalse(cmd.nonInteractive)
+        assertNull(cmd.githubToken)
+        assertEquals("auto", cmd.persist)
+        assertFalse(cmd.debug)
+        assertFalse(cmd.noProgress)
+    }
+
+    // ---------------------------------------------------------------
+    // URL can appear after flags
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `url after all flags`() {
+        val cmd = GenerateCommand()
+        cmd.test("--debug", "-V", "--no-cache", "https://github.com/x/y")
+        assertEquals("https://github.com/x/y", cmd.url)
+        assertTrue(cmd.debug)
+        assertTrue(cmd.verify)
+        assertTrue(cmd.noCache)
+    }
+}
