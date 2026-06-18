@@ -1,5 +1,12 @@
 package com.scoopai.cli
 
+import com.scoopai.cli.error.ConfigError
+import com.scoopai.cli.error.ExitCode
+import com.scoopai.cli.error.GeneralError
+import com.scoopai.cli.error.NoAssetsError
+import com.scoopai.cli.error.UsageError
+import com.scoopai.cli.error.classifyException
+import com.scoopai.cli.error.mask
 import com.scoopai.core.ManifestResult
 import com.scoopai.core.ScoopManifestGenerator
 import com.scoopai.tools.cache.ScoopCacheManager
@@ -10,11 +17,14 @@ import com.scoopai.tools.github.JdkHttpGitHubApi
 import com.scoopai.tools.manifest.FileManifestIo
 import com.scoopai.tools.verify.ProcessScoopVerifier
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlin.system.exitProcess
 import kotlinx.coroutines.runBlocking
 
 private val logger = KotlinLogging.logger {}
 
 private fun env(key: String): String? = System.getenv(key)
+
+private var debug = false
 
 /** Extract app name from a GitHub URL (e.g. "https://github.com/owner/repo" → "repo"). */
 private fun inferAppName(url: String): String {
@@ -26,6 +36,32 @@ private fun inferAppName(url: String): String {
 }
 
 fun main(args: Array<String>) {
+    // --version has highest priority: print and exit before any parsing or errors
+    if (args.any { it == "--version" }) {
+        println(Version.fullVersion())
+        DefaultToolRegistryFactory.cleanup()
+        exitProcess(ExitCode.SUCCESS.code)
+    }
+
+    var exitCode = ExitCode.SUCCESS.code
+    try {
+        run(args)
+    } catch (e: com.scoopai.cli.error.CliError) {
+        System.err.println(mask("ERROR: ${e::class.simpleName}: ${e.message}"))
+        if (debug) System.err.println(mask(e.stackTraceToString()))
+        exitCode = e.exit.code
+    } catch (e: Exception) {
+        val cliError = classifyException(e)
+        System.err.println(mask("ERROR: ${cliError::class.simpleName}: ${cliError.message}"))
+        if (debug) System.err.println(mask(e.stackTraceToString()))
+        exitCode = cliError.exit.code
+    } finally {
+        DefaultToolRegistryFactory.cleanup()
+    }
+    exitProcess(exitCode)
+}
+
+private fun run(args: Array<String>) {
     // ── Parse CLI arguments ────────────────────────────────────────
     var url = ""
     var output = ""
@@ -40,6 +76,7 @@ fun main(args: Array<String>) {
     var nonInteractive = false
     var persistMode = "auto"
     var githubToken: String? = null
+    debug = false
 
     val i = args.iterator()
     while (i.hasNext()) {
@@ -55,14 +92,12 @@ fun main(args: Array<String>) {
             "-p", "--prompt" -> userPrompt = i.next()
             "-n", "--non-interactive" -> nonInteractive = true
             "--github-token" -> githubToken = i.next()
+            "--debug" -> debug = true
             "-s", "--persist" -> {
                 val mode = i.next().lowercase()
                 persistMode = when (mode) {
                     "auto", "force", "none", "no" -> if (mode == "no") "none" else mode
-                    else -> {
-                        System.err.println("Error: --persist must be auto, force, none, or no (got: $mode)")
-                        return
-                    }
+                    else -> throw UsageError("--persist must be auto, force, none, or no (got: $mode)")
                 }
             }
             "-h", "--help" -> {
@@ -73,12 +108,13 @@ fun main(args: Array<String>) {
         }
     }
 
+    // Also check env var for debug
+    if (!debug && env("SCOOP_AI_DEBUG")?.lowercase() == "true") {
+        debug = true
+    }
+
     if (url.isBlank()) {
-        System.err.println("Missing required argument: <url>")
-        System.err.println()
-        System.err.println("Usage: scoop-ai <url> [options]")
-        System.err.println("Run 'scoop-ai --help' for more information.")
-        return
+        throw UsageError("Missing required argument: <url>")
     }
 
     // ── Resolve provider config ────────────────────────────────────
@@ -90,13 +126,11 @@ fun main(args: Array<String>) {
             cliModel = modelName,
         )
     } catch (e: Exception) {
-        System.err.println("Error: ${e.message ?: e.javaClass.simpleName}")
-        return
+        throw ConfigError(e.message ?: e.javaClass.simpleName, e)
     }
 
     if (config.provider == "openai-compatible" && config.baseUrl == null) {
-        System.err.println("Error: --base-url or SCOOP_AI_BASE_URL is required when using openai-compatible provider.")
-        return
+        throw ConfigError("--base-url or SCOOP_AI_BASE_URL is required when using openai-compatible provider.")
     }
 
     // ── Inject persist mode into userPrompt ──────────────────────
@@ -131,6 +165,12 @@ fun main(args: Array<String>) {
     // ── Resolve app name ───────────────────────────────────────────
     val resolvedAppName = appName ?: inferAppName(url)
 
+    // ── Progress overlay (stderr, TTY-only, independent of PhaseProgressLogger) ──
+    // TODO(T-3.04): also check --no-progress flag and --output-format json
+    val progress = ConsoleProgress(
+        enabled = System.console() != null,
+    )
+
     // ── Assemble object graph & run ────────────────────────────────
     val manifestIo = FileManifestIo(defaultAppName = resolvedAppName.ifBlank { null }, persistMode = persistMode)
     val resolvedOutput = output.ifBlank { env("SCOOP_AI_OUTPUT") ?: "" }
@@ -153,8 +193,9 @@ fun main(args: Array<String>) {
         scoopVerifier = scoopVerifier,
     )
 
-    try {
-        val result: ManifestResult = runBlocking {
+    progress.start()
+    val result: ManifestResult = try {
+        runBlocking {
             val generator = ScoopManifestGenerator(
                 promptExecutor = config.createExecutor(),
                 model = config.model,
@@ -162,7 +203,8 @@ fun main(args: Array<String>) {
                 maxIterations = 500,
                 manifestIo = manifestIo,
                 gitHubApi = ghApi,
-                archiveInspector = archiveInsp
+                archiveInspector = archiveInsp,
+                onPhase = { name -> progress.phase(name) },
             )
 
             // Reset tool call budget for a fresh run
@@ -170,63 +212,58 @@ fun main(args: Array<String>) {
             val outputPath = resolvedOutput.ifBlank { null }
             generator.generate(url, outputPath, userPrompt = effectiveUserPrompt)
         }
-
-        val manifest = result.manifest
-        if (result.noAssets) {
-            System.err.println("No Windows assets found for the given project.")
-            return
-        }
-        if (manifest.isBlank()) {
-            System.err.println("Error: no manifest generated")
-            return
-        }
-        
-        // Print suggested app name when available
-        if (result.suggestedAppName != null) {
-            println("Suggested app name: ${result.suggestedAppName}")
-        }
-        
-        // Write manifest to file
-        val appNameForOutput = result.suggestedAppName?.ifBlank { null } ?: resolvedAppName
-        val writePath = output.ifBlank { "bucket/$appNameForOutput.json" }
-        manifestIo.write(manifest, writePath)
-        println("Written to $writePath")
-        val absoluteWritePath = java.io.File(writePath).absoluteFile.canonicalPath
-        println("Absolute path: $absoluteWritePath")
-        
-        // ── Print token usage ────────────────────────────────────────
-        result.tokenUsage?.let { usage ->
-            println("Token usage: input=${usage.totalInputTokens} output=${usage.totalOutputTokens} total=${usage.totalTokens}")
-        }
-        if (result.durationMs > 0) {
-            val seconds = result.durationMs / 1000
-            val minutes = seconds / 60
-            val sec = seconds % 60
-            println("Duration: ${minutes}m ${sec}s (${result.durationMs}ms)")
-        }
-        
-        // ── Finalize cache entries ─────────────────────────────────
-        if (keepCache) {
-            val parsed = parseManifestMeta(manifest)
-            logger.info { "[cache] Finalizing: app=$appNameForOutput version=${parsed.version} url=${parsed.url}" }
-            if (parsed.version != null && parsed.url != null) {
-                val finalized = cache.finalizeCacheEntry(parsed.url, appNameForOutput, parsed.version)
-                if (finalized != null) {
-                    println("Cache: ${finalized.toAbsolutePath()}")
-                    println("scoop install $appNameForOutput will reuse this file.")
-                } else {
-                    logger.warn { "[cache] No cached file found for ${parsed.url}" }
-                }
-            } else {
-                logger.warn { "[cache] Could not parse manifest: version=${parsed.version} url=${parsed.url}" }
-            }
-        }
-    } catch (e: Exception) {
-        System.err.println("Error: ${e.message ?: e.javaClass.simpleName}")
     } finally {
-        DefaultToolRegistryFactory.cleanup()
+        progress.done()
     }
 
+    val manifest = result.manifest
+    if (result.noAssets) {
+        throw NoAssetsError("No Windows assets found for the given project.")
+    }
+    if (manifest.isBlank()) {
+        throw GeneralError("no manifest generated")
+    }
+
+    // Print suggested app name when available
+    if (result.suggestedAppName != null) {
+        println("Suggested app name: ${result.suggestedAppName}")
+    }
+
+    // Write manifest to file
+    val appNameForOutput = result.suggestedAppName?.ifBlank { null } ?: resolvedAppName
+    val writePath = output.ifBlank { "bucket/$appNameForOutput.json" }
+    manifestIo.write(manifest, writePath)
+    println("Written to $writePath")
+    val absoluteWritePath = java.io.File(writePath).absoluteFile.canonicalPath
+    println("Absolute path: $absoluteWritePath")
+
+    // ── Print token usage ────────────────────────────────────────
+    result.tokenUsage?.let { usage ->
+        println("Token usage: input=${usage.totalInputTokens} output=${usage.totalOutputTokens} total=${usage.totalTokens}")
+    }
+    if (result.durationMs > 0) {
+        val seconds = result.durationMs / 1000
+        val minutes = seconds / 60
+        val sec = seconds % 60
+        println("Duration: ${minutes}m ${sec}s (${result.durationMs}ms)")
+    }
+
+    // ── Finalize cache entries ─────────────────────────────────
+    if (keepCache) {
+        val parsed = parseManifestMeta(manifest)
+        logger.info { "[cache] Finalizing: app=$appNameForOutput version=${parsed.version} url=${parsed.url}" }
+        if (parsed.version != null && parsed.url != null) {
+            val finalized = cache.finalizeCacheEntry(parsed.url, appNameForOutput, parsed.version)
+            if (finalized != null) {
+                println("Cache: ${finalized.toAbsolutePath()}")
+                println("scoop install $appNameForOutput will reuse this file.")
+            } else {
+                logger.warn { "[cache] No cached file found for ${parsed.url}" }
+            }
+        } else {
+            logger.warn { "[cache] Could not parse manifest: version=${parsed.version} url=${parsed.url}" }
+        }
+    }
 }
 
 private fun createScoopVerifier(doVerify: Boolean): ProcessScoopVerifier? {
@@ -269,7 +306,9 @@ private val HELP_TEXT = """
           --app-name <name>        App name for cache (default: inferred from URL)
       -n, --non-interactive        Skip __ask_user__ prompts and use defaults (for batch/CI mode)
           --no-cache               Do not keep downloaded files in Scoop cache
+          --debug                  Print debug information including stack traces
       -V, --verify                 Verify manifest by running scoop install
+          --version                Show version information and exit
       -h, --help                   Show this help message
 
     Environment Variables:
@@ -279,6 +318,7 @@ private val HELP_TEXT = """
       SCOOP_AI_MODEL               LLM model name
       SCOOP_AI_OUTPUT              Default output file path
       SCOOP_AI_GITHUB_TOKEN        GitHub personal access token (fallback for --github-token)
+      SCOOP_AI_DEBUG               Enable debug output (equivalent to --debug)
 
     Cache:
       Downloaded files are stored in the Scoop cache directory (~/scoop/cache/)

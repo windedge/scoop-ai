@@ -53,6 +53,8 @@ class ScoopManifestGenerator(
     private val gitHubApi: GitHubApi? = null,
     /** Archive inspector for prefetching persist/search data before the LLM phase. */
     private val archiveInspector: ArchiveInspector? = null,
+    /** Callback invoked when a phase starts. Used by cli ConsoleProgress overlay. */
+    private val onPhase: ((String) -> Unit)? = null,
 ) {
     /**
      * Model with [LLMCapability.ToolChoice] stripped so that Koog uses its
@@ -123,6 +125,7 @@ class ScoopManifestGenerator(
             reviewExecutor = reviewExecutor,
             gitHubApi = gitHubApi,
             archiveInspector = archiveInspector,
+            onPhase = onPhase,
         )
 
         val agentConfig = AIAgentConfig(

@@ -27,6 +27,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 private val logger = KotlinLogging.logger {}
 
@@ -78,6 +80,8 @@ fun scoopManifestStrategy(
     reviewExecutor: (suspend (String) -> String)? = null,
     gitHubApi: GitHubApi? = null,
     archiveInspector: ArchiveInspector? = null,
+    /** Callback invoked when a phase starts (name: "research", "analyze", "generate", "refine"). */
+    onPhase: ((String) -> Unit)? = null,
 ) = strategy<String, ManifestResult>("scoop_manifest_v3") {
 
     // ── Storage keys & captured state ─────────────────────────────
@@ -87,6 +91,12 @@ fun scoopManifestStrategy(
     var analyzeData: AnalyzeOutput? = null
     var suggestedAppName: String? = null
     var finalManifest: String? = null
+
+    // ── Phase timing (for progress logging) ────────────────────
+    var researchStart: TimeMark? = null
+    var analyzeStart: TimeMark? = null
+    var generateStart: TimeMark? = null
+    var refineStart: TimeMark? = null
 
     // ── Prefetch node (deterministic: pre-collect project data before LLM phases) ──
     val prefetch by node<String, PrefetchResult>("prefetch") { url ->
@@ -98,7 +108,16 @@ fun scoopManifestStrategy(
         tools = researchTools,
         llmParams = llmParams,
     ) { prefetchResult ->
+        onPhase?.invoke("research")
+        logger.info { PhaseProgressLogger.starting("research") }
+        researchStart = TimeSource.Monotonic.markNow()
         researchPromptBuilder?.invoke(prefetchResult) ?: prefetchResult.originalUrl
+    }
+
+    // ── Research completion logging ──
+    val researchDone by node<ResearchOutput, ResearchOutput>("researchDone") { output ->
+        logger.info { PhaseProgressLogger.completed("research", researchStart?.elapsedNow()?.inWholeMilliseconds ?: 0L) }
+        output
     }
 
     // ── Finish when no Windows assets exist ──
@@ -111,6 +130,9 @@ fun scoopManifestStrategy(
         tools = analyzeTools,
         llmParams = llmParams,
     ) { input ->
+        onPhase?.invoke("analyze")
+        logger.info { PhaseProgressLogger.starting("analyze") }
+        analyzeStart = TimeSource.Monotonic.markNow()
         researchData = input
         suggestedAppName = input.suggested_app_name
         analyzePromptBuilder?.invoke(input) ?: input.toString()
@@ -127,6 +149,9 @@ fun scoopManifestStrategy(
         tools = emptyList<ToolBase<*, *>>(),
         llmParams = llmParams,
     ) { skeleton ->
+        onPhase?.invoke("generate")
+        logger.info { PhaseProgressLogger.starting("generate") }
+        generateStart = TimeSource.Monotonic.markNow()
         storage.set(retryCountKey, 0)
         generatePromptBuilder?.invoke(skeleton, analyzeData!!, researchData) ?: skeleton
     }
@@ -136,7 +161,11 @@ fun scoopManifestStrategy(
         tools = emptyList<ToolBase<*, *>>(),
         llmParams = llmParams,
     ) { input ->
+        onPhase?.invoke("refine")
+        logger.info { PhaseProgressLogger.starting("refine") }
+        refineStart = TimeSource.Monotonic.markNow()
         refinePromptBuilder?.invoke(input) ?: ""
+
     }
 
     // ── Normalize node (deterministic: post-process + normalize) ──
@@ -157,22 +186,31 @@ fun scoopManifestStrategy(
     edge(nodeStart forwardTo prefetch)
     edge(prefetch forwardTo research)
 
+    // Research → researchDone (completion logging)
+    edge(research forwardTo researchDone)
+
     // Conditional: no Windows assets → early finish
-    edge(research forwardTo finishNoAssets onCondition { output ->
+    edge(researchDone forwardTo finishNoAssets onCondition { output ->
         output.status == ResearchStatus.NO_WINDOWS_ASSETS
     })
 
     // Conditional: has Windows assets → analyze
-    edge(research forwardTo analyze onCondition { output ->
+    edge(researchDone forwardTo analyze onCondition { output ->
         output.status == ResearchStatus.OK
     })
 
     edge(finishNoAssets forwardTo nodeFinish)
 
     // Main path: analyze → prepareManifest → generate → verify
-    edge(analyze forwardTo prepareManifest)
+    edge(analyze forwardTo prepareManifest transformed { output ->
+        logger.info { PhaseProgressLogger.completed("analyze", analyzeStart?.elapsedNow()?.inWholeMilliseconds ?: 0L) }
+        output
+    })
     edge(prepareManifest forwardTo generate)
-    edge(generate forwardTo normalize)
+    edge(generate forwardTo normalize transformed { output ->
+        logger.info { PhaseProgressLogger.completed("generate", generateStart?.elapsedNow()?.inWholeMilliseconds ?: 0L) }
+        output
+    })
     edge(normalize forwardTo verify)
 
     // Verify → pass → finish
@@ -192,8 +230,11 @@ fun scoopManifestStrategy(
         ctx!!
     })
 
-    // Refine → back to verify
-    edge(refine forwardTo normalize)
+    // Refine → back to verify (via normalize)
+    edge(refine forwardTo normalize transformed { output ->
+        logger.info { PhaseProgressLogger.completed("refine", refineStart?.elapsedNow()?.inWholeMilliseconds ?: 0L) }
+        output
+    })
 
     // Verify → fail + retry > 3 → exhausted finish
     edge(verify forwardTo nodeFinish onCondition { ctx ->

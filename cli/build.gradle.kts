@@ -1,3 +1,5 @@
+import java.io.ByteArrayOutputStream
+
 plugins {
     kotlin("jvm")
     application
@@ -5,7 +7,7 @@ plugins {
 }
 
 group = "com.scoopai"
-version = "0.1.0"
+version = rootProject.version
 
 application {
     mainClass.set("com.scoopai.cli.MainKt")
@@ -37,6 +39,38 @@ dependencies {
     implementation("ai.koog:koog-agents:${libs.versions.koog.get()}")
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.logback.classic)
+
+    testImplementation(kotlin("test"))
+    testImplementation(libs.junit.jupiter)
+}
+
+val generateVersionProperties by tasks.registering {
+    val outputDir = layout.buildDirectory.dir("generated-resources/scoopai-version")
+    outputs.dir(outputDir)
+    doLast {
+        outputDir.get().asFile.mkdirs()
+        val version = project.version.toString()
+        val commit = try {
+            val out = ByteArrayOutputStream()
+            project.exec {
+                commandLine("git", "rev-parse", "--short", "HEAD")
+                standardOutput = out
+            }
+            out.toString(Charsets.UTF_8.name()).trim()
+        } catch (_: Exception) {
+            "unknown"
+        }
+        File(outputDir.get().asFile, "scoopai-version.properties")
+            .writeText("version=$version\ncommit=$commit\n")
+    }
+}
+
+tasks.processResources {
+    from(generateVersionProperties)
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 kotlin {
