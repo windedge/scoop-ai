@@ -1,7 +1,5 @@
 package com.scoopai.cli
 
-import com.github.ajalt.clikt.core.PrintHelpMessage
-import com.github.ajalt.clikt.core.ProgramResult
 import com.github.ajalt.clikt.core.UsageError as CliktUsageError
 import com.scoopai.cli.error.CliError
 import com.scoopai.cli.error.ExitCode
@@ -56,14 +54,13 @@ object CliRunner {
         return try {
             cmd.parse(args.toList())
             ExitCode.SUCCESS.code
-        } catch (e: ProgramResult) {
-            e.statusCode
-        } catch (e: PrintHelpMessage) {
-            ExitCode.SUCCESS.code
-        } catch (e: CliktUsageError) {
-            ExitCode.USAGE.code
         } catch (e: com.github.ajalt.clikt.core.CliktError) {
-            e.statusCode
+            // Output the help/error/version message, matching clikt's own main() behavior
+            cmd.echoFormattedHelp(e)
+            when (e) {
+                is CliktUsageError -> ExitCode.USAGE.code
+                else -> e.statusCode
+            }
         } catch (e: CliError) {
             System.err.println("ERROR: ${e::class.simpleName}: ${e.message}")
             e.exit.code

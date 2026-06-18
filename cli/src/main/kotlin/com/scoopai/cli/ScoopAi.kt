@@ -28,7 +28,7 @@ class ScoopAi : CliktCommand(
     invokeWithoutSubcommand = true,
 ) {
     init {
-        versionOption(Version.fullVersion())
+        versionOption(Version.fullVersion(), message = { it })
         subcommands(
             GenerateCommand(),
             DoctorCommand(),
