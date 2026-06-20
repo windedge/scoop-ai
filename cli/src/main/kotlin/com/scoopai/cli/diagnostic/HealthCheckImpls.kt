@@ -81,15 +81,73 @@ class ScoopInstalledCheck(
 
 data class ScoopResult(val success: Boolean, val output: String, val errorMessage: String = "")
 
+/**
+ * True when running on a Windows-family OS (case-insensitive prefix match on os.name).
+ */
+internal fun isWindowsOs(osName: String = System.getProperty("os.name")): Boolean =
+    osName.lowercase().startsWith("win")
+
+/**
+ * Locates the Scoop `.cmd` shim at `<userHome>/scoop/shims/scoop.cmd`.
+ * Returns null when the shim does not exist.
+ */
+internal fun detectScoopShim(userHome: String = System.getProperty("user.home")): File? {
+    val shim = File(userHome, "scoop/shims/scoop.cmd")
+    return shim.takeIf { it.exists() }
+}
+
+/**
+ * Builds the command used to run `scoop --version`.
+ *
+ * On Windows, Scoop is a `.cmd` shim (`~/scoop/shims/scoop.cmd`). Java's
+ * [ProcessBuilder] does not reliably resolve `.cmd` via PATHEXT across JDK
+ * versions (it raises "CreateProcess error=2"), so we wrap the call in
+ * `cmd /c`. On Unix we invoke scoop directly.
+ */
+internal fun buildScoopCommand(isWindows: Boolean = isWindowsOs()): List<String> =
+    if (isWindows) listOf("cmd", "/c", "scoop", "--version")
+    else listOf("scoop", "--version")
+
+/**
+ * Extracts a SemVer-style version number from scoop --version output.
+ * Falls back to "installed" when no version number can be found.
+ */
+internal fun extractScoopVersion(output: String): String {
+    val versionRegex = Regex("""v?\d+\.\d+\.\d+""")
+    val version = output.lines().firstNotNullOfOrNull { line ->
+        versionRegex.find(line)?.value
+    }
+    return version ?: "installed"
+}
+
+/**
+ * Runs `scoop --version` and detects the installed version.
+ *
+ * Uses [buildScoopCommand] so the `.cmd` shim is resolved on Windows. If the
+ * command itself cannot succeed (e.g. scoop not on PATH or `cmd` unavailable)
+ * but the shim file exists, Scoop is still considered installed: we report
+ * success with the detected shim path rather than a false WARN.
+ */
 internal fun runScoopVersion(): ScoopResult {
+    val result = tryRunScoop(buildScoopCommand())
+    if (result.success) return result
+    val shim = detectScoopShim()
+    return if (shim != null) {
+        ScoopResult(true, "installed (shim: ${shim.path})")
+    } else {
+        result
+    }
+}
+
+private fun tryRunScoop(command: List<String>): ScoopResult {
     return try {
-        val process = ProcessBuilder("scoop", "--version")
+        val process = ProcessBuilder(command)
             .redirectErrorStream(true)
             .start()
         val output = process.inputStream.bufferedReader().readText().trim()
         val exitCode = process.waitFor()
         if (exitCode == 0) {
-            ScoopResult(true, output.lines().firstOrNull() ?: output)
+            ScoopResult(true, extractScoopVersion(output))
         } else {
             ScoopResult(false, output, "exit code $exitCode")
         }

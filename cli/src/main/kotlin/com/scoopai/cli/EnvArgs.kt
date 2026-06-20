@@ -1,9 +1,7 @@
 package com.scoopai.cli
 
-import com.scoopai.cli.error.UsageError
-
 /**
- * Parsed and resolved CLI arguments.
+ * Resolved CLI arguments.
  *
  * This is a pure data class: it only carries values, no env var resolution.
  * All fields have sensible defaults so tests can construct partial instances.
@@ -23,6 +21,7 @@ import com.scoopai.cli.error.UsageError
  * @property githubToken GitHub personal access token.
  * @property debug Enable debug output (stack traces).
  * @property noProgress Disable progress overlay.
+ * @property outputFormat Output format: "text" (default) or "json".
  */
 data class EnvArgs(
     val url: String,
@@ -40,93 +39,6 @@ data class EnvArgs(
     val githubToken: String? = null,
     val debug: Boolean = false,
     val noProgress: Boolean = false,
-) {
-    companion object {
-        /**
-         * Parse CLI arguments into an [EnvArgs] instance.
-         *
-         * This is a pure function: it does not read environment variables or
-         * perform any I/O. All flag values are captured as-is from [args].
-         *
-         * @throws UsageError if required arguments are missing or values are invalid.
-         */
-        fun parse(args: Array<String>): EnvArgs {
-            var url = ""
-            var output = ""
-            var provider = ""
-            var apiKey = ""
-            var baseUrl: String? = null
-            var modelName: String? = null
-            var verify = false
-            var appName: String? = null
-            var keepCache = true
-            var userPrompt: String? = null
-            var nonInteractive = false
-            var persistMode = "auto"
-            var githubToken: String? = null
-            var debug = false
-            var noProgress = false
-
-            val i = args.iterator()
-            while (i.hasNext()) {
-                when (val arg = i.next()) {
-                    "-o", "--output" -> output = i.next()
-                    "-P", "--provider" -> provider = i.next()
-                    "--api-key" -> apiKey = i.next()
-                    "--base-url" -> baseUrl = i.next()
-                    "-m", "--model" -> modelName = i.next()
-                    "-V", "--verify" -> verify = true
-                    "--app-name" -> appName = i.next()
-                    "--no-cache" -> keepCache = false
-                    "-p", "--prompt" -> userPrompt = i.next()
-                    "-n", "--non-interactive" -> nonInteractive = true
-                    "--github-token" -> githubToken = i.next()
-                    "--debug" -> debug = true
-                    "--no-progress" -> noProgress = true
-                    "-s", "--persist" -> {
-                        val mode = i.next().lowercase()
-                        persistMode = when (mode) {
-                            "auto", "force", "none", "no" -> if (mode == "no") "none" else mode
-                            else -> throw UsageError(
-                                "--persist must be auto, force, none, or no (got: $mode)"
-                            )
-                        }
-                    }
-                    "-h", "--help" -> {
-                        // --help is handled by the caller before parse();
-                        // if we reach here just skip it
-                    }
-                    else -> {
-                        if (url.isBlank()) {
-                            url = arg
-                        } else {
-                            throw UsageError("Unexpected argument: $arg")
-                        }
-                    }
-                }
-            }
-
-            if (url.isBlank()) {
-                throw UsageError("Missing required argument: <url>")
-            }
-
-            return EnvArgs(
-                url = url,
-                output = output,
-                provider = provider,
-                apiKey = apiKey,
-                baseUrl = baseUrl,
-                modelName = modelName,
-                verify = verify,
-                appName = appName,
-                keepCache = keepCache,
-                userPrompt = userPrompt,
-                nonInteractive = nonInteractive,
-                persistMode = persistMode,
-                githubToken = githubToken,
-                debug = debug,
-                noProgress = noProgress,
-            )
-        }
-    }
-}
+    /** Output format: "text" or "json". */
+    val outputFormat: String = "text",
+)

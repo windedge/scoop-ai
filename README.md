@@ -2,6 +2,32 @@
 
 AI-powered Scoop manifest generator for Windows packages. Given a GitHub repository URL (or project page), it automatically researches the project, analyzes Windows assets, and generates a standards-compliant [Scoop](https://scoop.sh/) bucket manifest.
 
+## Installation
+
+> **NOTE**: `bucket/scoop-ai.json` is currently a template. The `url`, `hash`,
+> and `version` fields are placeholders. Do **not** run `scoop install
+> bucket/scoop-ai.json` until the first GitHub Release is cut (tracked in
+> T-3.11). Until then, use `java -jar` directly as described in Run.
+
+```bash
+# Install from local bucket manifest (requires JDK 17+)
+scoop install bucket/scoop-ai.json
+
+# Or via direct URL once published
+scoop install https://github.com/placeholder/scoop-ai/releases/download/v0.1.0/cli-0.1.0-all.jar
+```
+
+The manifest bundles scoop-ai as a fat JAR with all dependencies. Scoop creates
+a `scoop-ai.bat` shim that invokes `java -jar scoop-ai.jar`.
+
+**Prerequisites**:
+- [Scoop](https://scoop.sh/) package manager
+- JDK 17+ (`scoop install temurin17-jdk`)
+
+> **Note**: The Scoop manifest is self-bootstrapping: `bucket/scoop-ai.json` is
+> the first manifest generated for scoop-ai itself. Once published to GitHub
+> Releases, the `checkver` / `autoupdate` fields will keep it up to date.
+
 ## Architecture
 
 scoop-ai uses a **three-phase LLM agent workflow** built on [Koog](https://github.com/JetBrains/koog):
@@ -144,6 +170,9 @@ Example output:
 
 Exit code: 0 (all passed or warnings only), 1 (one or more failures).
 
+If you encounter issues, see [docs/troubleshooting.md](docs/troubleshooting.md)
+for a comprehensive FAQ covering common error scenarios.
+
 ### `config show` Command
 
 `scoop-ai config show`
@@ -211,6 +240,14 @@ scoop-ai 0.1.0 (commit a1b2c3d)
 
 ## Environment Variables
 
+> **WARNING**: API keys appear in your shell history and `ps aux` output.
+> Prefer environment variables (via `direnv` or OS keyring) over `--api-key`.
+> Run `scoop-ai doctor` to verify your setup without leaking keys.
+> Keyring integration is planned for v0.4.0 (see roadmap).
+
+See [docs/providers.md](docs/providers.md) for provider-specific configuration details
+and [docs/troubleshooting.md](docs/troubleshooting.md) for common setup issues.
+
 ### Sensitive Variables (masked in all output)
 
 These variables contain credentials and are never printed in clear text.
@@ -236,7 +273,7 @@ They appear as `set` or `unset` in diagnostic output.
 | `SCOOP_AI_OUTPUT`      | Default output file path                 | --         |
 | `SCOOP_AI_VERIFY`      | Set to `true` to enable install verification | --     |
 | `SCOOP_AI_DEBUG`       | Set to `true` to enable debug output     | --         |
-| `SCOOP_AI_GITHUB_TOKEN`| GitHub personal access token (fallback)  | --         |
+| `SCOOP_AI_GITHUB_TOKEN`| GitHub personal access token (fallback) **(sensitive)** | --         |
 
 CLI arguments take precedence over environment variables. Provider-specific API key
 env vars (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, etc.) are checked as fallbacks when
@@ -287,6 +324,10 @@ Use `--no-cache` to discard downloaded files after generation.
 | `ollama`           | Llama 3.2          | Local, no API key needed             |
 | `openrouter`       | GPT-4o             |                                       |
 | `openai-compatible`| (user-specified)   | Requires `--base-url`                |
+
+See [docs/providers.md](docs/providers.md) for detailed configuration instructions
+for each provider, including environment variables, default models, and known
+pitfalls.
 
 ## License
 

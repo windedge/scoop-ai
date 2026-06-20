@@ -11,6 +11,8 @@ clikt = "4.4.0"
 
 [libraries]
 koog-agents = { module = "ai.koog:koog-agents", version.ref = "koog" }
+# deepseek-client uses a separate preview version because it was added to Koog later
+# than the other clients and hasn't been promoted to 1.0.0 stable yet.
 koog-deepseek-client = { module = "ai.koog:prompt-executor-deepseek-client", version = "1.0.0-beta-preview7" }
 koog-openrouter-client = { module = "ai.koog:prompt-executor-openrouter-client", version.ref = "koog" }
 koog-anthropic-client = { module = "ai.koog:prompt-executor-anthropic-client", version.ref = "koog" }

@@ -10,6 +10,7 @@ import com.github.ajalt.clikt.parameters.types.choice
 import com.scoopai.cli.CompositionRoot
 import com.scoopai.cli.ConsoleProgress
 import com.scoopai.cli.EnvArgs
+import com.scoopai.cli.JsonFormatter
 import com.scoopai.cli.error.CliError
 import com.scoopai.cli.error.ExitCode
 import com.scoopai.cli.error.GeneralError
@@ -17,16 +18,18 @@ import com.scoopai.cli.error.NoAssetsError
 import com.scoopai.cli.error.classifyException
 import com.scoopai.cli.error.mask
 import com.scoopai.core.ManifestResult
+import com.scoopai.core.manifest.parseManifestMeta
 import com.scoopai.tools.DefaultToolRegistryFactory
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 
 private val logger = KotlinLogging.logger {}
 
 /**
  * Clikt command that generates a Scoop manifest from a GitHub URL or project URL.
  *
- * All 14 CLI flags are declared using clikt [option]/[flag]/[choice].
+ * All CLI flags are declared using clikt [option]/[flag]/[choice].
  * The [run] method performs the actual generation logic.
  */
 open class GenerateCommand(
@@ -37,6 +40,8 @@ open class GenerateCommand(
     help = help,
     invokeWithoutSubcommand = true,
 ) {
+
+    private val ARTIFACTS_BASE_DIR = System.getProperty("user.dir", ".")
     // ── Positional argument ───────────────────────────────────────────
     val url: String? by argument("url")
 
@@ -52,10 +57,65 @@ open class GenerateCommand(
 
     // ── Boolean flags ─────────────────────────────────────────────────
     val verify: Boolean by option("--verify", "-V").flag()
-    val noCache: Boolean by option("--no-cache").flag()
     val nonInteractive: Boolean by option("-n", "--non-interactive").flag()
     val debug: Boolean by option("--debug").flag()
     val noProgress: Boolean by option("--no-progress").flag()
+
+    // ── Cache options ─────────────────────────────────────────────────
+    /**
+     * Cache retention policy.
+     * - "keep": retain downloaded files in Scoop cache (default)
+     * - "discard": delete downloaded files after generation
+     *
+     * [--no-cache] is retained as a deprecated alias for [--cache=discard].
+     * Uses a unique primary name to avoid clikt 4.x auto-creating a negated
+     * --cache flag (which would conflict with the choice option below).
+     */
+    private val _noCacheFlag: Boolean by option("--no-cache-flag", "--no-cache", hidden = true).flag()
+    val noCache: Boolean get() = _noCacheFlag
+
+    /**
+     * Cache mode option. When set explicitly, takes priority over --no-cache.
+     */
+    val cache: String by option("--cache")
+        .choice("keep", "discard")
+        .default("keep")
+
+    /**
+     * Derived property: whether to keep downloaded files in Scoop cache.
+     *
+     * Resolution order:
+     * 1. `--cache=discard` => false
+     * 2. `--no-cache` (backward compat) => false
+     * 3. Default => true
+     */
+    internal val keepCache: Boolean get() = when {
+        cache != "keep" -> false
+        _noCacheFlag -> false
+        else -> true
+    }
+
+    // ── Output format ──────────────────────────────────────────────
+    val outputFormat: String by option("--output-format")
+        .choice("text", "json")
+        .default("text")
+
+    // ── Artifacts mode ────────────────────────────────────────────
+    /**
+     * Debug artifact writing mode.
+     * - "auto": write only on failure or when --non-interactive is set
+     * - "always": always write phase outputs to .scoopai/runs/<runId>/
+     * - "never": do not write any artifacts
+     */
+    val artifactsMode: String by option("--artifacts")
+        .choice("auto", "always", "never")
+        .default("auto")
+
+    /**
+     * Run identifier for artifacts directory.
+     * Auto-generated as UUID if not specified.
+     */
+    val runId: String? by option("--run-id")
 
     // ── Choice option (persist mode) ──────────────────────────────────
     val persist: String by option("-s", "--persist")
@@ -64,6 +124,11 @@ open class GenerateCommand(
 
     // ── Run ───────────────────────────────────────────────────────────
     override fun run() {
+        // Print deprecation warning for --no-cache
+        if (_noCacheFlag) {
+            echo(NO_CACHE_DEPRECATION_WARNING)
+        }
+
         doRun()
     }
 
@@ -72,6 +137,7 @@ open class GenerateCommand(
      */
     internal fun doRun() {
         var effectiveDebug = debug
+        val isJsonOutput = outputFormat == "json"
         try {
             // ── Build EnvArgs from parsed clikt values ────────────────
             val envArgs = buildEnvArgs()
@@ -98,9 +164,10 @@ open class GenerateCommand(
                 System.setProperty("SCOOP_AI_NON_INTERACTIVE", "true")
             }
 
-            // ── Progress overlay ───────────────────────────────────────
+            // ── Progress overlay (disabled in JSON mode) ───────────────
+            val progressEnabled = !isJsonOutput && !noProgress && System.console() != null
             val progress = ConsoleProgress(
-                enabled = !noProgress && System.console() != null,
+                enabled = progressEnabled,
             )
 
             // ── Resolve output ─────────────────────────────────────────
@@ -108,11 +175,28 @@ open class GenerateCommand(
                 System.getenv("SCOOP_AI_OUTPUT") ?: ""
             }
 
+            // ── Setup debug artifacts ─────────────────────────────────
+            val effectiveRunId = runId ?: java.util.UUID.randomUUID().toString()
+            val rawArtifacts = when (artifactsMode) {
+                "never" -> null
+                else -> com.scoopai.core.artifacts.RunArtifacts(
+                    runId = effectiveRunId,
+                    baseDir = ARTIFACTS_BASE_DIR,
+                )
+            }
+            // Wrap in SensitiveArtifactWriter for masking
+            val sensitiveArtifacts = rawArtifacts?.let { raw ->
+                com.scoopai.core.artifacts.SensitiveArtifactWriter(raw) { text ->
+                    com.scoopai.cli.error.mask(text)
+                }
+            }
+
             progress.start()
             val result: ManifestResult = try {
                 runBlocking {
                     val generator = compositionRoot.createGenerator(
                         onPhase = { name -> progress.phase(name) },
+                        artifacts = sensitiveArtifacts,
                     )
                     // Reset tool call budget for a fresh run
                     DefaultToolRegistryFactory.getToolBudget()?.reset()
@@ -129,53 +213,67 @@ open class GenerateCommand(
             // ── Handle result ──────────────────────────────────────────
             val manifest = result.manifest
             if (result.noAssets) {
+                if (isJsonOutput) {
+                    echo(JsonFormatter.format(result))
+                }
                 throw NoAssetsError("No Windows assets found for the given project.")
             }
             if (manifest.isBlank()) {
                 throw GeneralError("no manifest generated")
             }
 
-            // Print suggested app name when available
-            if (result.suggestedAppName != null) {
-                echo("Suggested app name: ${result.suggestedAppName}")
+            // ── JSON mode: output JSON to stdout, still write file ─────
+            if (isJsonOutput) {
+                echo(JsonFormatter.format(result))
+            } else {
+                // Print suggested app name when available
+                if (result.suggestedAppName != null) {
+                    echo("Suggested app name: ${result.suggestedAppName}")
+                }
             }
 
-            // Write manifest to file
+            // Write manifest to file (always, even in JSON mode)
             val appNameForOutput = result.suggestedAppName?.ifBlank { null }
                 ?: compositionRoot.resolvedAppName
             val writePath = output.ifBlank { "bucket/$appNameForOutput.json" }
             compositionRoot.manifestIo.write(manifest, writePath)
-            echo("Written to $writePath")
-            val absoluteWritePath = java.io.File(writePath).absoluteFile.canonicalPath
-            echo("Absolute path: $absoluteWritePath")
 
-            // ── Print token usage ──────────────────────────────────────
-            result.tokenUsage?.let { usage ->
-                echo("Token usage: input=${usage.totalInputTokens} output=${usage.totalOutputTokens} total=${usage.totalTokens}")
-            }
-            if (result.durationMs > 0) {
-                val seconds = result.durationMs / 1000
-                val minutes = seconds / 60
-                val sec = seconds % 60
-                echo("Duration: ${minutes}m ${sec}s (${result.durationMs}ms)")
+            if (!isJsonOutput) {
+                echo("Written to $writePath")
+                val absoluteWritePath = java.io.File(writePath).absoluteFile.canonicalPath
+                echo("Absolute path: $absoluteWritePath")
+
+                // ── Print token usage ──────────────────────────────────
+                result.tokenUsage?.let { usage ->
+                    echo("Token usage: input=${usage.totalInputTokens} output=${usage.totalOutputTokens} total=${usage.totalTokens}")
+                }
+                if (result.durationMs > 0) {
+                    val seconds = result.durationMs / 1000
+                    val minutes = seconds / 60
+                    val sec = seconds % 60
+                    echo("Duration: ${minutes}m ${sec}s (${result.durationMs}ms)")
+                }
             }
 
             // ── Finalize cache entries ─────────────────────────────────
             if (envArgs.keepCache) {
                 val parsed = parseManifestMeta(manifest)
-                logger.info { "[cache] Finalizing: app=$appNameForOutput version=${parsed.version} url=${parsed.url}" }
-                if (parsed.version != null && parsed.url != null) {
+                // Use local copies for smart-cast (properties from different module)
+                val pVersion = parsed.version
+                val pUrl = parsed.url
+                logger.info { "[cache] Finalizing: app=$appNameForOutput version=$pVersion url=$pUrl" }
+                if (pVersion != null && pUrl != null) {
                     val finalized = compositionRoot.cache.finalizeCacheEntry(
-                        parsed.url, appNameForOutput, parsed.version
+                        pUrl, appNameForOutput, pVersion
                     )
-                    if (finalized != null) {
+                    if (finalized != null && !isJsonOutput) {
                         echo("Cache: ${finalized.toAbsolutePath()}")
                         echo("scoop install $appNameForOutput will reuse this file.")
-                    } else {
-                        logger.warn { "[cache] No cached file found for ${parsed.url}" }
+                    } else if (finalized == null) {
+                        logger.warn { "[cache] No cached file found for $pUrl" }
                     }
                 } else {
-                    logger.warn { "[cache] Could not parse manifest: version=${parsed.version} url=${parsed.url}" }
+                    logger.warn { "[cache] Could not parse manifest: version=$pVersion url=$pUrl" }
                 }
             }
 
@@ -195,10 +293,14 @@ open class GenerateCommand(
 
     /**
      * Convert clikt-parsed values to [EnvArgs].
-     * Maps flag names consistently: `noCache` → `keepCache` (inverted), `persist` → `persistMode`, etc.
+     *
+     * Cache mode resolution (priority order):
+     * 1. `--cache=discard` => keepCache=false
+     * 2. `--no-cache` (backward compat) => keepCache=false
+     * 3. Default (no flags) => keepCache=true
      */
     internal fun buildEnvArgs(): EnvArgs {
-        // Normalize persist: "no" → "none" for backward compat with old EnvArgs
+        // Normalize persist: "no" => "none" for backward compat with old EnvArgs
         val normalizedPersist = when (persist) {
             "no" -> "none"
             else -> persist
@@ -213,7 +315,7 @@ open class GenerateCommand(
             modelName = model,
             verify = verify,
             appName = appName,
-            keepCache = !noCache,
+            keepCache = keepCache,
             userPrompt = prompt,
             nonInteractive = nonInteractive,
             persistMode = normalizedPersist,
@@ -252,13 +354,8 @@ open class GenerateCommand(
     }
 
     companion object {
-        /** Extract minimal manifest metadata from the JSON string. */
-        private data class ManifestMeta(val version: String?, val url: String?)
-
-        private fun parseManifestMeta(manifest: String): ManifestMeta {
-            val version = Regex(""""version"\s*:\s*"([^"]+)"""").find(manifest)?.groupValues?.get(1)
-            val url = Regex(""""url"\s*:\s*"(https?://[^"]+)"""").find(manifest)?.groupValues?.get(1)
-            return ManifestMeta(version, url)
-        }
+        /** Deprecation warning text for --no-cache flag. Exposed as constant for test verification. */
+        internal const val NO_CACHE_DEPRECATION_WARNING =
+            "WARNING: --no-cache is deprecated. Use --cache=discard instead."
     }
 }

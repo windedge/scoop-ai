@@ -15,6 +15,7 @@ import com.scoopai.core.agent.PrefetchResult
 import com.scoopai.core.agent.ResearchOutput
 
 import com.scoopai.core.agent.prompt.REVIEW_AGENT_SYSTEM_PROMPT
+import com.scoopai.core.observer.GenerationObserver
 import com.scoopai.core.agent.prompt.buildAnalyzePrompt
 import com.scoopai.core.agent.prompt.buildGeneratePrompt
 import com.scoopai.core.agent.prompt.buildRefinePrompt
@@ -28,6 +29,8 @@ import com.scoopai.core.tools.api.GitHubApi
 import com.scoopai.core.tools.api.ManifestIo
 import com.scoopai.core.utils.sanitizeForLog
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 private val logger = KotlinLogging.logger {}
 
@@ -55,6 +58,13 @@ class ScoopManifestGenerator(
     private val archiveInspector: ArchiveInspector? = null,
     /** Callback invoked when a phase starts. Used by cli ConsoleProgress overlay. */
     private val onPhase: ((String) -> Unit)? = null,
+    /** Observer for recording per-phase execution statistics. If null, creates a default instance. */
+    private val observer: GenerationObserver = GenerationObserver(),
+    /**
+     * Debug artifacts writer (optional). Applies masking to all written content.
+     * Phase outputs are recorded to .scoopai/runs/<runId>/ for debugging.
+     */
+    private val artifacts: com.scoopai.core.artifacts.SensitiveArtifactWriter? = null,
 ) {
     /**
      * Model with [LLMCapability.ToolChoice] stripped so that Koog uses its
@@ -70,7 +80,8 @@ class ScoopManifestGenerator(
         outputPath: String? = null,
         userPrompt: String? = null,
     ): ManifestResult {
-        val startTime = System.currentTimeMillis()
+        val startTime = TimeSource.Monotonic.markNow()
+        observer.reset()
         // -- Track token usage across all LLM calls ------------------------
         val tokenAccumulator = TokenAccumulator()
 
@@ -101,18 +112,35 @@ class ScoopManifestGenerator(
         ) {
             handleEvents {
                 onLLMCallCompleted { ctx ->
-                    ctx.response?.metaInfo?.inputTokensCount?.let { tokenAccumulator.input += it.toLong() }
-                    ctx.response?.metaInfo?.outputTokensCount?.let { tokenAccumulator.output += it.toLong() }
+                    val inputTokens = ctx.response?.metaInfo?.inputTokensCount?.toLong() ?: 0L
+                    val outputTokens = ctx.response?.metaInfo?.outputTokensCount?.toLong() ?: 0L
+                    tokenAccumulator.input += inputTokens
+                    tokenAccumulator.output += outputTokens
+                    // Also record to observer so review tokens appear in stages
+                    observer.recordLlmCall(inputTokens, outputTokens)
                 }
             }
         }
-        // Wrap the review agent as a simple suspend function
+        // Wrap the review agent as a simple suspend function, with observer tracking
         val reviewExecutor: suspend (String) -> String = { manifest ->
-            @Suppress("UNCHECKED_CAST")
-            (reviewAgent as GraphAIAgent<String, String>).run(manifest)
+            observer.enterPhase("review")
+            val reviewStart = TimeSource.Monotonic.markNow()
+            try {
+                @Suppress("UNCHECKED_CAST")
+                (reviewAgent as GraphAIAgent<String, String>).run(manifest)
+            } finally {
+                val elapsed = reviewStart.elapsedNow().inWholeMilliseconds
+                observer.exitPhase("review", elapsed)
+            }
         }
 
         val llmParams = LlmParamsBuilder.build(modelWithoutToolChoice, thinkingLevel)
+        // Use the artifact writer's writePhase for phase output capture;
+        // for finalize/markFailed we delegate directly.
+        val artifactsWriter = artifacts?.delegate  // RunArtifacts for delegation
+        val phaseWrite: ((String, String) -> Unit)? = artifacts?.let { writer ->
+            { phase, content -> writer.writePhase(phase, content) }
+        }
         val strategy = scoopManifestStrategy(
             researchTools = researchTools,
             analyzeTools = analyzeTools,
@@ -125,7 +153,11 @@ class ScoopManifestGenerator(
             reviewExecutor = reviewExecutor,
             gitHubApi = gitHubApi,
             archiveInspector = archiveInspector,
-            onPhase = onPhase,
+            onPhase = { name ->
+                onPhase?.invoke(name)
+            },
+            observer = observer,
+            onPhaseOutput = phaseWrite,
         )
 
         val agentConfig = AIAgentConfig(
@@ -136,6 +168,9 @@ class ScoopManifestGenerator(
             maxAgentIterations = maxIterations,
         )
 
+        // Record LLM and tool call events to the observer for per-phase tracking.
+        // The observer's current phase is set by the strategy via enterPhase/exitPhase,
+        // which matches the sequential execution of subgraphs.
         val agent = AIAgent(
             promptExecutor = promptExecutor,
             agentConfig = agentConfig,
@@ -144,6 +179,7 @@ class ScoopManifestGenerator(
         ) {
             handleEvents {
                 onToolCallStarting { ctx ->
+                    observer.recordToolCall()
                     val args = sanitizeForLog(ctx.toolArgs.toString())
                     logger.info { "[tool] ${ctx.toolName}($args)" }
                 }
@@ -152,8 +188,11 @@ class ScoopManifestGenerator(
                     logger.info { "[tool] ${ctx.toolName} -> $result" }
                 }
                 onLLMCallCompleted { ctx ->
-                    ctx.response?.metaInfo?.inputTokensCount?.let { tokenAccumulator.input += it.toLong() }
-                    ctx.response?.metaInfo?.outputTokensCount?.let { tokenAccumulator.output += it.toLong() }
+                    val inputTokens = ctx.response?.metaInfo?.inputTokensCount?.toLong() ?: 0L
+                    val outputTokens = ctx.response?.metaInfo?.outputTokensCount?.toLong() ?: 0L
+                    observer.recordLlmCall(inputTokens, outputTokens)
+                    tokenAccumulator.input += inputTokens
+                    tokenAccumulator.output += outputTokens
                     logLlmResponse(ctx.response, tokenAccumulator)
                 }
                 onAgentCompleted {
@@ -162,13 +201,22 @@ class ScoopManifestGenerator(
             }
         }
 
-        val result: ManifestResult = agent.run(url)
-        val elapsed = System.currentTimeMillis() - startTime
+        val result: ManifestResult = try {
+            agent.run(url)
+        } catch (e: Exception) {
+            artifacts?.let { it.markFailed("${e::class.simpleName}: ${e.message}") }
+            throw e
+        }
+        val elapsed = startTime.elapsedNow().inWholeMilliseconds
+
+        // Mark successful run as completed
+        artifacts?.let { it.finalize() }
 
         return result.copy(
             manifest = result.manifest,
             tokenUsage = TokenUsage(tokenAccumulator.input, tokenAccumulator.output),
             durationMs = elapsed,
+            stages = observer.snapshot(),
         )
     }
 

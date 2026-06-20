@@ -5,7 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+> **NOTE**: `gradle.properties` remains at `0.1.0` until the first GitHub
+> Release is cut (T-3.11 blocked on git remote). The [0.2.0] and [0.3.0]
+> sections below document completed work that has not been tagged yet.
+
+## [0.3.0] - 2026-06-18
 
 ### Added
 
@@ -17,7 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--no-progress` flag: disable TTY progress overlay
 - `CompositionRoot.kt`: lazy dependency injection root
 - `EnvArgs.kt`: pure CLI args parser
+- JSON output mode (`--output-format json`): structured output with ManifestResult (manifest, suggestedAppName, noAssets, tokenUsage, durationMs, stages)
+- `StageInfo` data class: per-phase execution statistics (phaseName, durationMs, inputTokens, outputTokens, toolCallCount)
+- `GenerationObserver`: records per-phase telemetry (enterPhase/exitPhase/recordLlmCall/recordToolCall)
+- `RunArtifacts`: writes phase JSON to `.scoopai/runs/<runId>/` for debugging (`--artifacts auto|always|never`, `--run-id override`)
+- `SensitiveArtifactWriter`: wraps RunArtifacts with SensitiveMasker for safe debug output
+- `--cache keep|discard` flag (`--no-cache` deprecated, prints warning)
+- Self-bootstrapping Scoop manifest (`bucket/scoop-ai.json`)
+- `docs/troubleshooting.md`: 16 FAQ covering exit codes and common issues
+- `docs/providers.md`: 6 providers with double-encoding workaround section
+- `docs/man/scoop-ai.1`: troff man page (installManPage Gradle task)
 - Comprehensive CLI test suite: GenerateCommandTest (42), DoctorCommandTest (13), ConfigShowCommandTest (13), CompletionCommandTest (19), VersionCommandTest (9), VersionOptionIntegrationTest (2)
+- `StageInfoTest`, `GenerationObserverTest`, `RunArtifactsTest`, `SensitiveArtifactWriterTest`
 
 ### Changed
 
@@ -26,16 +41,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--version` and `scoop-ai version` subcommand both print version info via clikt
 - Help output is now clikt-style (replaces hand-written `HELP_TEXT` and custom help printers)
 - `Main.kt` reduced to 7 lines (delegates to `CliRunner`)
-- Removed dead `CliRunner.kt` (pre-clikt implementation)
+- Retained `CliRunner.kt` as clikt subcommand entry point (main entry delegates to CliRunner)
+- `ManifestResult` now has `stages` field (backward compatible, defaults to empty)
+- `TokenUsage` and `StageInfo` are `@Serializable`
+- README updated: WARNING block for sensitive env vars, links to docs, Installation section
+
+### Fixed
+
+- scoop-installed doctor check: Windows ProcessBuilder could not find `scoop.cmd` shim (now uses `cmd /c` + shim file fallback)
+- scoop-installed version extraction: outputs clean version (e.g. `0.5.3`) instead of `Current Scoop version:`
+
+### Notes
+
+- T-3.05b checkpoint spike concluded: RESUME_DEFERRED (deferred to v0.4.0+)
+  - Koog exposes a first-class checkpoint resume API (Persistence.runFromCheckpoint +
+    AdditionalInputs.Storage + strategy restoreStateIfNeeded), so this is not a framework blocker.
+  - scoopManifestStrategy is not resumable yet: phase data (researchData/analyzeData/
+    suggestedAppName) lives in local var captures set as side effects inside node bodies,
+    which a checkpoint restore skips, causing NPE in prepareManifest/generate.
+  - Shipping --from needs a capture->storage refactor (~40 lines) plus wiring + proof test
+    (~200 lines), above the spike's RESUME_SUPPORTED threshold, on the hottest code path.
+  - v0.4.0 plan: refactor captures to storage keys, add resume-after-subgraph proof test,
+    add CheckpointResume.kt, wire --from <analyze|generate>.
+  - v0.3.0 does NOT include `--from <stage>` (deferred to v0.4.0+).
 
 ### Known Limitations
 
 - No persistent configuration file (`~/.scoopai/config.toml` planned for v0.4.0)
 - No keyring integration for API key storage (planned for v0.4.0)
-- No structured JSON output (`--output-format json` planned for v0.3.0)
-- No run artifacts / checkpoint recovery (spike planned for v0.3.0)
-- No self-bootstrapping Scoop manifest (`bucket/scoop-ai.json` planned for v0.3.0)
-- No man page (planned for v0.3.0)
+- No `--from <stage>` checkpoint resume (planned for v0.4.0+ per T-3.05b spike)
+- No internationalization (English only, no Chinese README)
+
+## [Unreleased]
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Notes
+
+## [0.2.0] - 2026-06-17
+
+Unreleased alongside 0.3.0; documents the clikt subcommand architecture introduced in Phase 2.
+
+### Added
+
+- clikt 4.4.0 subcommand architecture (generate/doctor/config/completion/version)
+- CompositionRoot.kt + EnvArgs.kt
+- DoctorCommand with 7 HealthCheck
+- ConfigShowCommand, CompletionCommand, VersionCommand
+- 5 subcommand test suites
+
+### Changed
+
+- Main.kt trimmed from 300 to 10 lines (delegates to CliRunner)
+- Help output is clikt-style
 
 ## [0.1.0] - 2026-06-16
 
@@ -83,3 +145,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - No self-bootstrapping Scoop manifest (`bucket/scoop-ai.json` planned for v0.3.0).
 - No man page (planned for v0.3.0).
 - No internationalization (English only, no Chinese README).
+
+[0.3.0]: https://github.com/placeholder/scoop-ai/releases/tag/v0.3.0
+[0.2.0]: https://github.com/placeholder/scoop-ai/releases/tag/v0.2.0
+[0.1.0]: https://github.com/placeholder/scoop-ai/releases/tag/v0.1.0

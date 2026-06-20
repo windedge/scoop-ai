@@ -20,14 +20,14 @@ class CompositionRootTest {
 
     @Test
     fun `construct with envArgs and emptyMap succeeds`() {
-        val envArgs = EnvArgs.parse(arrayOf("https://github.com/owner/repo"))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo")
         val root = CompositionRoot(envArgs, emptyMap())
         assertNotNull(root)
     }
 
     @Test
     fun `construct with default env map succeeds`() {
-        val envArgs = EnvArgs.parse(arrayOf("https://github.com/owner/repo"))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo")
         val root = CompositionRoot(envArgs)
         assertNotNull(root)
     }
@@ -38,7 +38,7 @@ class CompositionRootTest {
 
     @Test
     fun `manifestIo is accessible and is FileManifestIo`() {
-        val envArgs = EnvArgs.parse(arrayOf("https://github.com/owner/repo"))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo")
         val root = CompositionRoot(envArgs, emptyMap())
         val io = root.manifestIo
         assertTrue(io is FileManifestIo)
@@ -46,7 +46,7 @@ class CompositionRootTest {
 
     @Test
     fun `cache is accessible and is ScoopCacheManager`() {
-        val envArgs = EnvArgs.parse(arrayOf("https://github.com/owner/repo"))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo")
         val root = CompositionRoot(envArgs, emptyMap())
         val cache = root.cache
         assertTrue(cache is ScoopCacheManager)
@@ -54,7 +54,7 @@ class CompositionRootTest {
 
     @Test
     fun `gitHubApi is accessible and is JdkHttpGitHubApi`() {
-        val envArgs = EnvArgs.parse(arrayOf("https://github.com/owner/repo"))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo")
         val root = CompositionRoot(envArgs, emptyMap())
         val api = root.gitHubApi
         assertTrue(api is JdkHttpGitHubApi)
@@ -62,7 +62,7 @@ class CompositionRootTest {
 
     @Test
     fun `archiveInspector is accessible and is ZipArchiveInspector`() {
-        val envArgs = EnvArgs.parse(arrayOf("https://github.com/owner/repo"))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo")
         val root = CompositionRoot(envArgs, emptyMap())
         val inspector = root.archiveInspector
         assertTrue(inspector is ZipArchiveInspector)
@@ -70,14 +70,14 @@ class CompositionRootTest {
 
     @Test
     fun `scoopVerifier is null when verify is false and env is empty`() {
-        val envArgs = EnvArgs.parse(arrayOf("https://github.com/owner/repo"))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo")
         val root = CompositionRoot(envArgs, emptyMap())
         assertNull(root.scoopVerifier)
     }
 
     @Test
     fun `toolRegistry is accessible`() {
-        val envArgs = EnvArgs.parse(arrayOf("https://github.com/owner/repo"))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo")
         val root = CompositionRoot(envArgs, emptyMap())
         val registry = root.toolRegistry
         assertNotNull(registry)
@@ -90,14 +90,14 @@ class CompositionRootTest {
 
     @Test
     fun `resolvedAppName infers from URL when appName not given`() {
-        val envArgs = EnvArgs.parse(arrayOf("https://github.com/owner/MyApp"))
+        val envArgs = EnvArgs(url = "https://github.com/owner/MyApp")
         val root = CompositionRoot(envArgs, emptyMap())
         assertEquals("myapp", root.resolvedAppName)
     }
 
     @Test
     fun `resolvedAppName uses appName from args when given`() {
-        val envArgs = EnvArgs.parse(arrayOf("--app-name", "custom-name", "https://github.com/owner/repo"))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo", appName = "custom-name")
         val root = CompositionRoot(envArgs, emptyMap())
         assertEquals("custom-name", root.resolvedAppName)
     }
@@ -108,42 +108,42 @@ class CompositionRootTest {
 
     @Test
     fun `effectiveGithubToken returns null when neither envArgs nor env has token`() {
-        val envArgs = EnvArgs.parse(arrayOf("https://github.com/owner/repo"))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo")
         val root = CompositionRoot(envArgs, emptyMap())
         assertNull(root.effectiveGithubToken())
     }
 
     @Test
     fun `effectiveGithubToken returns envArgs dot githubToken when set`() {
-        val envArgs = EnvArgs.parse(arrayOf("--github-token", "ghp_cli123", "https://github.com/owner/repo"))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo", githubToken = "ghp_cli123")
         val root = CompositionRoot(envArgs, emptyMap())
         assertEquals("ghp_cli123", root.effectiveGithubToken())
     }
 
     @Test
     fun `effectiveGithubToken falls back to env map SCOOP_AI_GITHUB_TOKEN`() {
-        val envArgs = EnvArgs.parse(arrayOf("https://github.com/owner/repo"))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo")
         val root = CompositionRoot(envArgs, mapOf("SCOOP_AI_GITHUB_TOKEN" to "ghp_env123"))
         assertEquals("ghp_env123", root.effectiveGithubToken())
     }
 
     @Test
     fun `effectiveGithubToken falls back to env map GITHUB_TOKEN`() {
-        val envArgs = EnvArgs.parse(arrayOf("https://github.com/owner/repo"))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo")
         val root = CompositionRoot(envArgs, mapOf("GITHUB_TOKEN" to "ghp_fallback123"))
         assertEquals("ghp_fallback123", root.effectiveGithubToken())
     }
 
     @Test
     fun `effectiveGithubToken prioritizes envArgs over env`() {
-        val envArgs = EnvArgs.parse(arrayOf("--github-token", "ghp_cli", "https://github.com/owner/repo"))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo", githubToken = "ghp_cli")
         val root = CompositionRoot(envArgs, mapOf("SCOOP_AI_GITHUB_TOKEN" to "ghp_env"))
         assertEquals("ghp_cli", root.effectiveGithubToken())
     }
 
     @Test
     fun `effectiveGithubToken prioritizes SCOOP_AI_GITHUB_TOKEN over GITHUB_TOKEN`() {
-        val envArgs = EnvArgs.parse(arrayOf("https://github.com/owner/repo"))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo")
         val root = CompositionRoot(envArgs, mapOf(
             "SCOOP_AI_GITHUB_TOKEN" to "ghp_scoop",
             "GITHUB_TOKEN" to "ghp_plain"
@@ -157,10 +157,7 @@ class CompositionRootTest {
 
     @Test
     fun `resolveProviderConfig with default provider and api-key does not throw`() {
-        val envArgs = EnvArgs.parse(arrayOf(
-            "--api-key", "test-key",
-            "https://github.com/owner/repo"
-        ))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo", apiKey = "test-key")
         val root = CompositionRoot(envArgs, emptyMap())
         val config = root.resolveProviderConfig()
         assertNotNull(config)
@@ -168,11 +165,11 @@ class CompositionRootTest {
 
     @Test
     fun `resolveProviderConfig with openai-compatible missing baseUrl throws ConfigError`() {
-        val envArgs = EnvArgs.parse(arrayOf(
-            "-P", "openai-compatible",
-            "--api-key", "test-key",
-            "https://github.com/owner/repo"
-        ))
+        val envArgs = EnvArgs(
+            url = "https://github.com/owner/repo",
+            provider = "openai-compatible",
+            apiKey = "test-key",
+        )
         val root = CompositionRoot(envArgs, emptyMap())
         val ex = assertThrows(ConfigError::class.java) {
             root.resolveProviderConfig()
@@ -182,12 +179,12 @@ class CompositionRootTest {
 
     @Test
     fun `resolveProviderConfig with openai-compatible and baseUrl succeeds`() {
-        val envArgs = EnvArgs.parse(arrayOf(
-            "-P", "openai-compatible",
-            "--api-key", "test-key",
-            "--base-url", "http://localhost:8080/v1",
-            "https://github.com/owner/repo"
-        ))
+        val envArgs = EnvArgs(
+            url = "https://github.com/owner/repo",
+            provider = "openai-compatible",
+            apiKey = "test-key",
+            baseUrl = "http://localhost:8080/v1",
+        )
         val root = CompositionRoot(envArgs, emptyMap())
         val config = root.resolveProviderConfig()
         assertNotNull(config)
@@ -199,10 +196,7 @@ class CompositionRootTest {
 
     @Test
     fun `createGenerator returns non-null generator`() {
-        val envArgs = EnvArgs.parse(arrayOf(
-            "--api-key", "test-key",
-            "https://github.com/owner/repo"
-        ))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo", apiKey = "test-key")
         val root = CompositionRoot(envArgs, emptyMap())
         val generator = root.createGenerator()
         assertNotNull(generator)
@@ -210,10 +204,7 @@ class CompositionRootTest {
 
     @Test
     fun `createGenerator with onPhase callback`() {
-        val envArgs = EnvArgs.parse(arrayOf(
-            "--api-key", "test-key",
-            "https://github.com/owner/repo"
-        ))
+        val envArgs = EnvArgs(url = "https://github.com/owner/repo", apiKey = "test-key")
         val root = CompositionRoot(envArgs, emptyMap())
         var invoked = false
         val generator = root.createGenerator(onPhase = { name -> invoked = true })
@@ -227,11 +218,11 @@ class CompositionRootTest {
 
     @Test
     fun `accessing all by-lazy properties does not throw`() {
-        val envArgs = EnvArgs.parse(arrayOf(
-            "--api-key", "test-key",
-            "--base-url", "http://localhost:8080/v1",
-            "https://github.com/owner/repo"
-        ))
+        val envArgs = EnvArgs(
+            url = "https://github.com/owner/repo",
+            apiKey = "test-key",
+            baseUrl = "http://localhost:8080/v1",
+        )
         val root = CompositionRoot(envArgs, emptyMap())
         // Access all lazy properties to ensure they initialize
         assertNotNull(root.manifestIo)

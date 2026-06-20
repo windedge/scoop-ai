@@ -86,6 +86,11 @@ tasks.named<CreateStartScripts>("startScripts") {
     classpath = files(tasks.shadowJar)
 }
 
+tasks.register<Copy>("installManPage") {
+    from(rootProject.layout.projectDirectory.file("docs/man/scoop-ai.1"))
+    into(layout.buildDirectory.dir("dist/man/man1"))
+}
+
 tasks.named<Sync>("installDist") {
     into("lib") {
         from(tasks.shadowJar)

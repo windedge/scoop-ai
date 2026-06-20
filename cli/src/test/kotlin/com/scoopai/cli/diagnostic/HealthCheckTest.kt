@@ -3,6 +3,8 @@ package com.scoopai.cli.diagnostic
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.io.File
@@ -87,6 +89,54 @@ class HealthCheckTest {
     }
 
     // ---------------------------------------------------------------
+    // extractScoopVersion
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `extractScoopVersion extracts version from current scoop format`() {
+        val output = """Current Scoop version:
+b588a06e chore(release): Bump to version 0.5.3 (resync) (#6436)
+""".trimIndent()
+        assertEquals("0.5.3", extractScoopVersion(output))
+    }
+
+    @Test
+    fun `extractScoopVersion extracts v prefixed version from older format`() {
+        val output = """Current Scoop version:
+v0.5.2 - Released at 2024-01-01
+""".trimIndent()
+        assertEquals("v0.5.2", extractScoopVersion(output))
+    }
+
+    @Test
+    fun `extractScoopVersion finds version in minimal output`() {
+        val output = "v0.5.2"
+        assertEquals("v0.5.2", extractScoopVersion(output))
+    }
+
+    @Test
+    fun `extractScoopVersion finds version without v prefix`() {
+        val output = "Current Scoop version:\n1.2.3"
+        assertEquals("1.2.3", extractScoopVersion(output))
+    }
+
+    @Test
+    fun `extractScoopVersion returns installed when no version found`() {
+        val output = "some garbage without any version number"
+        assertEquals("installed", extractScoopVersion(output))
+    }
+
+    @Test
+    fun `extractScoopVersion returns installed for empty output`() {
+        assertEquals("installed", extractScoopVersion(""))
+    }
+
+    @Test
+    fun `extractScoopVersion returns installed for whitespace only`() {
+        assertEquals("installed", extractScoopVersion("   \n  \n"))
+    }
+
+    // ---------------------------------------------------------------
     // ScoopInstalledCheck
     // ---------------------------------------------------------------
 
@@ -117,6 +167,59 @@ class HealthCheckTest {
         })
         val result = runBlocking { check.run() }
         assertEquals(Status.WARN, result.status)
+    }
+
+    // ---------------------------------------------------------------
+    // runScoopVersion helpers (buildScoopCommand / detectScoopShim / isWindowsOs)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `buildScoopCommand wraps scoop in cmd slash c on Windows`() {
+        assertEquals(
+            listOf("cmd", "/c", "scoop", "--version"),
+            buildScoopCommand(isWindows = true),
+        )
+    }
+
+    @Test
+    fun `buildScoopCommand calls scoop directly on Unix`() {
+        assertEquals(
+            listOf("scoop", "--version"),
+            buildScoopCommand(isWindows = false),
+        )
+    }
+
+    @Test
+    fun `isWindowsOs detects windows family case insensitively`() {
+        assertTrue(isWindowsOs("Windows 11"))
+        assertTrue(isWindowsOs("Windows 10"))
+        assertTrue(isWindowsOs("windows server 2019"))
+        assertFalse(isWindowsOs("Linux"))
+        assertFalse(isWindowsOs("Mac OS X"))
+    }
+
+    @Test
+    fun `detectScoopShim returns the file when scoop cmd exists`() {
+        val home = createTempDir()
+        try {
+            File(home, "scoop/shims").mkdirs()
+            File(home, "scoop/shims/scoop.cmd").writeText("@echo off")
+            val shim = detectScoopShim(home.absolutePath)
+            assertNotNull(shim, "shim should be found when scoop.cmd exists")
+            assertEquals("scoop.cmd", shim!!.name)
+        } finally {
+            home.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `detectScoopShim returns null when shim missing`() {
+        val home = createTempDir()
+        try {
+            assertNull(detectScoopShim(home.absolutePath))
+        } finally {
+            home.deleteRecursively()
+        }
     }
 
     // ---------------------------------------------------------------

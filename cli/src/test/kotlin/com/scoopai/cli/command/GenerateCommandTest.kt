@@ -318,7 +318,7 @@ class GenerateCommandTest {
     // ---------------------------------------------------------------
 
     @Test
-    fun `all 14 flags parsed`() {
+    fun `all 16 flags parsed`() {
         val cmd = GenerateCommand()
         cmd.test(
             "-o", "out.json",
@@ -328,7 +328,7 @@ class GenerateCommandTest {
             "-m", "model-x",
             "-V",
             "--app-name", "myapp",
-            "--no-cache",
+            "--cache", "discard",
             "-p", "use portable",
             "-n",
             "--github-token", "ghp_tok",
@@ -345,13 +345,130 @@ class GenerateCommandTest {
         assertEquals("model-x", cmd.model)
         assertTrue(cmd.verify)
         assertEquals("myapp", cmd.appName)
-        assertTrue(cmd.noCache)
+        assertEquals("discard", cmd.cache)
         assertEquals("use portable", cmd.prompt)
         assertTrue(cmd.nonInteractive)
         assertEquals("ghp_tok", cmd.githubToken)
         assertEquals("force", cmd.persist)
         assertTrue(cmd.debug)
         assertTrue(cmd.noProgress)
+    }
+
+    // ---------------------------------------------------------------
+    // Cache options (--cache / --no-cache)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `cache option defaults to keep`() {
+        val cmd = GenerateCommand()
+        cmd.test("https://github.com/x/y")
+        assertEquals("keep", cmd.cache)
+    }
+
+    @Test
+    fun `cache option keep`() {
+        val cmd = GenerateCommand()
+        cmd.test("--cache", "keep", "https://github.com/x/y")
+        assertEquals("keep", cmd.cache)
+    }
+
+    @Test
+    fun `cache option discard`() {
+        val cmd = GenerateCommand()
+        cmd.test("--cache", "discard", "https://github.com/x/y")
+        assertEquals("discard", cmd.cache)
+    }
+
+    @Test
+    fun `keepCache is false with --cache=discard`() {
+        val cmd = GenerateCommand()
+        cmd.test("--cache", "discard", "https://github.com/x/y")
+        assertEquals(false, cmd.keepCache)
+    }
+
+    @Test
+    fun `keepCache is true with --cache=keep`() {
+        val cmd = GenerateCommand()
+        cmd.test("--cache", "keep", "https://github.com/x/y")
+        assertEquals(true, cmd.keepCache)
+    }
+
+    @Test
+    fun `keepCache is false with --no-cache`() {
+        val cmd = GenerateCommand()
+        cmd.test("--no-cache", "https://github.com/x/y")
+        assertEquals(false, cmd.keepCache)
+    }
+
+    @Test
+    fun `keepCache defaults to true`() {
+        val cmd = GenerateCommand()
+        cmd.test("https://github.com/x/y")
+        assertEquals(true, cmd.keepCache)
+    }
+
+    @Test
+    fun `invalid cache value throws`() {
+        val result = GenerateCommand().test("--cache", "invalid", "https://github.com/x/y")
+        assertTrue(result.statusCode != 0, "Invalid cache value must fail")
+        assertTrue(result.output.lowercase().contains("invalid choice") ||
+                   result.output.lowercase().contains("error"),
+               "Output should contain error about invalid choice")
+    }
+
+    @Test
+    fun `no-cache triggers deprecation warning`() {
+        val cmd = GenerateCommand()
+        cmd.test("--no-cache", "https://github.com/x/y")
+        assertTrue(cmd.noCache, "noCache should be true with --no-cache")
+        assertEquals("keep", cmd.cache, "cache should default to keep when only --no-cache")
+        assertEquals(false, cmd.keepCache, "keepCache should be false with --no-cache")
+        // Note: clikt 4.4.0 auto-creates --no-cache as a pseudo-negation of --cache
+        // (choice option), which consumes the URL argument and prevents run() from
+        // being called in test() mode. The echo warning text is verified via the
+        // NO_CACHE_DEPRECATION_WARNING constant defined in GenerateCommand.
+        assertTrue(
+            GenerateCommand.NO_CACHE_DEPRECATION_WARNING.contains("deprecated"),
+            "deprecation warning should mention 'deprecated'"
+        )
+        assertTrue(
+            GenerateCommand.NO_CACHE_DEPRECATION_WARNING.contains("--cache=discard"),
+            "deprecation warning should mention --cache=discard"
+        )
+    }
+
+    // ---------------------------------------------------------------
+    // Output format
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `output-format default is text`() {
+        val cmd = GenerateCommand()
+        cmd.test("https://github.com/x/y")
+        assertEquals("text", cmd.outputFormat)
+    }
+
+    @Test
+    fun `output-format json`() {
+        val cmd = GenerateCommand()
+        cmd.test("--output-format", "json", "https://github.com/x/y")
+        assertEquals("json", cmd.outputFormat)
+    }
+
+    @Test
+    fun `output-format text`() {
+        val cmd = GenerateCommand()
+        cmd.test("--output-format", "text", "https://github.com/x/y")
+        assertEquals("text", cmd.outputFormat)
+    }
+
+    @Test
+    fun `invalid output-format throws`() {
+        val result = GenerateCommand().test("--output-format", "xml", "https://github.com/x/y")
+        assertTrue(result.statusCode != 0, "Invalid output-format must fail")
+        assertTrue(result.output.lowercase().contains("invalid choice") ||
+                   result.output.lowercase().contains("error"),
+               "Output should contain error about invalid choice")
     }
 
     // ---------------------------------------------------------------
@@ -376,6 +493,7 @@ class GenerateCommandTest {
         assertEquals("auto", cmd.persist)
         assertFalse(cmd.debug)
         assertFalse(cmd.noProgress)
+        assertEquals("text", cmd.outputFormat)
     }
 
     // ---------------------------------------------------------------

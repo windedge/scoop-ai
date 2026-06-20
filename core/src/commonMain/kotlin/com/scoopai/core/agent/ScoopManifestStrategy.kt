@@ -8,6 +8,7 @@ import ai.koog.agents.ext.agent.subgraphWithTask
 import ai.koog.prompt.params.LLMParams
 import com.scoopai.core.ManifestResult
 import com.scoopai.core.RefineContext
+import com.scoopai.core.observer.GenerationObserver
 import com.scoopai.core.agent.nodes.assembleManifestSkeleton
 import com.scoopai.core.agent.nodes.autoFillBinFromShortcuts
 import com.scoopai.core.agent.nodes.normalizeEnvSet
@@ -82,6 +83,13 @@ fun scoopManifestStrategy(
     archiveInspector: ArchiveInspector? = null,
     /** Callback invoked when a phase starts (name: "research", "analyze", "generate", "refine"). */
     onPhase: ((String) -> Unit)? = null,
+    /** Observer for recording per-phase execution statistics. */
+    observer: GenerationObserver = GenerationObserver(),
+    /**
+     * Callback invoked when a phase completes with its serialized output.
+     * Parameters: (phaseName, serializedOutput).
+     */
+    onPhaseOutput: ((String, String) -> Unit)? = null,
 ) = strategy<String, ManifestResult>("scoop_manifest_v3") {
 
     // ── Storage keys & captured state ─────────────────────────────
@@ -109,6 +117,7 @@ fun scoopManifestStrategy(
         llmParams = llmParams,
     ) { prefetchResult ->
         onPhase?.invoke("research")
+        observer.enterPhase("research")
         logger.info { PhaseProgressLogger.starting("research") }
         researchStart = TimeSource.Monotonic.markNow()
         researchPromptBuilder?.invoke(prefetchResult) ?: prefetchResult.originalUrl
@@ -116,7 +125,10 @@ fun scoopManifestStrategy(
 
     // ── Research completion logging ──
     val researchDone by node<ResearchOutput, ResearchOutput>("researchDone") { output ->
-        logger.info { PhaseProgressLogger.completed("research", researchStart?.elapsedNow()?.inWholeMilliseconds ?: 0L) }
+        val elapsed = researchStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
+        observer.exitPhase("research", elapsed)
+        logger.info { PhaseProgressLogger.completed("research", elapsed) }
+        onPhaseOutput?.invoke("research", phaseJson.encodeToString(ResearchOutput.serializer(), output))
         output
     }
 
@@ -131,6 +143,7 @@ fun scoopManifestStrategy(
         llmParams = llmParams,
     ) { input ->
         onPhase?.invoke("analyze")
+        observer.enterPhase("analyze")
         logger.info { PhaseProgressLogger.starting("analyze") }
         analyzeStart = TimeSource.Monotonic.markNow()
         researchData = input
@@ -150,6 +163,7 @@ fun scoopManifestStrategy(
         llmParams = llmParams,
     ) { skeleton ->
         onPhase?.invoke("generate")
+        observer.enterPhase("generate")
         logger.info { PhaseProgressLogger.starting("generate") }
         generateStart = TimeSource.Monotonic.markNow()
         storage.set(retryCountKey, 0)
@@ -162,6 +176,7 @@ fun scoopManifestStrategy(
         llmParams = llmParams,
     ) { input ->
         onPhase?.invoke("refine")
+        observer.enterPhase("refine")
         logger.info { PhaseProgressLogger.starting("refine") }
         refineStart = TimeSource.Monotonic.markNow()
         refinePromptBuilder?.invoke(input) ?: ""
@@ -203,12 +218,18 @@ fun scoopManifestStrategy(
 
     // Main path: analyze → prepareManifest → generate → verify
     edge(analyze forwardTo prepareManifest transformed { output ->
-        logger.info { PhaseProgressLogger.completed("analyze", analyzeStart?.elapsedNow()?.inWholeMilliseconds ?: 0L) }
+        val elapsed = analyzeStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
+        observer.exitPhase("analyze", elapsed)
+        logger.info { PhaseProgressLogger.completed("analyze", elapsed) }
+        onPhaseOutput?.invoke("analyze", phaseJson.encodeToString(AnalyzeOutput.serializer(), output))
         output
     })
     edge(prepareManifest forwardTo generate)
     edge(generate forwardTo normalize transformed { output ->
-        logger.info { PhaseProgressLogger.completed("generate", generateStart?.elapsedNow()?.inWholeMilliseconds ?: 0L) }
+        val elapsed = generateStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
+        observer.exitPhase("generate", elapsed)
+        logger.info { PhaseProgressLogger.completed("generate", elapsed) }
+        onPhaseOutput?.invoke("generate", output)
         output
     })
     edge(normalize forwardTo verify)
@@ -232,7 +253,10 @@ fun scoopManifestStrategy(
 
     // Refine → back to verify (via normalize)
     edge(refine forwardTo normalize transformed { output ->
-        logger.info { PhaseProgressLogger.completed("refine", refineStart?.elapsedNow()?.inWholeMilliseconds ?: 0L) }
+        val elapsed = refineStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
+        observer.exitPhase("refine", elapsed)
+        logger.info { PhaseProgressLogger.completed("refine", elapsed) }
+        onPhaseOutput?.invoke("refine", output)
         output
     })
 

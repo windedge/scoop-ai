@@ -1,0 +1,227 @@
+.TH SCOOP-AI 1 "2026-06-18" "0.1.0" "Scoop Manifest Generator"
+.SH NAME
+scoop-ai \- AI agent that generates Scoop manifests for Windows packages
+.SH SYNOPSIS
+.B scoop-ai
+[\fI\,SUBCOMMAND\/\fR] [\fI\,OPTIONS\/\fR]
+.P
+.B scoop-ai
+\fI\,URL\/\fR [\fI\,OPTIONS\/\fR]
+.P
+.B scoop-ai generate
+\fI\,URL\/\fR [\fI\,OPTIONS\/\fR]
+.P
+.B scoop-ai doctor
+.P
+.B scoop-ai config show
+.P
+.B scoop-ai completion
+\fI\,SHELL\/\fR
+.P
+.B scoop-ai version
+.SH DESCRIPTION
+scoop-ai is an AI-powered manifest generator for the Scoop package manager
+on Windows. Given a GitHub repository URL, it automatically researches the
+project, analyzes Windows release assets, and generates a standards-compliant
+Scoop bucket manifest.
+.P
+The generation uses a three-phase LLM agent workflow:
+.IP \(bu 3
+.B Research
+\- Gather project metadata, discover Windows release assets via GitHub API,
+and identify persist targets from source code.
+.IP \(bu 3
+.B Analyze
+\- Compute SHA-256 hashes, inspect archive contents (ZIP, MSI, portable),
+and determine the correct bin, shortcuts, and extract_dir.
+.IP \(bu 3
+.B Generate
+\- Create the Scoop manifest JSON, validate it against Scoop's schema,
+and write it to the output file.
+.P
+If the first argument is not a subcommand name and does not start with \-,
+it is treated as a URL and the
+.B generate
+subcommand is automatically prepended.
+.SH COMMANDS
+.TP
+.B generate \fI\,URL\/\fR [\fI\,OPTIONS\/\fR]
+Generate a Scoop manifest from a GitHub repository URL or project URL.
+This is the primary command. If no subcommand is given and a URL is
+provided, generate is implied.
+.TP
+.B doctor
+Run 7 environment health checks:
+jdk-version, os, scoop-installed, api-key, cache-dir, write-permission,
+and version. Exits with code 0 on success (warnings allowed), code 1 on
+failure.
+.TP
+.B config show
+Display the runtime configuration after merging environment variables and
+defaults. API keys are shown as "set" or "unset" only.
+.TP
+.B completion \fI\,SHELL\/\fR
+Generate shell completion scripts. Supported shells: bash, zsh, fish,
+powershell.
+.TP
+.B version
+Print the scoop-ai version and commit hash.
+.SH OPTIONS
+The following options apply to the
+.B generate
+subcommand and the implicit URL mode.
+.TP
+.B \-o, \-\-output=\fI\,PATH\/\fR
+Output file path. Default: bucket/<app>.json.
+.TP
+.B \-P, \-\-provider=\fI\,PROVIDER\/\fR
+LLM provider. One of: deepseek, openai, anthropic, ollama, openrouter,
+openai-compatible. Default: deepseek.
+.TP
+.B \-\-api\-key=\fI\,KEY\/\fR
+LLM API key. Overrides the provider-specific environment variable.
+.TP
+.B \-\-base\-url=\fI\,URL\/\fR
+Custom API base URL. Required for the openai-compatible provider.
+.TP
+.B \-m, \-\-model=\fI\,MODEL\/\fR
+LLM model name. Overrides the provider default.
+.TP
+.B \-V, \-\-verify
+Run 'scoop install' to verify the generated manifest.
+.TP
+.B \-\-app\-name=\fI\,NAME\/\fR
+Application name for output path and cache. Inferred from URL by default.
+.TP
+.B \-\-no\-cache
+Do not keep downloaded files in the Scoop cache after generation.
+.TP
+.B \-p, \-\-prompt=\fI\,TEXT\/\fR
+Additional instructions for the manifest generation agent.
+.TP
+.B \-n, \-\-non\-interactive
+Skip interactive prompts. Suitable for batch or CI mode.
+.TP
+.B \-\-github\-token=\fI\,TOKEN\/\fR
+GitHub personal access token. Avoids rate limits during the research phase.
+.TP
+.B \-s, \-\-persist=\fI\,MODE\/\fR
+Persist field policy. One of: auto, force, none, no. Default: auto.
+.TP
+.B \-\-debug
+Print debug information including stack traces.
+.TP
+.B \-\-no\-progress
+Disable the TTY progress overlay.
+.TP
+.B \-\-output\-format=\fI\,FORMAT\/\fR
+Output format. One of: text, json. Default: text.
+.SH ENVIRONMENT
+.TP
+.B SCOOP_AI_API_KEY
+Fallback API key for all providers. Overridden by provider-specific keys.
+.TP
+.B SCOOP_AI_PROVIDER
+LLM provider name. Default: deepseek.
+.TP
+.B SCOOP_AI_BASE_URL
+Custom API base URL.
+.TP
+.B SCOOP_AI_MODEL
+LLM model name override.
+.TP
+.B SCOOP_AI_OUTPUT
+Default output file path.
+.TP
+.B SCOOP_AI_VERIFY
+Set to "true" to enable install verification by default.
+.TP
+.B SCOOP_AI_DEBUG
+Set to "true" to enable debug output.
+.TP
+.B SCOOP_AI_GITHUB_TOKEN
+GitHub personal access token (fallback).
+.TP
+.B DEEPSEEK_API_KEY
+DeepSeek provider API key.
+.TP
+.B OPENAI_API_KEY
+OpenAI provider API key.
+.TP
+.B ANTHROPIC_API_KEY
+Anthropic provider API key.
+.TP
+.B OPENROUTER_API_KEY
+OpenRouter provider API key.
+.TP
+.B GITHUB_TOKEN
+GitHub personal access token.
+.TP
+.B GH_TOKEN
+GitHub token alias.
+.TP
+.B HTTP_PROXY, HTTPS_PROXY
+Proxy server URL for HTTP and HTTPS traffic.
+.TP
+.B NO_COLOR
+Set to "1" to disable ANSI color output.
+.SH EXIT STATUS
+.TP
+0
+Operation completed successfully.
+.TP
+1
+General error (unexpected failure).
+.TP
+2
+Invalid command-line arguments or usage (USAGE).
+.TP
+3
+Configuration error, e.g. missing \-\-base\-url for openai-compatible (CONFIG).
+.TP
+64
+No Windows assets found for the given project (NO_ASSETS).
+.TP
+65
+LLM provider error, e.g. API failure or timeout (LLM_ERROR).
+.TP
+66
+Manifest verification (scoop install) failed (VERIFY_FAILED).
+.TP
+70
+File I/O error, e.g. write failure or network error (IO_ERROR).
+.SH EXAMPLES
+.TP
+Generate a manifest with default settings
+.B scoop-ai https://github.com/sharkdp/fd
+.TP
+Generate with a specific provider and model
+.B scoop-ai generate \-P openai \-m gpt-4o https://github.com/sharkdp/fd
+.TP
+Generate and verify with Scoop
+.B scoop-ai \-\-verify https://github.com/sharkdp/fd
+.TP
+Force persist field discovery
+.B scoop-ai \-s force https://github.com/sharkdp/fd
+.TP
+Run environment diagnostics
+.B scoop-ai doctor
+.SH SEE ALSO
+.TP
+scoop(1)
+\- The Scoop package manager
+.TP
+scoop-install(1)
+\- Install a Scoop application
+.TP
+https://scoop.sh/
+\- Scoop homepage
+.TP
+https://github.com/xujl/scoop-ai
+\- scoop-ai project page
+.SH BUGS
+Report bugs and feature requests at:
+.br
+https://github.com/xujl/scoop-ai/issues
+.SH AUTHOR
+scoop-ai contributors.

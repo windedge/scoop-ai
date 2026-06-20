@@ -135,8 +135,12 @@ class CompositionRoot(
      * from this composition root.
      *
      * @param onPhase Optional callback invoked when a phase starts.
+     * @param artifacts Optional sensitive artifact writer for debug output.
      */
-    fun createGenerator(onPhase: ((String) -> Unit)? = null): ScoopManifestGenerator {
+    fun createGenerator(
+        onPhase: ((String) -> Unit)? = null,
+        artifacts: com.scoopai.core.artifacts.SensitiveArtifactWriter? = null,
+    ): ScoopManifestGenerator {
         val config = resolveProviderConfig()
         return ScoopManifestGenerator(
             promptExecutor = config.createExecutor(),
@@ -147,6 +151,7 @@ class CompositionRoot(
             gitHubApi = gitHubApi,
             archiveInspector = archiveInspector,
             onPhase = onPhase,
+            artifacts = artifacts,
         )
     }
 

@@ -56,7 +56,8 @@ test-results/
 test-reports/
 coverage/
 nul
-bucket/
+bucket/*
+!bucket/scoop-ai.json
 .verify/
 tests/test_apps.json
 tests/results.json
@@ -67,3 +68,6 @@ tests/results.json
 tests/test_config.json
 tests/extras_bucket.txt
 tests/main_bucket.txt
+.scoopai/
+cli/bucket/
+bucket/

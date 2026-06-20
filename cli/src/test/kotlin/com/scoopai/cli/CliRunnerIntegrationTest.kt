@@ -110,7 +110,7 @@ class CliRunnerIntegrationTest {
         assertTrue(output.contains("--persist"), "should list --persist")
         assertTrue(output.contains("--verify"), "should list --verify")
         assertTrue(output.contains("--non-interactive"), "should list --non-interactive")
-        assertTrue(output.contains("--no-cache"), "should list --no-cache")
+        assertTrue(output.contains("--cache"), "should list --cache")
         assertTrue(output.contains("--debug"), "should list --debug")
         assertTrue(output.contains("--no-progress"), "should list --no-progress")
     }

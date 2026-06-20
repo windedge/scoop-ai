@@ -152,7 +152,9 @@ class CompatibilityTest {
         assertTrue(result.output.contains("--model"), "should list --model")
         assertTrue(result.output.contains("--verify"), "should list --verify")
         assertTrue(result.output.contains("--app-name"), "should list --app-name")
-        assertTrue(result.output.contains("--no-cache"), "should list --no-cache")
+        assertTrue(result.output.contains("--cache"), "should list --cache")
+        assertTrue(result.output.contains("--no-cache") || result.output.contains("--cache"),
+            "should list cache-related options")
         assertTrue(result.output.contains("--prompt"), "should list --prompt")
         assertTrue(result.output.contains("--non-interactive"), "should list --non-interactive")
         assertTrue(result.output.contains("--github-token"), "should list --github-token")

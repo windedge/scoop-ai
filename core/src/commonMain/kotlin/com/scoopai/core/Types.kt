@@ -11,7 +11,9 @@ import kotlinx.serialization.Serializable
  *   or `null` if no write tool call was made.
  * @property noAssets True when the project has no Windows assets at all.
  * @property tokenUsage Token usage statistics, or null if not tracked.
+ * @property stages Per-phase execution statistics.
  */
+@Serializable
 data class ManifestResult(
     val manifest: String,
     val suggestedAppName: String? = null,
@@ -19,6 +21,8 @@ data class ManifestResult(
     val tokenUsage: TokenUsage? = null,
     /** Total elapsed time in milliseconds */
     val durationMs: Long = 0L,
+    /** Per-phase execution statistics (4 stages: research/analyze/generate/refine). */
+    val stages: List<StageInfo> = emptyList(),
 )
 
 /**
@@ -38,12 +42,31 @@ data class RefineContext(
 /**
  * Cumulative token usage across all LLM calls during a generation run.
  */
+@Serializable
 data class TokenUsage(
     val totalInputTokens: Long = 0,
     val totalOutputTokens: Long = 0,
 ) {
     val totalTokens: Long get() = totalInputTokens + totalOutputTokens
 }
+
+/**
+ * Data for one execution phase in a manifest generation run.
+ *
+ * @property phaseName Phase name ("research", "analyze", "generate", "refine").
+ * @property durationMs Wall-clock duration of the phase in milliseconds.
+ * @property inputTokens Cumulative input tokens consumed by LLM calls in this phase.
+ * @property outputTokens Cumulative output tokens produced by LLM calls in this phase.
+ * @property toolCallCount Number of tool calls made during this phase.
+ */
+@Serializable
+data class StageInfo(
+    val phaseName: String,
+    val durationMs: Long,
+    val inputTokens: Long,
+    val outputTokens: Long,
+    val toolCallCount: Int,
+)
 
 /**
  * Mutable accumulator used by `onLLMCallCompleted` event handlers to collect
