@@ -117,7 +117,7 @@ Global options:
 |----------|------------------------------------|
 | `<url>`  | GitHub repository URL or project URL |
 
-#### Options (14 flags)
+#### Options (16 flags)
 
 | Short | Long               | Type     | Default                 | Description                                       |
 |-------|--------------------|----------|-------------------------|---------------------------------------------------|
@@ -135,6 +135,8 @@ Global options:
 | `-s`  | `--persist`        | `String` | `auto`                  | Persist field policy: `auto`, `force`, `none`, `no` |
 |       | `--debug`          | flag     | `false`                 | Print debug information including stack traces    |
 |       | `--no-progress`    | flag     | `false`                 | Disable TTY progress overlay                      |
+|       | `--run-id`         | `String` | auto-generated UUID     | Run identifier for artifacts directory            |
+|       | `--from`           | `String` | (none)                  | Checkpoint resume stage: `analyze` or `generate` (requires `--run-id`) |
 
 CLI flags take precedence over environment variables.
 

@@ -3,6 +3,7 @@ package com.scoopai.cli.command
 import com.github.ajalt.clikt.core.PrintHelpMessage
 import com.github.ajalt.clikt.core.UsageError
 import com.github.ajalt.clikt.testing.test
+import com.scoopai.cli.error.ExitCode
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -508,5 +509,75 @@ class GenerateCommandTest {
         assertTrue(cmd.debug)
         assertTrue(cmd.verify)
         assertTrue(cmd.noCache)
+    }
+
+    // ---------------------------------------------------------------
+    // Checkpoint resume: --from / --run-id
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `--from defaults to empty`() {
+        val cmd = GenerateCommand()
+        cmd.test("https://github.com/x/y")
+        assertEquals("", cmd.from)
+    }
+
+    @Test
+    fun `--from analyze parsed`() {
+        val cmd = GenerateCommand()
+        cmd.test("--from", "analyze", "https://github.com/x/y")
+        assertEquals("analyze", cmd.from)
+    }
+
+    @Test
+    fun `--from generate parsed`() {
+        val cmd = GenerateCommand()
+        cmd.test("--from", "generate", "https://github.com/x/y")
+        assertEquals("generate", cmd.from)
+    }
+
+    @Test
+    fun `invalid --from value throws`() {
+        val result = GenerateCommand().test("--from", "invalid", "https://github.com/x/y")
+        assertTrue(result.statusCode != 0, "Invalid --from value must fail")
+        assertTrue(
+            result.output.lowercase().contains("invalid choice") ||
+                result.output.lowercase().contains("error"),
+            "Output should contain error about invalid choice"
+        )
+    }
+
+    @Test
+    fun `--from without --run-id shows usage error`() {
+        // When --from is specified but --run-id is missing, doRun() should throw UsageError
+        val cmd = GenerateCommand()
+        val result = cmd.test("--from", "analyze", "https://github.com/x/y")
+        assertTrue(
+            result.statusCode != 0,
+            "Should exit with error when --from is specified without --run-id" +
+                " (got statusCode=${result.statusCode})"
+        )
+    }
+
+    @Test
+    fun `--from with --run-id parsed`() {
+        val cmd = GenerateCommand()
+        cmd.test("--from", "generate", "--run-id", "abc123", "https://github.com/x/y")
+        assertEquals("generate", cmd.from)
+        assertEquals("abc123", cmd.runId)
+    }
+
+    @Test
+    fun `--from analyze with --run-id in all-flags test`() {
+        val cmd = GenerateCommand()
+        cmd.test(
+            "-o", "out.json",
+            "--run-id", "run-001",
+            "--from", "analyze",
+            "https://github.com/x/y"
+        )
+        assertEquals("analyze", cmd.from)
+        assertEquals("run-001", cmd.runId)
+        assertEquals("out.json", cmd.output)
     }
 }

@@ -76,11 +76,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--from <analyze|generate>` flag for checkpoint resume (skips completed phases)
+- `CheckpointResume.kt`: loads phase outputs from `.scoopai/runs/<runId>/` and constructs
+  Koog checkpoints for resuming generation from a specific stage
+- `ResumeData.toAgentCheckpointData()`: converts phase outputs to `AgentCheckpointData`
+  for `Persistence.runFromCheckpoint`
+- `ScoopManifestGenerator.generate()` now accepts optional `resumeData` parameter
+  for checkpoint resume
+- `CheckpointResumeTest.kt`: 9 tests covering ANALYZE/GENERATE resume, missing
+  artifacts, corrupt JSON, and checkpoint construction
+- `--from` CLI tests: 7 tests for parsing, validation, and combined flags
+
 ### Changed
+
+- `ScoopManifestGenerator.generate()`: when `resumeData` is provided, uses
+  `Persistence.runFromCheckpoint` instead of `agent.run()` to skip completed phases
 
 ### Fixed
 
 ### Notes
+
+- Resolves T-3.05b checkpoint resume (previously RESUME_DEFERRED)
+- `--from` requires `--run-id`; provides a clear error message when missing
+- Falls back to full generation if artifacts are missing or corrupt
+- End-to-end resume verification with real LLM deferred to batch 4
 
 ## [0.2.0] - 2026-06-17
 

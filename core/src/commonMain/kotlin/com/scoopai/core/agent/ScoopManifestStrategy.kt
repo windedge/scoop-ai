@@ -92,13 +92,13 @@ fun scoopManifestStrategy(
     onPhaseOutput: ((String, String) -> Unit)? = null,
 ) = strategy<String, ManifestResult>("scoop_manifest_v3") {
 
-    // ── Storage keys & captured state ─────────────────────────────
+    // ── Storage keys ───────────────────────────────────────────
     val retryCountKey = createStorageKey<Int>("refine_retry_count")
     val maxRetries = 3
-    var researchData: ResearchOutput? = null
-    var analyzeData: AnalyzeOutput? = null
-    var suggestedAppName: String? = null
-    var finalManifest: String? = null
+    val researchDataKey = createStorageKey<ResearchOutput>("research_data")
+    val analyzeDataKey = createStorageKey<AnalyzeOutput>("analyze_data")
+    val suggestedAppNameKey = createStorageKey<String>("suggested_app_name")
+    val finalManifestKey = createStorageKey<String>("final_manifest")
 
     // ── Phase timing (for progress logging) ────────────────────
     var researchStart: TimeMark? = null
@@ -146,15 +146,15 @@ fun scoopManifestStrategy(
         observer.enterPhase("analyze")
         logger.info { PhaseProgressLogger.starting("analyze") }
         analyzeStart = TimeSource.Monotonic.markNow()
-        researchData = input
-        suggestedAppName = input.suggested_app_name
+        storage.set(researchDataKey, input)
+        input.suggested_app_name?.let { storage.set(suggestedAppNameKey, it) }
         analyzePromptBuilder?.invoke(input) ?: input.toString()
     }
 
     // ── Deterministic: assemble JSON skeleton from research + analyze data ──
     val prepareManifest by node<AnalyzeOutput, String>("prepareManifest") { analyzeOutput ->
-        analyzeData = analyzeOutput
-        assembleManifestSkeleton(researchData!!, analyzeOutput)
+        storage.set(analyzeDataKey, analyzeOutput)
+        assembleManifestSkeleton(storage.get(researchDataKey)!!, analyzeOutput)
     }
 
     // ── Generate phase (LLM, no tools: review skeleton + finalize) ──
@@ -167,7 +167,7 @@ fun scoopManifestStrategy(
         logger.info { PhaseProgressLogger.starting("generate") }
         generateStart = TimeSource.Monotonic.markNow()
         storage.set(retryCountKey, 0)
-        generatePromptBuilder?.invoke(skeleton, analyzeData!!, researchData) ?: skeleton
+        generatePromptBuilder?.invoke(skeleton, storage.get(analyzeDataKey)!!, storage.get(researchDataKey)) ?: skeleton
     }
 
     // ── Refine phase (LLM, no tools, lightweight fix loop) ──
@@ -193,7 +193,26 @@ fun scoopManifestStrategy(
 
     // ── Verify node (deterministic: validate + review) ──
     val verify by node<String, RefineContext?>("verify") { manifest ->
-        validateManifest(manifest, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries) { finalManifest = it }
+        validateManifest(manifest, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries) { storage.set(finalManifestKey, it) }
+    }
+
+    // ── Build final result node (reads from storage, replaces edge transform that used captured vars) ──
+    val buildFinalResult by node<RefineContext?, ManifestResult>("buildFinalResult") { _ ->
+        val manifest = storage.get(finalManifestKey) ?: ""
+        ManifestResult(
+            manifest = extractJsonBlock(manifest) ?: manifest,
+            suggestedAppName = storage.get(suggestedAppNameKey),
+        )
+    }
+
+    // ── Build exhausted result node ──
+    val buildExhaustedResult by node<RefineContext?, ManifestResult>("buildExhaustedResult") {
+        logger.warn { "[strategy] Refine exhausted after $maxRetries attempts. Returning last manifest with issues." }
+        val manifest = storage.get(finalManifestKey) ?: ""
+        ManifestResult(
+            manifest = extractJsonBlock(manifest) ?: manifest,
+            suggestedAppName = storage.get(suggestedAppNameKey),
+        )
     }
 
     // ── Edges ──
@@ -234,15 +253,11 @@ fun scoopManifestStrategy(
     })
     edge(normalize forwardTo verify)
 
-    // Verify → pass → finish
-    edge(verify forwardTo nodeFinish onCondition { ctx ->
+    // Verify → pass → buildFinalResult → finish
+    edge(verify forwardTo buildFinalResult onCondition { ctx ->
         ctx == null
-    } transformed { _ ->
-        ManifestResult(
-            manifest = extractJsonBlock(finalManifest!!) ?: finalManifest!!,
-            suggestedAppName = suggestedAppName,
-        )
     })
+    edge(buildFinalResult forwardTo nodeFinish)
 
     // Verify → fail + retry ≤ 3 → refine loop
     edge(verify forwardTo refine onCondition { ctx ->
@@ -260,16 +275,11 @@ fun scoopManifestStrategy(
         output
     })
 
-    // Verify → fail + retry > 3 → exhausted finish
-    edge(verify forwardTo nodeFinish onCondition { ctx ->
+    // Verify → fail + retry > 3 → buildExhaustedResult → finish
+    edge(verify forwardTo buildExhaustedResult onCondition { ctx ->
         ctx != null && ctx.retryCount > maxRetries
-    } transformed {
-        logger.warn { "[strategy] Refine exhausted after $maxRetries attempts. Returning last manifest with issues." }
-        ManifestResult(
-            manifest = extractJsonBlock(finalManifest!!) ?: finalManifest!!,
-            suggestedAppName = suggestedAppName,
-        )
     })
+    edge(buildExhaustedResult forwardTo nodeFinish)
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +341,7 @@ internal suspend fun validateManifest(
     retryCountKey: AIAgentStorageKey<Int>,
     storage: AIAgentStorageAPI,
     maxRetries: Int,
-    finalManifestSetter: (String) -> Unit,
+    finalManifestSetter: suspend (String) -> Unit,
 ): RefineContext? {
     finalManifestSetter(manifest)
     val errors = mutableListOf<String>()

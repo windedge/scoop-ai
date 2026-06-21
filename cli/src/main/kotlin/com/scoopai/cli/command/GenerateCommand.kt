@@ -15,14 +15,17 @@ import com.scoopai.cli.error.CliError
 import com.scoopai.cli.error.ExitCode
 import com.scoopai.cli.error.GeneralError
 import com.scoopai.cli.error.NoAssetsError
+import com.scoopai.cli.error.UsageError
 import com.scoopai.cli.error.classifyException
 import com.scoopai.cli.error.mask
 import com.scoopai.core.ManifestResult
 import com.scoopai.core.manifest.parseManifestMeta
+import com.scoopai.core.artifacts.CheckpointResume
 import com.scoopai.tools.DefaultToolRegistryFactory
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import java.io.File
 
 private val logger = KotlinLogging.logger {}
 
@@ -117,6 +120,17 @@ open class GenerateCommand(
      */
     val runId: String? by option("--run-id")
 
+    /**
+     * Checkpoint resume stage.
+     * When set, skips completed phases and resumes from the specified stage.
+     * Requires --run-id to identify the artifacts directory.
+     * - "analyze": skip research phase, start from analyze
+     * - "generate": skip research + analyze phases, start from generate
+     */
+    val from: String by option("--from")
+        .choice("analyze", "generate")
+        .default("")
+
     // ── Choice option (persist mode) ──────────────────────────────────
     val persist: String by option("-s", "--persist")
         .choice("auto", "force", "none", "no")
@@ -191,6 +205,13 @@ open class GenerateCommand(
                 }
             }
 
+            // ── Checkpoint resume validation ──────────────────────────
+            val shouldResume = from.isNotEmpty()
+            if (shouldResume && runId.isNullOrEmpty()) {
+                throw UsageError("--from requires --run-id to be specified. " +
+                    "Example: --from analyze --run-id <previous-run-id>")
+            }
+
             progress.start()
             val result: ManifestResult = try {
                 runBlocking {
@@ -200,10 +221,32 @@ open class GenerateCommand(
                     )
                     // Reset tool call budget for a fresh run
                     DefaultToolRegistryFactory.getToolBudget()?.reset()
+
+                    // ── Load checkpoint resume data if requested ─────
+                    val effectiveResumeData = if (shouldResume) {
+                        val runDir = File(ARTIFACTS_BASE_DIR, ".scoopai/runs/$runId")
+                        val stage = when (from) {
+                            "analyze" -> CheckpointResume.ResumeStage.ANALYZE
+                            "generate" -> CheckpointResume.ResumeStage.GENERATE
+                            else -> null
+                        }
+                        if (stage != null) {
+                            val data = CheckpointResume(runDir).loadResumePoint(stage)
+                            if (data == null) {
+                                logger.warn { "[resume] Artifacts not found or corrupt for " +
+                                    "runId=$runId, stage=$from. Falling back to full generation." }
+                            } else {
+                                logger.info { "[resume] Loaded checkpoint for $from (runId=$runId)" }
+                            }
+                            data
+                        } else null
+                    } else null
+
                     generator.generate(
                         url = envArgs.url,
                         outputPath = resolvedOutput.ifBlank { null },
                         userPrompt = effectiveUserPrompt,
+                        resumeData = effectiveResumeData,
                     )
                 }
             } finally {

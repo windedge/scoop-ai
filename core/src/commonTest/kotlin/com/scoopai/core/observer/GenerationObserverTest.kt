@@ -3,7 +3,6 @@ package com.scoopai.core.observer
 import com.scoopai.core.StageInfo
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class GenerationObserverTest {
@@ -157,23 +156,46 @@ class GenerationObserverTest {
     }
 
     // ---------------------------------------------------------------
-    // exitPhase validation
+    // exitPhase tolerates skipped/mismatched phases (resume scenario)
     // ---------------------------------------------------------------
 
     @Test
-    fun `exitPhase with wrong name throws`() {
+    fun `exitPhase tolerates mismatched name`() {
         val observer = GenerationObserver()
         observer.enterPhase("research")
-        assertFailsWith<IllegalArgumentException> {
-            observer.exitPhase("analyze", 1000)
-        }
+        // Resume scenario: exitPhase called with a different name
+        // (skipped phase's edge transform still fires)
+        observer.exitPhase("analyze", 1000) // Should NOT throw
+        // research is still active; mismatched exit is silently ignored
     }
 
     @Test
-    fun `exitPhase without enterPhase throws`() {
+    fun `exitPhase tolerates missing enterPhase`() {
         val observer = GenerationObserver()
-        assertFailsWith<IllegalArgumentException> {
-            observer.exitPhase("research", 1000)
-        }
+        // Resume scenario: exitPhase called without any enterPhase
+        observer.exitPhase("research", 1000) // Should NOT throw
+        assertTrue(observer.snapshot().isEmpty())
+    }
+
+    @Test
+    fun `exitPhase tolerates skipped phase in resume scenario`() {
+        // Simulate resume: exitPhase("analyze") without enterPhase("analyze")
+        // e.g. --from generate skips analyze
+        val observer = GenerationObserver()
+        observer.exitPhase("analyze", 1000) // Should not throw
+        // Snapshot still empty (no enter/exit pair completed)
+        assertTrue(observer.snapshot().isEmpty())
+    }
+
+    @Test
+    fun `exitPhase tolerates mismatched phase in resume scenario`() {
+        // Resume: entered generate, but exit receives research (leftover from skipped phase)
+        val observer = GenerationObserver()
+        observer.enterPhase("generate")
+        observer.exitPhase("research", 1000) // Should not throw (research not entered)
+        // generate is still current, not corrupted
+        observer.exitPhase("generate", 2000)
+        assertEquals(1, observer.snapshot().size)
+        assertEquals("generate", observer.snapshot()[0].phaseName)
     }
 }

@@ -703,6 +703,70 @@ class ScoopManifestGeneratorMockTest {
     }
 
     // =========================================================================
+    // Storage key refactoring verification (S5 batch 2)
+    // =========================================================================
+
+    @Test
+    fun `storage-backed state propagates researchData analyzeData suggestedAppName and finalManifest correctly`() = runBlocking {
+        // Verifies that the 4 storage keys (research_data, analyze_data, suggested_app_name, final_manifest)
+        // correctly propagate values across phases in the strategy.
+        // This test validates the S5 batch 2 refactoring: var -> storage key.
+        val researchResult = ResearchOutput(
+            status = ResearchStatus.OK,
+            project = "sharkdp/fd",
+            version = "10.2.0",
+            suggested_app_name = "fd",
+            windows_assets = listOf(
+                WindowsAsset(
+                    url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                    architecture = "64bit",
+                    asset_type = "zip",
+                    source = "release_api"
+                )
+            )
+        )
+        val analyzeResult = AnalyzeOutput(
+            status = AnalyzeStatus.OK,
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                    hash = "abc123",
+                    extract_dir = "fd-v10.2.0-x86_64-pc-windows-msvc"
+                )
+            ),
+            bin = emptyList()
+        )
+        val manifestJson = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip","hash":"abc123","extract_dir":"fd-v10.2.0-x86_64-pc-windows-msvc"}},"bin":["fd.exe"]}"""
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = model,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+        )
+
+        val result = generator.generate("https://github.com/sharkdp/fd")
+
+        // Verify storage-backed suggestedAppNameKey was populated
+        assertEquals("fd", result.suggestedAppName, "suggestedAppName should propagate via storage")
+        // Verify storage-backed finalManifestKey was populated and extractJsonBlock works
+        assertTrue(result.manifest.contains("10.2.0"), "manifest should contain version (storage-backed finalManifestKey)")
+        assertTrue(result.manifest.contains("fd.exe"), "manifest should contain bin entry (storage-backed)")
+        assertTrue(result.manifest.isNotBlank(), "manifest should not be blank (buildFinalResult via storage)")
+    }
+
+    // =========================================================================
     // helpers
     // =========================================================================
 

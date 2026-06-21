@@ -5,6 +5,7 @@ import ai.koog.agents.core.agent.GraphAIAgent
 import ai.koog.agents.core.agent.config.AIAgentConfig
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.features.eventHandler.feature.handleEvents
+import ai.koog.agents.snapshot.feature.Persistence
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.model.PromptExecutor
 import ai.koog.prompt.llm.LLMCapability
@@ -13,7 +14,7 @@ import com.scoopai.core.agent.AnalyzeOutput
 import com.scoopai.core.agent.PhaseTools
 import com.scoopai.core.agent.PrefetchResult
 import com.scoopai.core.agent.ResearchOutput
-
+import com.scoopai.core.artifacts.ResumeData
 import com.scoopai.core.agent.prompt.REVIEW_AGENT_SYSTEM_PROMPT
 import com.scoopai.core.observer.GenerationObserver
 import com.scoopai.core.agent.prompt.buildAnalyzePrompt
@@ -79,6 +80,12 @@ class ScoopManifestGenerator(
         url: String,
         outputPath: String? = null,
         userPrompt: String? = null,
+        /**
+         * Optional checkpoint resume data. When present, skips completed phases
+         * and resumes execution from the specified stage using Koog's
+         * [Persistence.runFromCheckpoint] instead of a full [agent.run].
+         */
+        resumeData: ResumeData? = null,
     ): ManifestResult {
         val startTime = TimeSource.Monotonic.markNow()
         observer.reset()
@@ -202,7 +209,18 @@ class ScoopManifestGenerator(
         }
 
         val result: ManifestResult = try {
-            agent.run(url)
+            if (resumeData != null) {
+                logger.info { "[resume] Resuming from ${resumeData.fromStage} using runId=${resumeData.runId}" }
+                val checkpoint = resumeData.toAgentCheckpointData(url)
+                Persistence.runFromCheckpoint(
+                    agent = agent,
+                    input = url,
+                    checkpoint = checkpoint,
+                    sessionId = resumeData.runId,
+                )
+            } else {
+                agent.run(url)
+            }
         } catch (e: Exception) {
             artifacts?.let { it.markFailed("${e::class.simpleName}: ${e.message}") }
             throw e

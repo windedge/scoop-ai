@@ -19,9 +19,9 @@ import com.scoopai.core.StageInfo
  * exitPhase("analyze", durationMs)
  * ```
  *
- * [snapshot] returns all completed phases. An exception is thrown if
- * [exitPhase] is called with a name that does not match the current phase,
- * or if [exitPhase] is called without a preceding [enterPhase].
+ * [snapshot] returns all completed phases. [exitPhase] is tolerant of
+ * skipped or mismatched phases (e.g. during checkpoint resume) and
+ * silently returns if no phase is active or the name does not match.
  */
 class GenerationObserver {
 
@@ -47,16 +47,15 @@ class GenerationObserver {
     /**
      * Finalize the current phase and store its [StageInfo].
      *
-     * @throws IllegalArgumentException if [name] does not match the current phase
-     *   or if no phase is active.
+     * This method is tolerant of skipped or mismatched phases:
+     * if no phase is active or the active phase does not match [name],
+     * it silently returns. This accommodates checkpoint resume scenarios
+     * where a skipped phase's edge transform still fires [exitPhase]
+     * without a corresponding [enterPhase].
      */
     fun exitPhase(name: String, durationMs: Long) {
-        val phase = current ?: throw IllegalArgumentException(
-            "exitPhase(\"$name\") called but no phase is active"
-        )
-        require(phase.phaseName == name) {
-            "exitPhase(\"$name\") called but current phase is \"${phase.phaseName}\""
-        }
+        val phase = current ?: return
+        if (phase.phaseName != name) return
         completed.add(
             StageInfo(
                 phaseName = name,
