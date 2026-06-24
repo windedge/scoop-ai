@@ -13,7 +13,7 @@ private val manifestMetaJson: Json = Json { ignoreUnknownKeys = true; isLenient 
  *
  * @property version The value of the top-level `version` field, or null.
  * @property url The value of the top-level `url` field, or null.
- *   Note: architecture-specific URLs are not extracted.
+ *   Falls back to `architecture.64bit.url` when no top-level url is present.
  */
 data class ManifestMeta(
     val version: String?,
@@ -21,7 +21,7 @@ data class ManifestMeta(
 )
 
 /**
- * Extract minimal metadata (version, top-level url) from a Scoop manifest JSON.
+ * Extract minimal metadata (version, url) from a Scoop manifest JSON.
  *
  * Uses kotlinx.serialization for robust parsing, unlike the old regex-based approach.
  * Returns [ManifestMeta] with null fields when the JSON is invalid or fields are absent.
@@ -34,7 +34,10 @@ fun parseManifestMeta(manifest: String): ManifestMeta {
         val obj = manifestMetaJson.parseToJsonElement(manifest).jsonObject
         ManifestMeta(
             version = obj["version"]?.jsonPrimitive?.contentOrNull,
-            url = obj["url"]?.jsonPrimitive?.contentOrNull,
+            url = obj["url"]?.jsonPrimitive?.contentOrNull
+                ?: obj["architecture"]?.jsonObject
+                    ?.get("64bit")?.jsonObject
+                    ?.get("url")?.jsonPrimitive?.contentOrNull,
         )
     } catch (_: Exception) {
         ManifestMeta(null, null)

@@ -19,12 +19,19 @@ class ManifestMetaTest {
     }
 
     @Test
-    fun `parses manifest with architecture block`() {
+    fun `parses manifest with architecture block and falls back to arch url`() {
         val manifest = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://example.com/fd.zip","hash":"abc"}},"bin":["fd.exe"]}"""
         val meta = parseManifestMeta(manifest)
         assertEquals("10.2.0", meta.version)
-        // url should be null because only architecture has url, not top-level
-        assertNull(meta.url)
+        // url falls back to architecture.64bit.url when no top-level url exists
+        assertEquals("https://example.com/fd.zip", meta.url)
+    }
+
+    @Test
+    fun `prefers top-level url over architecture url`() {
+        val manifest = """{"version":"1.0","url":"https://example.com/top.exe","architecture":{"64bit":{"url":"https://example.com/arch.exe","hash":"abc"}}}"""
+        val meta = parseManifestMeta(manifest)
+        assertEquals("https://example.com/top.exe", meta.url)
     }
 
     // ---------------------------------------------------------------

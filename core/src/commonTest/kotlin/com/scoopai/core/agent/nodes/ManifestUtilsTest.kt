@@ -1485,11 +1485,12 @@ class ManifestUtilsTest {
     // ---------------------------------------------------------------
 
     @Test
-    fun `removeInvalidTopLevelFields removes innosetup`() {
-        val input = """{"version":"1.0","innosetup":true,"url":"https://example.com/app.zip","hash":"abc"}"""
+    fun `removeInvalidTopLevelFields removes installer_type but preserves innosetup`() {
+        val input = """{"version":"1.0","innosetup":true,"installer_type":"innosetup","url":"https://example.com/app.zip","hash":"abc"}"""
         val result = removeInvalidTopLevelFields(input)
         val json = parseJsonObject(result)
-        assertFalse(json.containsKey("innosetup"))
+        assertTrue(json.containsKey("innosetup"), "innosetup is a valid Scoop field and must be preserved")
+        assertFalse(json.containsKey("installer_type"), "installer_type is an internal field and must be removed")
         assertTrue(json.containsKey("version"))
     }
 

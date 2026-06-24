@@ -910,14 +910,17 @@ internal fun normalizeHomepage(manifestJson: String): String {
 // Remove invalid top-level fields from manifest
 // ---------------------------------------------------------------------------
 
-private val INVALID_TOP_LEVEL_FIELDS = setOf("innosetup", "installer_type")
+private val INVALID_TOP_LEVEL_FIELDS = setOf("installer_type")
 
 /**
  * Removes known-invalid top-level fields from a manifest JSON string.
  *
- * LLMs sometimes hallucinate Scoop-invalid fields like `innosetup` or
- * `installer_type`. These are not valid Scoop manifest fields and should
- * be removed before output.
+ * LLMs sometimes hallucinate `installer_type` which is an internal analyze-phase
+ * field, not a valid Scoop manifest field. This function removes it.
+ *
+ * NOTE: `innosetup` is intentionally NOT in this set — it IS a valid Scoop
+ * manifest field (see extras bucket with 122+ usages). It tells Scoop to use
+ * innounp to automatically extract InnoSetup installers.
  *
  * Returns the original JSON unchanged if no invalid fields are present.
  */

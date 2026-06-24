@@ -270,6 +270,30 @@ object ReferenceManifests {
 }
 """.trimIndent()
 
+    val BLOBSAVER = """{
+    "version": "3.6.0",
+    "description": "A GUI and CLI app for automatically saving SHSH blobs.",
+    "homepage": "https://github.com/airsquared/blobsaver",
+    "license": "GPL-3.0-only",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/airsquared/blobsaver/releases/download/v3.6.0/blobsaver-3.6.0.exe",
+            "hash": "48d45e70d2217046eb5243973f02c5d0bd71daf6ca0ab23cb0470811b81f4c01"
+        }
+    },
+    "innosetup": true,
+    "bin": "blobsaver.exe",
+    "shortcuts": [["blobsaver.exe", "blobsaver"]],
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/airsquared/blobsaver/releases/download/v${'$'}version/blobsaver-${'$'}version.exe"
+            }
+        }
+    }
+}""".trimIndent()
+
     val ALL = listOf(
         "### Simple GitHub autoupdate (no checksum)\n$RIPGREP",
         "### GitHub autoupdate + checksums.txt (bundle hash)\n$LAZYGIT",
@@ -278,6 +302,7 @@ object ReferenceManifests {
         "### GUI zip with pre_install rename + persist\n$SUMATRAPDF",
         "### CLI with env_set + pre_install copy + persist (config from %APPDATA%)\n$BAT_CLI",
         "### env_add_path instead of bin (version manager with shims)\n$PYENV_WIN",
-        "### NuGet nupkg with RELEASES hash (Squirrel AutoUpdater)\n$CARNAC_NUPKG"
+        "### NuGet nupkg with RELEASES hash (Squirrel AutoUpdater)\n$CARNAC_NUPKG",
+        "### InnoSetup installer (innosetup:true triggers innounp auto-extraction)\n$BLOBSAVER"
     ).joinToString("\n\n---\n\n")
 }
