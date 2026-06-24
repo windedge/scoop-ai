@@ -4,15 +4,17 @@
         <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
             <charset>UTF-8</charset>
             <layout class="ch.qos.logback.classic.PatternLayout">
-                <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+                <!-- %nopex suppresses stack traces from Koog framework error logs;
+                     with - -debug still shows full stack traces via our catch blocks -->
+                <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%nopex%n</pattern>
             </layout>
         </encoder>
     </appender>
     <root level="INFO">
         <appender-ref ref="STDOUT" />
     </root>
-    <logger name="ai.koog.agents" level="WARN" />
-    <logger name="ai.koog.prompt" level="WARN" />
+    <logger name="ai.koog.agents" level="ERROR" />
+    <logger name="ai.koog.prompt" level="ERROR" />
     <logger name="ai.koog.prompt.executor" level="ERROR" />
     <logger name="com.scoopai" level="INFO" />
 </configuration>

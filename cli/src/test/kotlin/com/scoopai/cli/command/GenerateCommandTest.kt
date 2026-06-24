@@ -512,6 +512,51 @@ class GenerateCommandTest {
     }
 
     // ---------------------------------------------------------------
+    // URL format validation
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `invalid url like not-a-url reports USAGE error not CONFIG`() {
+        val result = GenerateCommand().test("not-a-url")
+        assertEquals(2, result.statusCode) // USAGE
+        assertTrue(
+            result.output.contains("url") || result.output.contains("URL"),
+            "Output should mention URL, got: ${result.output}"
+        )
+    }
+
+    @Test
+    fun `short alphanumeric string is rejected as invalid URL`() {
+        val result = GenerateCommand().test("foo")
+        assertEquals(2, result.statusCode)
+        assertTrue(
+            result.output.contains("url") || result.output.contains("URL"),
+            "Output should mention URL, got: ${result.output}"
+        )
+    }
+
+    @Test
+    fun `valid https url passes validation`() {
+        val cmd = GenerateCommand()
+        cmd.test("https://github.com/owner/repo")
+        assertEquals("https://github.com/owner/repo", cmd.url)
+    }
+
+    @Test
+    fun `short form github url passes validation`() {
+        val cmd = GenerateCommand()
+        cmd.test("github.com/owner/repo")
+        assertEquals("github.com/owner/repo", cmd.url)
+    }
+
+    @Test
+    fun `ssh git url passes validation`() {
+        val cmd = GenerateCommand()
+        cmd.test("git@github.com:owner/repo.git")
+        assertEquals("git@github.com:owner/repo.git", cmd.url)
+    }
+
+    // ---------------------------------------------------------------
     // Checkpoint resume: --from / --run-id
     // ---------------------------------------------------------------
 
@@ -556,6 +601,18 @@ class GenerateCommandTest {
             result.statusCode != 0,
             "Should exit with error when --from is specified without --run-id" +
                 " (got statusCode=${result.statusCode})"
+        )
+    }
+
+    @Test
+    fun `--from without --run-id reports USAGE before checking provider config`() {
+        // Even if no API key is configured, --from without --run-id should report USAGE
+        // before reaching resolveProviderConfig()
+        val result = GenerateCommand().test("--from", "generate", "https://github.com/x/y")
+        assertEquals(2, result.statusCode)
+        assertTrue(
+            result.output.contains("--run-id") || result.output.contains("run-id"),
+            "Output should mention --run-id, got: ${result.output}"
         )
     }
 

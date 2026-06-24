@@ -17,7 +17,7 @@ class CompletionCommand : CliktCommand(
     name = "completion",
     help = "Generate shell completion scripts",
 ) {
-    val shell: String by argument("shell")
+    val shell: String by argument("shell", help = "Shell name: bash|zsh|fish|powershell")
         .choice("bash", "zsh", "fish", "powershell")
 
     override fun run() {

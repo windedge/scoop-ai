@@ -91,6 +91,10 @@ tasks.register<Copy>("installManPage") {
     into(layout.buildDirectory.dir("dist/man/man1"))
 }
 
+tasks.named("installDist") {
+    dependsOn("installManPage")
+}
+
 tasks.named<Sync>("installDist") {
     into("lib") {
         from(tasks.shadowJar)

@@ -216,7 +216,7 @@ class CliRunnerIntegrationTest {
 
     @Test
     fun `openai-compatible without base-url exits 3 and shows error`() {
-        val exitCode = CliRunner.run(arrayOf("-P", "openai-compatible", "some-url"))
+        val exitCode = CliRunner.run(arrayOf("-P", "openai-compatible", "https://github.com/x/y"))
         val output = outContent.toString()
         val errOutput = errContent.toString()
         assertEquals(3, exitCode, "openai-compatible without base-url should exit 3 (CONFIG)")

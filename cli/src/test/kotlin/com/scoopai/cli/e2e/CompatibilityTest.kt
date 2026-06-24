@@ -72,7 +72,7 @@ class CompatibilityTest {
 
     @Test
     fun `scoop-ai openai-compatible no base-url exits with CONFIG`() {
-        val code = CliRunner.run(arrayOf("bad-url", "-P", "openai-compatible"))
+        val code = CliRunner.run(arrayOf("https://github.com/x/y", "-P", "openai-compatible"))
         assertEquals(3, code, "openai-compatible without base-url should exit 3 (CONFIG)")
     }
 

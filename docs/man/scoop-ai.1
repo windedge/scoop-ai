@@ -1,4 +1,4 @@
-.TH SCOOP-AI 1 "2026-06-18" "0.1.0" "Scoop Manifest Generator"
+.TH SCOOP-AI 1 "2026-06-24" "0.3.0" "Scoop Manifest Generator"
 .SH NAME
 scoop-ai \- AI agent that generates Scoop manifests for Windows packages
 .SH SYNOPSIS
@@ -93,8 +93,8 @@ Run 'scoop install' to verify the generated manifest.
 .B \-\-app\-name=\fI\,NAME\/\fR
 Application name for output path and cache. Inferred from URL by default.
 .TP
-.B \-\-no\-cache
-Do not keep downloaded files in the Scoop cache after generation.
+.B \-\-cache=\fI\,MODE\/\fR
+Cache mode: keep or discard downloaded files. Default: keep.
 .TP
 .B \-p, \-\-prompt=\fI\,TEXT\/\fR
 Additional instructions for the manifest generation agent.
@@ -105,6 +105,18 @@ Skip interactive prompts. Suitable for batch or CI mode.
 .B \-\-github\-token=\fI\,TOKEN\/\fR
 GitHub personal access token. Avoids rate limits during the research phase.
 .TP
+.B \-\-output\-format=\fI\,FORMAT\/\fR
+Output format. One of: text, json. Default: text.
+.TP
+.B \-\-artifacts=\fI\,MODE\/\fR
+Write phase artifacts. One of: auto, always, never. Default: auto.
+.TP
+.B \-\-run\-id=\fI\,ID\/\fR
+Override run ID for artifacts and checkpoint resume. Auto\-generated if omitted.
+.TP
+.B \-\-from=\fI\,STAGE\/\fR
+Resume from a checkpoint stage: analyze or generate. Requires \-\-run\-id.
+.TP
 .B \-s, \-\-persist=\fI\,MODE\/\fR
 Persist field policy. One of: auto, force, none, no. Default: auto.
 .TP
@@ -113,9 +125,6 @@ Print debug information including stack traces.
 .TP
 .B \-\-no\-progress
 Disable the TTY progress overlay.
-.TP
-.B \-\-output\-format=\fI\,FORMAT\/\fR
-Output format. One of: text, json. Default: text.
 .SH ENVIRONMENT
 .TP
 .B SCOOP_AI_API_KEY

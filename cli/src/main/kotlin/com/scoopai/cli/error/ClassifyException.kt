@@ -17,15 +17,36 @@ import java.io.IOException
  * - [ToolException] -> [VerifyFailedError] with exit code 66 (VERIFY_FAILED)
  * - All other exceptions -> [GeneralError] with exit code 1 (GENERAL)
  */
+/** Extract the first line of an exception message, falling back to class name. */
+private fun firstLine(message: String?, className: String): String =
+    message?.lineSequence()?.firstOrNull()?.trim()?.let { if (it.isNotEmpty()) it else null }
+        ?: className
+
+/**
+ * Classifies a [Throwable] into the appropriate [CliError] subclass.
+ *
+ * This is a pure function (no side effects), making it easy to unit-test
+ * without mocking infrastructure.
+ *
+ * Messages are truncated to the first line to prevent stack trace leakage
+ * in user-facing output.
+ *
+ * Mapping:
+ * - [LLMClientException], [KoogHttpClientException] -> [LlmError] with exit code 65 (LLM_ERROR)
+ * - [IOException] -> [IoError] with exit code 70 (IO_ERROR)
+ * - [ToolException] -> [VerifyFailedError] with exit code 66 (VERIFY_FAILED)
+ * - All other exceptions -> [GeneralError] with exit code 1 (GENERAL)
+ */
 fun classifyException(e: Throwable): CliError {
+    val message = firstLine(e.message, e.javaClass.simpleName)
     return when (e) {
         is LLMClientException, is KoogHttpClientException ->
-            LlmError("LLM request failed: ${e.message}", e)
+            LlmError("LLM request failed: $message", e)
         is IOException ->
-            IoError("I/O failure: ${e.message}", e)
+            IoError("I/O failure: $message", e)
         is ToolException ->
-            VerifyFailedError("Tool execution failed: ${e.message}", e)
+            VerifyFailedError("Tool execution failed: $message", e)
         else ->
-            GeneralError(e.message ?: e.javaClass.simpleName, e)
+            GeneralError(message, e)
     }
 }

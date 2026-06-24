@@ -5,6 +5,7 @@ import com.github.ajalt.clikt.core.ProgramResult
 import com.github.ajalt.clikt.parameters.arguments.argument
 import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
+import com.github.ajalt.clikt.parameters.options.help
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.types.choice
 import com.scoopai.cli.CompositionRoot
@@ -46,23 +47,23 @@ open class GenerateCommand(
 
     private val ARTIFACTS_BASE_DIR = System.getProperty("user.dir", ".")
     // ── Positional argument ───────────────────────────────────────────
-    val url: String? by argument("url")
+    val url: String? by argument("url", help = "GitHub repository URL or project URL")
 
     // ── String options (nullable by default, no default → null if omitted) ──
-    val output: String by option("-o", "--output").default("")
-    val provider: String by option("-P", "--provider").default("")
-    val apiKey: String by option("--api-key").default("")
-    val baseUrl: String? by option("--base-url")
-    val model: String? by option("-m", "--model")
-    val appName: String? by option("--app-name")
-    val prompt: String? by option("-p", "--prompt")
-    val githubToken: String? by option("--github-token")
+    val output: String by option("-o", "--output").help("Output file path (default: bucket/<appName>.json)").default("")
+    val provider: String by option("-P", "--provider").help("LLM provider: deepseek|openai|anthropic|ollama|openrouter|openai-compatible").default("")
+    val apiKey: String by option("--api-key").help("API key (default: SCOOP_AI_API_KEY or provider-specific env var)").default("")
+    val baseUrl: String? by option("--base-url").help("Custom API base URL (required for openai-compatible)")
+    val model: String? by option("-m", "--model").help("LLM model name (overrides provider default)")
+    val appName: String? by option("--app-name").help("App name for cache (default: inferred from URL)")
+    val prompt: String? by option("-p", "--prompt").help("Additional requirements for manifest generation")
+    val githubToken: String? by option("--github-token").help("GitHub personal access token (avoids rate limits)")
 
     // ── Boolean flags ─────────────────────────────────────────────────
-    val verify: Boolean by option("--verify", "-V").flag()
-    val nonInteractive: Boolean by option("-n", "--non-interactive").flag()
-    val debug: Boolean by option("--debug").flag()
-    val noProgress: Boolean by option("--no-progress").flag()
+    val verify: Boolean by option("--verify", "-V").help("Verify manifest by running scoop install").flag()
+    val nonInteractive: Boolean by option("-n", "--non-interactive").help("Skip __ask_user__ prompts and use defaults (for batch/CI)").flag()
+    val debug: Boolean by option("--debug").help("Print stack traces on errors").flag()
+    val noProgress: Boolean by option("--no-progress").help("Disable TTY progress overlay").flag()
 
     // ── Cache options ─────────────────────────────────────────────────
     /**
@@ -81,6 +82,7 @@ open class GenerateCommand(
      * Cache mode option. When set explicitly, takes priority over --no-cache.
      */
     val cache: String by option("--cache")
+        .help("Cache mode: keep|discard downloaded files (default: keep)")
         .choice("keep", "discard")
         .default("keep")
 
@@ -100,6 +102,7 @@ open class GenerateCommand(
 
     // ── Output format ──────────────────────────────────────────────
     val outputFormat: String by option("--output-format")
+        .help("Output format: text|json (json prints structured ManifestResult)")
         .choice("text", "json")
         .default("text")
 
@@ -111,6 +114,7 @@ open class GenerateCommand(
      * - "never": do not write any artifacts
      */
     val artifactsMode: String by option("--artifacts")
+        .help("Write phase artifacts: auto|always|never (default: auto)")
         .choice("auto", "always", "never")
         .default("auto")
 
@@ -119,6 +123,7 @@ open class GenerateCommand(
      * Auto-generated as UUID if not specified.
      */
     val runId: String? by option("--run-id")
+        .help("Override run ID for artifacts and checkpoint resume")
 
     /**
      * Checkpoint resume stage.
@@ -128,11 +133,13 @@ open class GenerateCommand(
      * - "generate": skip research + analyze phases, start from generate
      */
     val from: String by option("--from")
+        .help("Resume from stage: analyze|generate (requires --run-id)")
         .choice("analyze", "generate")
         .default("")
 
     // ── Choice option (persist mode) ──────────────────────────────────
     val persist: String by option("-s", "--persist")
+        .help("Persist field policy: auto|force|none (default: auto)")
         .choice("auto", "force", "none", "no")
         .default("auto")
 
@@ -153,6 +160,19 @@ open class GenerateCommand(
         var effectiveDebug = debug
         val isJsonOutput = outputFormat == "json"
         try {
+            // ── URL format validation (must be before resolveProviderConfig) ──
+            val rawUrl = url
+            if (rawUrl != null && rawUrl.none { it in "./:" }) {
+                throw UsageError("Invalid URL format: $rawUrl. " +
+                    "Expected http(s)://... or github.com/owner/repo")
+            }
+
+            // ── Checkpoint resume validation (must be before resolveProviderConfig) ──
+            if (from.isNotEmpty() && runId.isNullOrEmpty()) {
+                throw UsageError("--from requires --run-id to be specified. " +
+                    "Example: --from analyze --run-id <previous-run-id>")
+            }
+
             // ── Build EnvArgs from parsed clikt values ────────────────
             val envArgs = buildEnvArgs()
 
@@ -205,12 +225,8 @@ open class GenerateCommand(
                 }
             }
 
-            // ── Checkpoint resume validation ──────────────────────────
+            // ── Checkpoint resume ─────────────────────────────────────
             val shouldResume = from.isNotEmpty()
-            if (shouldResume && runId.isNullOrEmpty()) {
-                throw UsageError("--from requires --run-id to be specified. " +
-                    "Example: --from analyze --run-id <previous-run-id>")
-            }
 
             progress.start()
             val result: ManifestResult = try {

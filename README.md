@@ -5,9 +5,9 @@ AI-powered Scoop manifest generator for Windows packages. Given a GitHub reposit
 ## Installation
 
 > **NOTE**: `bucket/scoop-ai.json` is currently a template. The `url`, `hash`,
-> and `version` fields are placeholders. Do **not** run `scoop install
-> bucket/scoop-ai.json` until the first GitHub Release is cut (tracked in
-> T-3.11). Until then, use `java -jar` directly as described in Run.
+> and `version` fields are placeholders until the first GitHub Release is published.
+> Running `scoop install bucket/scoop-ai.json` now will fail. Until a release is
+> cut, use `java -jar` directly as described in Run.
 
 ```bash
 # Install from local bucket manifest (requires JDK 17+)
@@ -117,7 +117,7 @@ Global options:
 |----------|------------------------------------|
 | `<url>`  | GitHub repository URL or project URL |
 
-#### Options (16 flags)
+#### Options (18 options)
 
 | Short | Long               | Type     | Default                 | Description                                       |
 |-------|--------------------|----------|-------------------------|---------------------------------------------------|
@@ -128,15 +128,17 @@ Global options:
 | `-m`  | `--model`          | `String` | provider default        | LLM model name override                           |
 | `-V`  | `--verify`         | flag     | `false`                 | Run `scoop install` to verify the generated manifest |
 |       | `--app-name`       | `String` | inferred from URL       | Application name for output path and cache        |
-|       | `--no-cache`       | flag     | `false`                 | Do not keep downloaded files in Scoop cache       |
+|       | `--cache`          | choice   | `keep`                  | Cache mode: keep\|discard (default: keep)       |
 | `-p`  | `--prompt`         | `String` | `null`                  | Additional instructions for manifest generation   |
 | `-n`  | `--non-interactive`| flag     | `false`                 | Skip interactive prompts (for batch/CI mode)      |
 |       | `--github-token`   | `String` | env                     | GitHub personal access token (avoids rate limits) |
-| `-s`  | `--persist`        | `String` | `auto`                  | Persist field policy: `auto`, `force`, `none`, `no` |
+|       | `--output-format`  | choice   | `text`                  | Output format: text\|json (json prints structured ManifestResult) |
+|       | `--artifacts`      | choice   | `auto`                  | Write phase artifacts: auto\|always\|never (default: auto) |
+|       | `--run-id`         | `String` | auto-generated UUID     | Override run ID for artifacts and checkpoint resume |
+|       | `--from`           | choice   | (none)                  | Resume from stage: analyze\|generate (requires `--run-id`) |
+| `-s`  | `--persist`        | choice   | `auto`                  | Persist field policy: `auto`, `force`, `none`, `no` |
 |       | `--debug`          | flag     | `false`                 | Print debug information including stack traces    |
 |       | `--no-progress`    | flag     | `false`                 | Disable TTY progress overlay                      |
-|       | `--run-id`         | `String` | auto-generated UUID     | Run identifier for artifacts directory            |
-|       | `--from`           | `String` | (none)                  | Checkpoint resume stage: `analyze` or `generate` (requires `--run-id`) |
 
 CLI flags take precedence over environment variables.
 
@@ -302,7 +304,7 @@ Downloaded files are stored in the Scoop cache directory (`~/scoop/cache/`)
 using the same naming convention as Scoop. After generating a manifest,
 you can run `scoop install <app>` directly -- it will reuse the cached file.
 
-Use `--no-cache` to discard downloaded files after generation.
+Use `--cache discard` to discard downloaded files after generation.
 
 ## Testing
 

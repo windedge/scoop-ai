@@ -138,6 +138,39 @@ class CliErrorTest {
         assertSame(original, result.cause)
     }
 
+    // ── stack trace leak prevention ───────────────────────────────
+
+    @Test
+    fun `classifyException output does not contain internal framework class paths`() {
+        // When an LLMClientException is classified, the error message shown to users
+        // must not leak internal framework paths like AbstractOpenAILLMClient,
+        // ai.koog.prompt.executor, or stack trace lines containing "at"
+        val e = LLMClientException("401 Unauthorized: invalid API key", "req-123", null)
+        // Fill stack trace to simulate a real exception
+        val filled = Exception("wrapper", e)
+        val result = classifyException(filled.cause!!)
+        val msg = result.message ?: ""
+        assertTrue(msg.contains("401") || msg.contains("Unauthorized") || msg.contains("API key"),
+            "Error message should preserve key info: $msg")
+        assertFalse(msg.contains("ai.koog"),
+            "Error message must not contain internal framework paths: $msg")
+        assertFalse(msg.contains("AbstractOpenAI"),
+            "Error message must not contain internal class names: $msg")
+    }
+
+    @Test
+    fun `classifyException message is single-line without stack trace`() {
+        // Simulate an exception with a multi-line message or stack trace embedded
+        val e = RuntimeException("top-level error\n\tat ai.koog.prompt.executor.clients.AbstractOpenAILLMClient.doChat(AbstractOpenAILLMClient.kt:123)")
+        val result = classifyException(e)
+        val msg = result.message ?: ""
+        // Message should not contain stack trace lines ("at " prefix)
+        assertFalse(msg.contains("\tat "),
+            "Error message must not contain stack trace lines: $msg")
+        assertFalse(msg.contains("AbstractOpenAILLMClient"),
+            "Error message must not contain internal class names: $msg")
+    }
+
     // ── sealed exhaustive check ────────────────────────────────────
 
     @Test
