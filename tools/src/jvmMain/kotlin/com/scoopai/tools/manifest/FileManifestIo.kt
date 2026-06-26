@@ -155,7 +155,8 @@ class FileManifestIo(
 
             // Pretty-print and normalize extract_dir slashes
             val prettyJson = formatManifest(jsonNotNull)
-            Files.writeString(resolvedPath, prettyJson)
+            val normalized = normalizeForScoopBucket(prettyJson)
+            Files.writeString(resolvedPath, normalized)
 
             buildJsonObject {
                 put("path", resolvedPath.toAbsolutePath().toString())
@@ -183,6 +184,34 @@ class FileManifestIo(
                 put("error", "Failed to read manifest: ${e.message}")
             }.toString()
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Scoop bucket style normalization (4 constraints)
+    // ---------------------------------------------------------------------------
+
+    /**
+     * Normalizes a manifest string to satisfy Scoop bucket CI file-style constraints:
+     * 1. Ends with exactly one CRLF newline
+     * 2. All line endings are CRLF (no bare LF, no mixed styles)
+     * 3. No UTF-8 BOM (handled by [Files.writeString] with default UTF_8 charset)
+     * 4. No trailing whitespace on any line
+     */
+    private fun normalizeForScoopBucket(manifest: String): String {
+        // Step 1: Unify all line endings to LF first (normalize mixed CRLF/LF)
+        val lfEndings = manifest.replace("\r\n", "\n")
+
+        // Step 2: Remove trailing whitespace from each line
+        val noTrailingWs = lfEndings.split("\n").joinToString("\n") { line ->
+            line.replace(Regex("[ \\t]+$"), "")
+        }
+
+        // Step 3: Convert all LFs to CRLF
+        val crlfEndings = noTrailingWs.replace("\n", "\r\n")
+
+        // Step 4: Ensure exactly one trailing CRLF (trim any extra then add one)
+        val trimmed = crlfEndings.trimEnd('\r', '\n')
+        return trimmed + "\r\n"
     }
 
     // ---------------------------------------------------------------------------
