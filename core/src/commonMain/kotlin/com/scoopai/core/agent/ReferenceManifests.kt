@@ -294,6 +294,43 @@ object ReferenceManifests {
     }
 }""".trimIndent()
 
+    /**
+     * Tauri NSIS installer pattern.
+     *
+     * Tauri desktop applications ship as NSIS installers (names like `*_x64-setup.exe`).
+     * Unlike Electron NSIS installers, Tauri NSIS does NOT have an inner `app-64.7z` that
+     * needs secondary extraction. The 7z payload directly contains the executable and DLLs.
+     *
+     * Correct pattern:
+     * - url: append `#/dl.7z` so Scoop extracts the 7z payload from the NSIS installer
+     * - pre_install: Remove-Item "$dir\`$*" to clean up $PLUGINSDIR and other NSIS remnants
+     * - No second Expand-7zipArchive call (that is Electron-specific)
+     * - No -Switches "-t7z" (that is wrong for NSIS, NSIS uses 7z format internally)
+     */
+    val TAURI_NSIS_MANIFEST = """{
+    "version": "1.0.0",
+    "description": "Example Tauri desktop application distributed as NSIS installer.",
+    "homepage": "https://github.com/example/tauri-app",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/example/tauri-app/releases/download/v1.0.0/TauriApp_1.0.0_x64-setup.exe#/dl.7z",
+            "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+    },
+    "pre_install": "Remove-Item \"\${'$'}dir\\\`\${'$'}*\" -Recurse -Force -ErrorAction SilentlyContinue",
+    "bin": "TauriApp.exe",
+    "shortcuts": [["TauriApp.exe", "TauriApp"]],
+    "checkver": { "github": "https://github.com/example/tauri-app" },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/example/tauri-app/releases/download/v\${'$'}version/TauriApp_\${'$'}version_x64-setup.exe#/dl.7z"
+            }
+        }
+    }
+}""".trimIndent()
+
     val ALL = listOf(
         "### Simple GitHub autoupdate (no checksum)\n$RIPGREP",
         "### GitHub autoupdate + checksums.txt (bundle hash)\n$LAZYGIT",
@@ -303,6 +340,7 @@ object ReferenceManifests {
         "### CLI with env_set + pre_install copy + persist (config from %APPDATA%)\n$BAT_CLI",
         "### env_add_path instead of bin (version manager with shims)\n$PYENV_WIN",
         "### NuGet nupkg with RELEASES hash (Squirrel AutoUpdater)\n$CARNAC_NUPKG",
-        "### InnoSetup installer (innosetup:true triggers innounp auto-extraction)\n$BLOBSAVER"
+        "### InnoSetup installer (innosetup:true triggers innounp auto-extraction)\n$BLOBSAVER",
+        "### Tauri NSIS installer (#/dl.7z + Remove-Item \$PLUGINSDIR, no double extraction)\n$TAURI_NSIS_MANIFEST"
     ).joinToString("\n\n---\n\n")
 }

@@ -352,7 +352,13 @@ If the research output contains a `suggested_app_name`, include it unchanged in 
 - InnoSetup → `"innosetup": true` (uses innounp to unpack, NOT silent install)
 - NSIS → Append `#/dl.7z` to the URL to force 7z extraction. Do NOT add `"installer"` block.
 - NSIS unsupported (when `detectInstallerType` returns `nsis_unsupported` or `nsis_unsupported` is true in analyze output): The `#/dl.7z` trick does NOT work for this installer. Set `"installer_type": "nsis"` and `"nsis_unsupported": true`. Look for alternative ZIP/MSI assets for this version. If no alternative exists, use a silent install script with `"installer": { "script": ["..."] }` — try `/S /D=${'$'}dir` for standard NSIS silent flags.
-- **NSIS Electron** (`detectInstallerType` returns `nsis` + `nsis_type: electron`): Two-layer extraction pattern. Use `installer_scripts` (per-architecture) for `Expand-7zipArchive` commands — each arch targets its own inner 7z (e.g. `` `${'$'}PLUGINSDIR/app-64.7z `` for 64bit, `` `${'$'}PLUGINSDIR/app-32.7z `` for 32bit). **CRITICAL**: In PowerShell script lines, you MUST escape the dollar sign: use `` `${'$'}PLUGINSDIR `` (backtick-dollar) NOT `${'$'}PLUGINSDIR` — without the backtick, PowerShell treats `${'$'}PLUGINSDIR` as an undefined variable and expands it to empty string. Common cleanup goes inside each architecture's script too. GUI apps: use `shortcuts` only, no `bin`.
+- **NSIS with `${'$'}PLUGINSDIR`** (`detectInstallerType` returns `nsis` + `nsis_type: electron`): The installer has a `${'$'}PLUGINSDIR` directory. Check the `inner_files` list from `detectInstallerType` to determine the subtype:
+
+  a. **Electron NSIS** — `inner_files` contains `${'$'}PLUGINSDIR/app-64.7z` or `${'$'}PLUGINSDIR/app-32.7z`:
+     Two-layer extraction pattern. Use `installer_scripts` (per-architecture) for `Expand-7zipArchive` commands — each arch targets its own inner 7z (e.g. `` `${'$'}PLUGINSDIR/app-64.7z `` for 64bit, `` `${'$'}PLUGINSDIR/app-32.7z `` for 32bit). **CRITICAL**: In PowerShell script lines, you MUST escape the dollar sign: use `` `${'$'}PLUGINSDIR `` (backtick-dollar) NOT `${'$'}PLUGINSDIR` — without the backtick, PowerShell treats `${'$'}PLUGINSDIR` as an undefined variable and expands it to empty string. Common cleanup goes inside each architecture's script too. GUI apps: use `shortcuts` only, no `bin`.
+
+  b. **Tauri NSIS** — `inner_files` contains the actual executable(s) directly (e.g. `App.exe`, `*.dll`) but NO `${'$'}PLUGINSDIR/app-64.7z`:
+     This is a Tauri (or standard) NSIS installer. The 7z payload from `#/dl.7z` extraction directly contains the application files; **no second extraction is needed**. Set `installer_type: "nsis"` (not "nsis_electron"). Add `pre_install`: `Remove-Item "${'$'}dir\`${'$'}*" -Recurse -Force` to clean up `${'$'}PLUGINSDIR` and other NSIS remnants. Do NOT use `Expand-7zipArchive` on `${'$'}PLUGINSDIR/app-64.7z` (Tauri does NOT have this file) and do NOT use `-Switches "-t7z"`.
 - Portable EXE → `url` with `#/shortname.exe` fragment to rename. **MANDATORY when the exe filename contains version numbers, channel tags (`stable-`, `edge-`, `rc-`), platform suffixes (`-windows-amd64`), or any non-essential decoration.** The fragment after `#/` becomes the local filename.
   * Example: `linkerd2-cli-stable-2.14.10-windows.exe` → URL `.../linkerd2-cli-stable-2.14.10-windows.exe#/linkerd.exe` + `"bin": "linkerd.exe"`
   * The short name should be the canonical CLI command (e.g. `linkerd`, not `linkerd2` or `linkerd2-cli`)
@@ -408,7 +414,8 @@ fun buildGeneratePrompt(skeleton: String, analyze: AnalyzeOutput, outputPath: St
             if (nsisUnsupported) {
                 "\n- NSIS installer detected but marked as **unsupported by 7z extraction**. Do NOT append `#/dl.7z`. Instead, add a silent install script: use `\"installer\": { \"script\": \"...\" }` with standard NSIS silent flags (`/S /D=\$dir`)."
             } else {
-                "\n- NSIS installer detected: append `#/dl.7z` to URL. Do NOT add `\"installer\"` block."
+                "\n- NSIS installer detected: append `#/dl.7z` to URL. Do NOT add `\"installer\"` block." +
+                "\n- **Tauri NSIS** (standard NSIS with no `app-64.7z` inner archive): the 7z payload directly contains the application executable(s). Add `pre_install`: Remove-Item `\"\$dir\\`\$*\"` -Recurse -Force to clean up `\$PLUGINSDIR` and other NSIS remnants. Do NOT call Expand-7zipArchive on `\$PLUGINSDIR\\app-64.7z` (that is Electron-specific). Do NOT use `-Switches \"-t7z\"`."
             }
         }
         "nsis_electron" -> "\n- NSIS Electron detected: skeleton contains per-arch `installer.script` with Expand-7zipArchive commands. Review and preserve them. GUI app: use `shortcuts` only, no `bin`."
