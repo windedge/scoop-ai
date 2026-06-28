@@ -10,7 +10,9 @@ import com.scoopai.tools.cache.ScoopCacheManager
 import kotlinx.serialization.json.*
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.util.concurrent.TimeUnit
+import java.util.zip.ZipFile
 import java.util.zip.ZipInputStream
 
 private val nsisLogger = io.github.oshai.kotlinlogging.KotlinLogging.logger {}
@@ -24,6 +26,20 @@ private val TEXT_EXTENSIONS = setOf(
     ".txt", ".html", ".css", ".scss", ".less",
     ".mod", ".sum", ".lock", ".env", ".properties",
 )
+
+/** Result of probing a nested archive (archive within an archive). */
+private data class NestedArchiveInfo(
+    val name: String,
+    val files: List<String>,
+)
+
+/** Extensions of archive files we can recursively inspect. */
+private val ARCHIVE_EXTENSIONS = setOf(".zip", ".7z")
+
+private fun isArchiveFile(name: String): Boolean {
+    val lower = name.lowercase()
+    return ARCHIVE_EXTENSIONS.any { lower.endsWith(it) }
+}
 
 @LLMDescription("Archive inspection tools for ZIP, MSI and installer analysis")
 class ZipArchiveInspector(
@@ -708,10 +724,18 @@ class ZipArchiveInspector(
     // -----------------------------------------------------------------------
 
     private fun list7z(url: String): String {
-        val files = list7zPaths(url)
+        val file = cache.getOrDownload(url)
+        val files = run7zList(file)
+        val nestedResult = probeNestedArchive(file, files)
         return buildJsonObject {
             put("url", url)
             put("files", buildJsonArray { for (f in files) add(f) })
+            if (nestedResult != null) {
+                put("nested_archive", buildJsonObject {
+                    put("name", nestedResult.name)
+                    put("files", buildJsonArray { for (f in nestedResult.files) add(f) })
+                })
+            }
         }.toString()
     }
 
@@ -738,9 +762,16 @@ class ZipArchiveInspector(
                     }
             }
         }
+        val nestedResult = probeNestedArchive(file, entries)
         return buildJsonObject {
             put("url", url)
             put("files", buildJsonArray { for (e in entries) add(e) })
+            if (nestedResult != null) {
+                put("nested_archive", buildJsonObject {
+                    put("name", nestedResult.name)
+                    put("files", buildJsonArray { for (f in nestedResult.files) add(f) })
+                })
+            }
         }.toString()
     }
 
@@ -759,6 +790,97 @@ class ZipArchiveInspector(
         return entries
     }
 
+
+    // -----------------------------------------------------------------------
+    // Nested archive detection
+    // -----------------------------------------------------------------------
+
+    /**
+     * Probe a single-nested archive if the outer archive contains exactly one archive file.
+     * Extracts the inner archive to a temp directory and lists its contents using 7z.
+     * Returns null if there's no nested archive or if extraction/listing fails.
+     */
+    private fun probeNestedArchive(outerFile: Path, outerEntries: List<String>): NestedArchiveInfo? {
+        val archiveEntries = outerEntries.filter { isArchiveFile(it) }
+        if (archiveEntries.size != 1) return null
+
+        val nestedName = archiveEntries[0]
+        val extractDir = try {
+            Files.createTempDirectory("scoop-ai-nested-")
+        } catch (e: Exception) {
+            return null
+        }
+
+        try {
+            val innerFile = extractDir.resolve(nestedName.substringAfterLast('/'))
+
+            // Extract the nested archive entry from the outer archive
+            val extractOk = if (outerFile.toString().lowercase().endsWith(".zip")) {
+                // Use ZipFile for random access extraction from outer zip
+                try {
+                    ZipFile(outerFile.toFile()).use { zf ->
+                        val entry = zf.getEntry(nestedName) ?: return null
+                        zf.getInputStream(entry).use { input ->
+                            Files.copy(input, innerFile, StandardCopyOption.REPLACE_EXISTING)
+                        }
+                    }
+                    true
+                } catch (e: Exception) {
+                    false
+                }
+            } else {
+                // Use 7z for extraction from outer 7z
+                try {
+                    val proc = ProcessBuilder(
+                        "7z", "e", "-y",
+                        outerFile.toAbsolutePath().toString(),
+                        "-o${extractDir.toAbsolutePath()}"
+                    ).redirectErrorStream(true).start()
+                    val output = proc.inputStream.bufferedReader().readText()
+                    proc.waitFor(30, TimeUnit.SECONDS)
+                    proc.exitValue() == 0 && Files.exists(innerFile)
+                } catch (e: Exception) {
+                    false
+                }
+            }
+
+            if (!extractOk || !Files.exists(innerFile) || Files.size(innerFile) == 0L) return null
+
+            // List inner archive contents
+            val innerFiles = if (nestedName.lowercase().endsWith(".7z")) {
+                run7zList(innerFile)
+            } else {
+                // Use ZipInputStream for zip inner archives (avoids 7z output parsing quirks)
+                try {
+                    val innerEntries = mutableListOf<String>()
+                    Files.newInputStream(innerFile).use { fis ->
+                        ZipInputStream(fis).use { zis ->
+                            generateSequence { zis.nextEntry }
+                                .forEach { entry ->
+                                    innerEntries.add(entry.name)
+                                    zis.closeEntry()
+                                }
+                        }
+                    }
+                    innerEntries
+                } catch (e: Exception) {
+                    return null
+                }
+            }
+            if (innerFiles.isEmpty()) return null
+
+            return NestedArchiveInfo(name = nestedName, files = innerFiles)
+        } catch (e: Exception) {
+            return null
+        } finally {
+            // Clean up temp directory
+            try {
+                Files.walk(extractDir)
+                    .sorted(Comparator.reverseOrder())
+                    .forEach { Files.deleteIfExists(it) }
+            } catch (_: Exception) {}
+        }
+    }
 
     // -----------------------------------------------------------------------
     // tar.gz listing (uses system tar command)
