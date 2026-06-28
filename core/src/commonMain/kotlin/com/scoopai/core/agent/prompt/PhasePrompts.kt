@@ -250,7 +250,14 @@ $researchJson
    - **For very large assets** (size > 100MB in the research data): call `detectInstallerType` first to check if it's usable before calling `computeSha256FromUrl`.
 
 3. **Inspect archives for selected manifest candidates**:
-   - For ZIP: Use listArchiveContents to see directory structure, findExecutables to locate .exe files.
+   - For ZIP: Use listArchiveContents to see directory structure, findExecutables to locate .exe files. The tool may return a `nested_archive` field when the ZIP contains another archive inside it.
+   - If `nested_archive` returned: add `pre_install` to extract inner archive.
+   - Same-name nested zip (name matches URL filename): set notes to `SAME_NAME_NESTED_ZIP:filename.zip`, add in pre_install:
+     ```
+     Rename-Item "\${'$'}dir\FILENAME" "\${'$'}dir\_inner.zip"
+     Expand-7zipArchive "\${'$'}dir\_inner.zip" "\${'$'}dir"
+     Remove-Item "\${'$'}dir\_inner.zip"
+     ```
    - For MSI (only when no ZIP is available): Use listArchiveContents to see the full extracted file paths. The tool auto-detects archive type and returns paths like `PFiles/AppName/app.exe`. You MUST set `extract_dir` to the directory containing the executable with backslashes ONLY (e.g. `PFiles\\AppName`), because Scoop extracts MSI into subdirectories. Omitting `extract_dir` for MSI will cause "File doesn't exist" errors at install time. Never use forward slashes.
    - Only use detectInstallerType when you are actually choosing an installer/portable-exe strategy, or when ZIP analysis is insufficient.
    - **InnoSetup handling**: If `detectInstallerType` returns `innosetup`, set `"installer_type": "innosetup"` regardless. If `listArchiveContents` returns files, use them to set `bin`. If `listArchiveContents` returns empty (innounp cannot list this version), still report `innosetup` — Scoop may still be able to extract. In this case, set `bin` based on common InnoSetup conventions (main exe usually named after the app), or omit `bin` if uncertain.
@@ -358,7 +365,7 @@ If the research output contains a `suggested_app_name`, include it unchanged in 
      Two-layer extraction pattern. Use `installer_scripts` (per-architecture) for `Expand-7zipArchive` commands — each arch targets its own inner 7z (e.g. `` `${'$'}PLUGINSDIR/app-64.7z `` for 64bit, `` `${'$'}PLUGINSDIR/app-32.7z `` for 32bit). **CRITICAL**: In PowerShell script lines, you MUST escape the dollar sign: use `` `${'$'}PLUGINSDIR `` (backtick-dollar) NOT `${'$'}PLUGINSDIR` — without the backtick, PowerShell treats `${'$'}PLUGINSDIR` as an undefined variable and expands it to empty string. Common cleanup goes inside each architecture's script too. GUI apps: use `shortcuts` only, no `bin`.
 
   b. **Tauri NSIS** — `inner_files` contains the actual executable(s) directly (e.g. `App.exe`, `*.dll`) but NO `${'$'}PLUGINSDIR/app-64.7z`:
-     This is a Tauri (or standard) NSIS installer. The 7z payload from `#/dl.7z` extraction directly contains the application files; **no second extraction is needed**. Set `installer_type: "nsis"` (not "nsis_electron"). Add `pre_install`: `Remove-Item "${'$'}dir\`${'$'}*" -Recurse -Force` to clean up `${'$'}PLUGINSDIR` and other NSIS remnants. Do NOT use `Expand-7zipArchive` on `${'$'}PLUGINSDIR/app-64.7z` (Tauri does NOT have this file) and do NOT use `-Switches "-t7z"`.
+     This is a Tauri (or standard) NSIS installer. The 7z payload from `#/dl.7z` extraction directly contains the application files; **no second extraction is needed**. Set `installer_type: "nsis"` (not "nsis_electron"). Add `pre_install`: `Remove-Item "\${'$'}dir\`${'$'}*" -Recurse -Force` to clean up `${'$'}PLUGINSDIR` and other NSIS remnants. Do NOT use `Expand-7zipArchive` on `${'$'}PLUGINSDIR/app-64.7z` (Tauri does NOT have this file) and do NOT use `-Switches "-t7z"`.
 - Portable EXE → `url` with `#/shortname.exe` fragment to rename. **MANDATORY when the exe filename contains version numbers, channel tags (`stable-`, `edge-`, `rc-`), platform suffixes (`-windows-amd64`), or any non-essential decoration.** The fragment after `#/` becomes the local filename.
   * Example: `linkerd2-cli-stable-2.14.10-windows.exe` → URL `.../linkerd2-cli-stable-2.14.10-windows.exe#/linkerd.exe` + `"bin": "linkerd.exe"`
   * The short name should be the canonical CLI command (e.g. `linkerd`, not `linkerd2` or `linkerd2-cli`)
@@ -512,6 +519,15 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
 - Do NOT move `extract_dir` between top-level and architecture blocks.
 - Do NOT add/remove the `architecture` wrapper inside `autoupdate`.
 - Do NOT add `extract_dir` inside `autoupdate` if the skeleton does not have it there.
+
+### Same-name nested zip exception
+- When pre_install contains `Expand-7zipArchive "\${'$'}dir\FILENAME"` and url has matching ZIP filename: append `#/outer.zip` to URL (hash stays valid).
+- Keep pre_install's Rename-Item pattern. Use original filename (before `#/`), not `\${'$'}fname`:
+  ```
+  Rename-Item "\${'$'}dir\FILENAME" "\${'$'}dir\_inner.zip"
+  Expand-7zipArchive "\${'$'}dir\_inner.zip" "\${'$'}dir"
+  Remove-Item "\${'$'}dir\_inner.zip"
+  ```
 
 ## Your Task
 
