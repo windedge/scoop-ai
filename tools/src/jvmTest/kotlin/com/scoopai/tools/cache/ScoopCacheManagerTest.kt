@@ -2,7 +2,9 @@ package com.scoopai.tools.cache
 
 import com.sun.net.httpserver.HttpServer
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import java.net.InetSocketAddress
 import java.nio.file.Files
@@ -10,6 +12,53 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 class ScoopCacheManagerTest {
+
+    // -----------------------------------------------------------------------
+    // Cache key normalization (fragment stripping)
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `urlHash ignores scoop fragment when computing hash`() {
+        val raw = "https://example.com/app-v1.0.exe"
+        val withFragment = "https://example.com/app-v1.0.exe#/dl.7z"
+        assertEquals(ScoopCacheManager.urlHash(raw), ScoopCacheManager.urlHash(withFragment))
+    }
+
+    @Test
+    fun `urlHash preserves non-scoop parts of URL`() {
+        val a = "https://example.com/a.zip"
+        val b = "https://example.com/b.zip"
+        assertNotEquals(ScoopCacheManager.urlHash(a), ScoopCacheManager.urlHash(b))
+    }
+
+    @Test
+    fun `urlExtension extracts extension from scoop fragment URL`() {
+        assertEquals(".7z", ScoopCacheManager.urlExtension("https://x.com/app.exe#/dl.7z"))
+        assertEquals(".zip", ScoopCacheManager.urlExtension("https://x.com/app.zip#/outer.zip"))
+        assertEquals(".exe", ScoopCacheManager.urlExtension("https://x.com/app.exe"))
+    }
+
+    @Test
+    fun `downloadCacheName produces same name with or without fragment when extension unchanged`() {
+        // Scenario: zip#/outer.zip — extension stays .zip, only hash needs to match
+        val raw = "https://example.com/app-v1.0.zip"
+        val withFragment = "https://example.com/app-v1.0.zip#/outer.zip"
+        assertEquals(ScoopCacheManager.downloadCacheName(raw), ScoopCacheManager.downloadCacheName(withFragment))
+    }
+
+    @Test
+    fun `scoopCacheName produces same name with or without fragment when extension unchanged`() {
+        val raw = "https://example.com/app-v1.0.zip"
+        val withFragment = "https://example.com/app-v1.0.zip#/outer.zip"
+        assertEquals(
+            ScoopCacheManager.scoopCacheName("myapp", "1.0", raw),
+            ScoopCacheManager.scoopCacheName("myapp", "1.0", withFragment),
+        )
+    }
+
+    // -----------------------------------------------------------------------
+    // Size limit enforcement
+    // -----------------------------------------------------------------------
 
     @Test
     fun `download rejects files exceeding size limit via Content-Length`() {

@@ -33,6 +33,10 @@ class ScoopCacheManager(
     customCacheDir: Path? = null,
 ) {
     companion object {
+        /** Strip Scoop fragment (#/xxx) from URL for cache key normalization. */
+        private fun normalizeUrl(url: String): String =
+            url.substringBefore("#")
+
         /** Resolve Scoop cache directory from env / default. */
         fun scoopCacheDir(): Path {
             val envDir = System.getenv("SCOOP_CACHE")
@@ -50,10 +54,13 @@ class ScoopCacheManager(
             return cacheDir
         }
 
-        /** Compute the short hash (first 7 hex chars) of a URL string. */
+        /** Compute the short hash (first 7 hex chars) of a URL string.
+         * Fragment (#/...) is stripped before hashing so that `url` and
+         * `url#/dl.7z` produce the same cache key. */
         fun urlHash(url: String): String {
+            val normalized = normalizeUrl(url)
             val digest = MessageDigest.getInstance("SHA-256")
-            val hashBytes = digest.digest(url.toByteArray(Charsets.UTF_8))
+            val hashBytes = digest.digest(normalized.toByteArray(Charsets.UTF_8))
             return hashBytes.joinToString("") { "%02x".format(it) }.take(7)
         }
 
