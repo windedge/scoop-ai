@@ -18,10 +18,11 @@ class ScoopCacheManagerTest {
     // -----------------------------------------------------------------------
 
     @Test
-    fun `urlHash ignores scoop fragment when computing hash`() {
+    fun `urlHash uses full URL with fragment for Scoop compatibility`() {
         val raw = "https://example.com/app-v1.0.exe"
         val withFragment = "https://example.com/app-v1.0.exe#/dl.7z"
-        assertEquals(ScoopCacheManager.urlHash(raw), ScoopCacheManager.urlHash(withFragment))
+        // urlHash is used for scoop-facing cache names, must match Scoop's full-URL hash
+        assertNotEquals(ScoopCacheManager.urlHash(raw), ScoopCacheManager.urlHash(withFragment))
     }
 
     @Test
@@ -47,13 +48,27 @@ class ScoopCacheManagerTest {
     }
 
     @Test
-    fun `scoopCacheName produces same name with or without fragment when extension unchanged`() {
-        val raw = "https://example.com/app-v1.0.zip"
-        val withFragment = "https://example.com/app-v1.0.zip#/outer.zip"
-        assertEquals(
-            ScoopCacheManager.scoopCacheName("myapp", "1.0", raw),
-            ScoopCacheManager.scoopCacheName("myapp", "1.0", withFragment),
-        )
+    fun `urlHash uses full URL for scoop-facing hashes`() {
+        val raw = "https://x.com/app.exe#/dl.7z"
+        val nz = "https://x.com/app.exe"
+        assertNotEquals(ScoopCacheManager.urlHash(raw), ScoopCacheManager.urlHash(nz))
+    }
+
+    @Test
+    fun `scoopCacheName uses full URL with fragment for Scoop compatibility`() {
+        val withFrag = ScoopCacheManager.scoopCacheName("app", "1.0", "https://x.com/app.exe#/dl.7z")
+        val withoutFrag = ScoopCacheManager.scoopCacheName("app", "1.0", "https://x.com/app.exe")
+        // Scoop uses the full URL (including fragment) for cache key
+        assertNotEquals(withFrag, withoutFrag)
+    }
+
+    @Test
+    fun `downloadCacheName uses normalized URL for dedup`() {
+        // Same extension scenario: hash should be normalized (same) across #fragment variations
+        val withFrag = ScoopCacheManager.downloadCacheName("https://x.com/app.7z#/dl.7z")
+        val withoutFrag = ScoopCacheManager.downloadCacheName("https://x.com/app.7z")
+        // Internal download cache uses normalized URL so #fragment variations share the same file
+        assertEquals(withFrag, withoutFrag)
     }
 
     // -----------------------------------------------------------------------

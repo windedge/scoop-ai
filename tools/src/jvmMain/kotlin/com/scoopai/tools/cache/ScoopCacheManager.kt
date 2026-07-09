@@ -55,9 +55,18 @@ class ScoopCacheManager(
         }
 
         /** Compute the short hash (first 7 hex chars) of a URL string.
-         * Fragment (#/...) is stripped before hashing so that `url` and
-         * `url#/dl.7z` produce the same cache key. */
+         * Uses the **full** URL (including fragment) so that the resulting hash
+         * matches Scoop's own cache key calculation. */
         fun urlHash(url: String): String {
+            val digest = MessageDigest.getInstance("SHA-256")
+            val hashBytes = digest.digest(url.toByteArray(Charsets.UTF_8))
+            return hashBytes.joinToString("") { "%02x".format(it) }.take(7)
+        }
+
+        /** Compute the short hash of a **normalized** URL (fragment stripped).
+         * Used for download-phase dedup so that `url` and `url#/dl.7z`
+         * share the same cached file. */
+        private fun normalizedUrlHash(url: String): String {
             val normalized = normalizeUrl(url)
             val digest = MessageDigest.getInstance("SHA-256")
             val hashBytes = digest.digest(normalized.toByteArray(Charsets.UTF_8))
@@ -79,10 +88,12 @@ class ScoopCacheManager(
         }
 
         /**
-         * Build the download-phase cache filename: `{urlHash}{ext}`
+         * Build the download-phase cache filename: `{normalizedUrlHash}{ext}`
+         * Uses the normalized URL hash so that `url` and `url#/dl.7z`
+         * share the same download-phase cache file.
          */
         fun downloadCacheName(url: String): String {
-            return "${urlHash(url)}${urlExtension(url)}"
+            return "${normalizedUrlHash(url)}${urlExtension(url)}"
         }
     }
 
