@@ -373,6 +373,48 @@ private fun isRollingUrl(url: String): Boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Persist path validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Validates that all `persist` entries are `$dir`-relative paths.
+ *
+ * Scoop persist only supports relative paths under `$dir`. The following
+ * are INVALID and will be flagged:
+ * - Paths starting with `~` (shell tilde, Scoop does not expand it)
+ * - Paths starting with `/` or `\` (absolute Unix/Windows paths)
+ * - Paths containing `%VAR%` environment variable references
+ * - Absolute Windows paths (e.g. `C:\...`)
+ *
+ * Returns an error message describing the first invalid entry, or `null`
+ * when all entries are valid or no `persist` field exists.
+ */
+internal fun validatePersistPaths(manifestJson: String): String? {
+    val json = try {
+        Json.parseToJsonElement(manifestJson) as? JsonObject ?: return null
+    } catch (_: Exception) {
+        return null
+    }
+    val persist = json["persist"] as? JsonArray ?: return null
+    for (element in persist) {
+        val path = (element as? JsonPrimitive)?.content ?: continue
+        if (path.contains("~") ||
+            path.startsWith("/") ||
+            path.startsWith("\\") ||
+            path.contains("%") ||
+            // Absolute Windows path like C:\... or D:\...
+            (path.length >= 2 && path[1] == ':' && path[0].isLetter())
+        ) {
+            return "persist entry '$path' is not a valid \$dir-relative path: " +
+                "must be relative (e.g. 'config', 'data'), " +
+                "no tilde (~), no environment variables (%%VAR%%), " +
+                "no absolute paths"
+        }
+    }
+    return null
+}
+
+// ---------------------------------------------------------------------------
 // Raw asset info from release API (before filtering)
 // ---------------------------------------------------------------------------
 

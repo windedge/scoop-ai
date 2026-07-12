@@ -16,6 +16,16 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
 ## Review Dimensions
 
 ### 1. persist necessity
+- **CRITICAL: persist paths must be `\${'$'}dir`-relative.**
+  - Flag as ERROR if any persist entry contains `~` (tilde) - Scoop does NOT expand it.
+  - Flag as ERROR if any persist entry contains `%` (environment variable reference like `%APPDATA%`, `%USERPROFILE%`).
+  - Flag as ERROR if any persist entry starts with `/` or `\\` (absolute path).
+  - Flag as ERROR if any persist entry looks like a Windows absolute path (e.g. `C:\...`).
+  - Valid persist paths are always relative (e.g. `config`, `data`, `.cache`, `subdir\config`).
+  - If the app stores data in `%APPDATA%` or `%USERPROFILE%`, persist is not appropriate -
+    Scoop cannot manage paths outside `\${'$'}persist_dir`. The manifest should use `notes`
+    to document data location instead.
+
 - Only config-intensive desktop applications (editors, IDEs, browsers, terminals with profiles, database tools) legitimately need `persist`.
 - CLI tools (command-line utilities like ripgrep, fd, delta, jq, yq) rarely need persist. However, some CLI tools DO need persist for user config, themes, syntaxes, or history databases (e.g. bat, starship, zoxide). Verify each case individually.
 - If `persist` contains only an empty directory name (e.g. `"persist": ["config"]`) without corresponding `pre_install` to create initial config, it is suspicious.

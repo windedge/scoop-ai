@@ -17,6 +17,7 @@ import com.scoopai.core.agent.nodes.normalizeHomepage
 import com.scoopai.core.agent.nodes.removeInvalidTopLevelFields
 import com.scoopai.core.agent.nodes.normalizeBin
 import com.scoopai.core.agent.nodes.checkAutoupdateVersionPlaceholder
+import com.scoopai.core.agent.nodes.validatePersistPaths
 import com.scoopai.core.tools.api.ArchiveInspector
 import com.scoopai.core.tools.api.GitHubApi
 import com.scoopai.core.tools.api.ManifestIo
@@ -370,6 +371,13 @@ internal suspend fun validateManifest(
     checkAutoupdateVersionPlaceholder(manifest)?.let { msg ->
         errors.add(msg)
         logger.info { "[verify] Autoupdate placeholder check: hard-coded autoupdate.url found" }
+    }
+
+    // Step 1.6: Deterministic persist path validation
+    // (runs even when structural validation is skipped — it only needs the manifest JSON)
+    validatePersistPaths(manifest)?.let { msg ->
+        errors.add(msg)
+        logger.info { "[verify] Persist path check: invalid persist entry found" }
     }
 
     // Step 2: Semantic review (only when validate passes)

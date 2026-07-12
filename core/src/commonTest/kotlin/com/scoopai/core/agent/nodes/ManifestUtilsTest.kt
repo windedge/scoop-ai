@@ -1738,6 +1738,90 @@ class ManifestUtilsTest {
         val manifest = """{"version":"0.7.0","autoupdate":{"architecture":{"64bit":{"url":"https://github.com/ogulcancelik/herdr/releases/download/preview-2026-06-15-517ca8163f7c/herdr-windows-x86_64.exe#/herdr.exe"}}}}"""
         assertNotNull(checkAutoupdateVersionPlaceholder(manifest))
     }
+
+    // ---------------------------------------------------------------
+    // validatePersistPaths
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `validatePersistPaths flags tilde path in persist`() {
+        val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc","persist":["~/.cache/app"]}"""
+        val err = validatePersistPaths(manifest)
+        assertNotNull(err)
+        assertTrue(err!!.contains("~"), "Should flag tilde path")
+    }
+
+    @Test
+    fun `validatePersistPaths flags absolute Unix path in persist`() {
+        val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc","persist":["/home/user/app"]}"""
+        val err = validatePersistPaths(manifest)
+        assertNotNull(err)
+    }
+
+    @Test
+    fun `validatePersistPaths flags Windows absolute path in persist`() {
+        val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc","persist":["C:\\Users\\user\\app"]}"""
+        val err = validatePersistPaths(manifest)
+        assertNotNull(err)
+    }
+
+    @Test
+    fun `validatePersistPaths flags env var reference in persist`() {
+        val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc","persist":["%APPDATA%\\app"]}"""
+        val err = validatePersistPaths(manifest)
+        assertNotNull(err)
+    }
+
+    @Test
+    fun `validatePersistPaths flags USERPROFILE env var in persist`() {
+        val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc","persist":["%USERPROFILE%\\.cache\\app"]}"""
+        val err = validatePersistPaths(manifest)
+        assertNotNull(err)
+    }
+
+    @Test
+    fun `validatePersistPaths accepts valid relative persist path`() {
+        val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc","persist":["config","data","logs"]}"""
+        assertNull(validatePersistPaths(manifest))
+    }
+
+    @Test
+    fun `validatePersistPaths accepts nested relative persist path`() {
+        val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc","persist":["subdir\\config","data\\db"]}"""
+        assertNull(validatePersistPaths(manifest))
+    }
+
+    @Test
+    fun `validatePersistPaths returns null when no persist field`() {
+        val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc"}"""
+        assertNull(validatePersistPaths(manifest))
+    }
+
+    @Test
+    fun `validatePersistPaths returns null for empty persist array`() {
+        val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc","persist":[]}"""
+        assertNull(validatePersistPaths(manifest))
+    }
+
+    @Test
+    fun `validatePersistPaths returns null for invalid JSON`() {
+        val manifest = "not json"
+        assertNull(validatePersistPaths(manifest))
+    }
+
+    @Test
+    fun `validatePersistPaths flags persist entry with backslash leading absolute path`() {
+        val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc","persist":["\\server\\share\\app"]}"""
+        val err = validatePersistPaths(manifest)
+        assertNotNull(err)
+    }
+
+    @Test
+    fun `validatePersistPaths flags persist entry starting with forward slash`() {
+        val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc","persist":["/data/app"]}"""
+        val err = validatePersistPaths(manifest)
+        assertNotNull(err)
+    }
 }
 
 private fun parseJsonObject(json: String): JsonObject =

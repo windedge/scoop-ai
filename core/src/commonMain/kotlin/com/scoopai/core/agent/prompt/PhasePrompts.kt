@@ -297,6 +297,17 @@ $researchJson
      3. **pre_install to create**: Add `pre_install` code to create the directory if it doesn't exist in the archive (e.g. `"if (!(Test-Path \"\${'$'}dir\\config\")) { New-Item -ItemType Directory -Path \"\${'$'}dir\\config\" | Out-Null }"`).
    - **Electron exclusion**: If the research identified this as an Electron app, do NOT add `Data/` or any Electron internal directory to persist.
 
+   - **CRITICAL: persist paths must be `\${'$'}dir`-relative**:
+     - Scoop persist only supports relative paths under `\${'$'}dir` (e.g. `config`, `data`, `.cache`).
+     - **NEVER** use `~` (tilde) paths like `~/.cache/app` - Scoop does NOT expand tilde.
+     - **NEVER** use absolute paths like `/home/user/app`, `C:\Users\...`, or `\\server\share`.
+     - **NEVER** use environment variable references like `%APPDATA%\app` or `%USERPROFILE%\.cache`.
+     - **NEVER** use paths starting with `/` or `\\`.
+     - If the app stores data in `%APPDATA%`, `%USERPROFILE%`, or `~/.xxx`, do NOT persist it.
+       Scoop cannot manage data outside `\${'$'}dir`/`\${'$'}persist_dir`. Instead, add a `notes` entry
+       documenting where the app stores its data, and only use `env_set` to redirect to
+       `\${'$'}persist_dir` if the app supports explicit env-var-based configuration.
+
    - **GUI app persist hint**: If the app is GUI and `persist` is empty after source analysis, use `listArchiveContents` to check the archive for:
      - Configuration files (*.ini, *.cfg, *.conf, *.json in root or known config dirs)
      - Settings directories (Settings, Config, Data, etc.)
@@ -564,6 +575,17 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
 
 - For GUI apps with a main executable: add BOTH `bin` AND `shortcuts`. Only omit `bin` if the app has NO usable CLI interface (e.g. a system tray utility).
 - `persist`: Keep the skeleton's `persist` entries as-is. They were derived from source-code analysis during research. Use for apps that store user config, themes, plugins, or data; some config-intensive CLI tools need it (e.g. bat, starship).
+
+  **CRITICAL: persist path rules**
+  - Persist entries MUST be `\${'$'}dir`-relative paths (e.g. `config`, `data`, `.cache`).
+  - **FORBIDDEN**: tilde paths (`~/.cache/...`), absolute paths (`C:\...`, `/home/...`),
+    environment variable references (`%APPDATA%`, `%USERPROFILE%`), or any path starting
+    with `/` or `\\`.
+  - If the app stores data in `%APPDATA%` or `%USERPROFILE%` (user profile directories),
+    do NOT persist those paths - Scoop cannot manage them. Instead, add a `notes` entry
+    documenting the data location, or use `env_set` to redirect the app to
+    `\${'$'}persist_dir\<dir>` if the app supports configuration via environment variables.
+  - The skeleton already follows these rules. Do NOT add illegal persist entries.
 - `env_set`: only for app-specific env vars (BAT_CONFIG_DIR, etc.). Never set XDG_CONFIG_HOME, HOME, APPDATA.
 - License must be an SPDX identifier, never default to "Proprietary" for a public GitHub repository.
 - NEVER end your turn with only reasoning text. Always follow with `finalize_task_result`.
