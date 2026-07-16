@@ -52,38 +52,39 @@ object LlmProviderFactory {
             // - fixDoubleEncoding: all models (Koog serialization bug)
             // - downgradeToolChoice: DeepSeek only (API gateway rejects tool_choice: required)
             // - logRequestBody: debug only (SCOOP_AI_DEBUG_HTTP env var)
-            val isDeepSeekModel = modelName.isDeepSeekModelName()
+            // Use OpenAILLMClient for all openai-compatible models to avoid
+            // DeepSeek's strict response schema (required systemFingerprint field).
+            // When the API proxy (e.g. liteapi) proxies DeepSeek models, the response
+            // follows OpenAI schema and lacks DeepSeek-specific fields like systemFingerprint.
+            // The DeepSeek-specific capabilities (e.g. Thinking) are still configured
+            // separately via openAICompatibleCapabilities().
             val interceptors = buildList {
                 add(::fixDoubleEncoding)
-                if (isDeepSeekModel) add(::downgradeToolChoice)
+                if (modelName.isDeepSeekModelName()) add(::downgradeToolChoice)
                 if (isDebugHttpEnabled()) add(::logRequestBody)
             }
             val httpClient = InterceptingHttpClient(baseHttpClient, interceptors)
-            // Use OpenAILLMClient for non-DeepSeek models (e.g. GLM, Qwen, etc.) to avoid
-            // DeepSeek's strict response schema (required systemFingerprint field).
-            val client = if (isDeepSeekModel) {
-                DeepSeekLLMClient(settings = deepSeekSettings, httpClient = httpClient)
-            } else {
-                OpenAILLMClient(
-                    settings = ai.koog.prompt.executor.clients.openai.OpenAIClientSettings(
-                        baseUrl = resolvedBaseUrl,
-                        chatCompletionsPath = "v1/chat/completions",
-                    ),
-                    httpClient = httpClient,
-                )
-            }
+            val client = OpenAILLMClient(
+                settings = ai.koog.prompt.executor.clients.openai.OpenAIClientSettings(
+                    baseUrl = resolvedBaseUrl,
+                    chatCompletionsPath = "v1/chat/completions",
+                ),
+                httpClient = httpClient,
+            )
             MultiLLMPromptExecutor(client)
         }
         else -> error("Unsupported provider: $provider. Supported: deepseek, openai, anthropic, ollama, openrouter, openai-compatible")
     }
 
     fun defaultModel(provider: String, modelName: String? = null, baseUrl: String? = null): LLModel = when {
-        // openai-compatible + DeepSeek model name → use DeepSeek provider identity
-        // but keep the user-provided model id (e.g. "opencode/deepseek-v4-flash")
+        // openai-compatible + DeepSeek model name → use OpenAI provider identity
+        // (because the API proxy returns OpenAI-compatible responses, not DeepSeek-specific ones)
+        // The DeepSeek-specific capabilities (e.g. Thinking) are still configured via
+        // openAICompatibleCapabilities().
         modelName != null && provider == "openai-compatible" && modelName.isDeepSeekModelName() -> LLModel(
-            provider = LLMProvider.DeepSeek,
+            provider = LLMProvider.OpenAI,
             id = modelName,
-            capabilities = deepSeekCapabilities(),
+            capabilities = openAICompatibleCapabilities(modelName),
             contextLength = DeepSeekModels.DeepSeekV4Flash.contextLength,
             maxOutputTokens = DeepSeekModels.DeepSeekV4Flash.maxOutputTokens,
         )

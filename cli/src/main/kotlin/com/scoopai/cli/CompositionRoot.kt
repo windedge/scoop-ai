@@ -7,6 +7,7 @@ import com.scoopai.tools.archive.ZipArchiveInspector
 import com.scoopai.tools.cache.ScoopCacheManager
 import com.scoopai.tools.config.ProviderConfigResolver
 import com.scoopai.tools.config.ResolvedProviderConfig
+import com.scoopai.tools.config.UsedAppNameScanner
 import com.scoopai.tools.github.JdkHttpGitHubApi
 import com.scoopai.tools.manifest.FileManifestIo
 import com.scoopai.tools.verify.ProcessScoopVerifier
@@ -152,6 +153,7 @@ class CompositionRoot(
             archiveInspector = archiveInspector,
             onPhase = onPhase,
             artifacts = artifacts,
+            usedAppNamesProvider = UsedAppNameScanner::scanDefault,
         )
     }
 

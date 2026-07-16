@@ -450,7 +450,16 @@ fun buildGeneratePrompt(skeleton: String, analyze: AnalyzeOutput, outputPath: St
     val outputPart = if (outputPath != null) "\nOutput file: $outputPath" else ""
     val suggestedPart = if (suggestedAppName != null) {
         "\n\n## Suggested App Name\n\nThe analysis suggests app name: `$suggestedAppName`.\n" +
-        "When calling `writeManifestToFile`, pass `\"bucket/$suggestedAppName.json\"` as the `path` parameter.\n"
+        "When calling `writeManifestToFile`, pass `\"bucket/$suggestedAppName.json\"` as the `path` parameter.\n" +
+        "\n" +
+        "### Name Conflict Rule\n" +
+        "If the verify phase reports an error like 'app name X conflicts with an existing " +
+        "manifest in a local Scoop bucket', you MUST rename the app to avoid the conflict.\n" +
+        "Preferred rename strategy (in priority order):\n" +
+        "1. **Repo name prefix**: Use the full repository name (e.g. `micro` from `go-micro` → `go-micro`).\n" +
+        "2. **Owner prefix**: If the repo name is too generic, prepend the GitHub owner (e.g. `micro` → `micro-go-micro`).\n" +
+        "3. **Descriptive suffix**: Add a variant/edition suffix (e.g. `micro` → `micro-editor`).\n" +
+        "Avoid common single-word names. Update both `suggested_app_name` and the `path` parameter.\n"
     } else ""
     val userReq = if (!userPrompt.isNullOrBlank()) {
         "\n\n## Additional User Requirements\n$userPrompt\n\n" +
@@ -621,6 +630,12 @@ ${ctx.manifest}
 - Do NOT reorganize or rewrite the manifest.
 - Do NOT add, remove, or rename fields not mentioned in the issues.
 - After fixing, call `finalize_task_result` with the corrected manifest.
+
+## Name Conflict Resolution
+If the issue mentions an app name conflict with an existing Scoop bucket manifest, you MUST:
+1. Choose a new, unique name (e.g. prefix with the repo name or GitHub owner).
+2. Update `suggested_app_name` in the manifest path accordingly.
+3. Avoid common single-word names like `micro`, `app`, `tool`, etc.
 
 ## Attempt
 ${ctx.retryCount} / 3

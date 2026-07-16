@@ -415,6 +415,24 @@ internal fun validatePersistPaths(manifestJson: String): String? {
 }
 
 // ---------------------------------------------------------------------------
+// App name conflict detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Checks whether [appName] conflicts with any existing manifest in local Scoop buckets.
+ *
+ * Returns an error message if [appName] is present in [usedNames], or `null` if
+ * no conflict (including when [appName] is null or blank).
+ */
+internal fun checkAppNameConflict(appName: String?, usedNames: Set<String>): String? {
+    if (appName.isNullOrBlank()) return null
+    return if (usedNames.contains(appName)) {
+        "App name '$appName' conflicts with an existing manifest in a local Scoop bucket. " +
+        "Choose a different name (e.g. prefix with repo name or owner)."
+    } else null
+}
+
+// ---------------------------------------------------------------------------
 // Raw asset info from release API (before filtering)
 // ---------------------------------------------------------------------------
 

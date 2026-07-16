@@ -18,6 +18,7 @@ import com.scoopai.core.agent.nodes.removeInvalidTopLevelFields
 import com.scoopai.core.agent.nodes.normalizeBin
 import com.scoopai.core.agent.nodes.checkAutoupdateVersionPlaceholder
 import com.scoopai.core.agent.nodes.validatePersistPaths
+import com.scoopai.core.agent.nodes.checkAppNameConflict
 import com.scoopai.core.tools.api.ArchiveInspector
 import com.scoopai.core.tools.api.GitHubApi
 import com.scoopai.core.tools.api.ManifestIo
@@ -91,6 +92,12 @@ fun scoopManifestStrategy(
      * Parameters: (phaseName, serializedOutput).
      */
     onPhaseOutput: ((String, String) -> Unit)? = null,
+    /**
+     * Provider for the set of existing manifest names in local Scoop buckets.
+     * When non-null, the verify phase checks [suggestedAppName] against this set
+     * and reports a conflict error if the name is already used.
+     */
+    usedAppNamesProvider: (suspend () -> Set<String>)? = null,
 ) = strategy<String, ManifestResult>("scoop_manifest_v3") {
 
     // ── Storage keys ───────────────────────────────────────────
@@ -192,9 +199,9 @@ fun scoopManifestStrategy(
         result
     }
 
-    // ── Verify node (deterministic: validate + review) ──
+    // ── Verify node (deterministic: validate + review + app name conflict) ──
     val verify by node<String, RefineContext?>("verify") { manifest ->
-        validateManifest(manifest, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries) { storage.set(finalManifestKey, it) }
+        validateManifest(manifest, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries, usedAppNamesProvider, suggestedAppNameKey) { storage.set(finalManifestKey, it) }
     }
 
     // ── Build final result node (reads from storage, replaces edge transform that used captured vars) ──
@@ -342,6 +349,8 @@ internal suspend fun validateManifest(
     retryCountKey: AIAgentStorageKey<Int>,
     storage: AIAgentStorageAPI,
     maxRetries: Int,
+    usedAppNamesProvider: (suspend () -> Set<String>)? = null,
+    suggestedAppNameKey: AIAgentStorageKey<String>? = null,
     finalManifestSetter: suspend (String) -> Unit,
 ): RefineContext? {
     finalManifestSetter(manifest)
@@ -378,6 +387,23 @@ internal suspend fun validateManifest(
     validatePersistPaths(manifest)?.let { msg ->
         errors.add(msg)
         logger.info { "[verify] Persist path check: invalid persist entry found" }
+    }
+
+    // Step 1.7: App name conflict check
+    // (reads suggestedAppName from storage, checks against local bucket names)
+    if (usedAppNamesProvider != null && suggestedAppNameKey != null) {
+        try {
+            val suggestedName = storage.get(suggestedAppNameKey)
+            val usedNames = usedAppNamesProvider()
+            if (usedNames.isNotEmpty()) {
+                checkAppNameConflict(suggestedName, usedNames)?.let { msg ->
+                    errors.add(msg)
+                    logger.info { "[verify] App name conflict detected: $suggestedName" }
+                }
+            }
+        } catch (e: Exception) {
+            logger.warn { "[verify] App name conflict check error: ${e.message}" }
+        }
     }
 
     // Step 2: Semantic review (only when validate passes)

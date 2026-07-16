@@ -66,6 +66,12 @@ class ScoopManifestGenerator(
      * Phase outputs are recorded to .scoopai/runs/<runId>/ for debugging.
      */
     private val artifacts: com.scoopai.core.artifacts.SensitiveArtifactWriter? = null,
+    /**
+     * Provider for the set of existing manifest names in local Scoop buckets.
+     * When non-null, the verify phase checks [suggestedAppName] against this set
+     * and reports a conflict error if the name is already used.
+     */
+    private val usedAppNamesProvider: (suspend () -> Set<String>)? = null,
 ) {
     /**
      * Model with [LLMCapability.ToolChoice] stripped so that Koog uses its
@@ -165,6 +171,7 @@ class ScoopManifestGenerator(
             },
             observer = observer,
             onPhaseOutput = phaseWrite,
+            usedAppNamesProvider = usedAppNamesProvider,
         )
 
         val agentConfig = AIAgentConfig(

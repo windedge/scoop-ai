@@ -1822,6 +1822,37 @@ class ManifestUtilsTest {
         val err = validatePersistPaths(manifest)
         assertNotNull(err)
     }
+
+    // ---------------------------------------------------------------
+    // checkAppNameConflict
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `checkAppNameConflict reports error when name in used set`() {
+        val err = checkAppNameConflict("micro", setOf("micro", "fd"))
+        assertNotNull(err)
+        assertTrue(err!!.contains("micro"))
+    }
+
+    @Test
+    fun `checkAppNameConflict returns null when name not used`() {
+        assertNull(checkAppNameConflict("go-micro", setOf("micro", "fd")))
+    }
+
+    @Test
+    fun `checkAppNameConflict returns null when used set empty`() {
+        assertNull(checkAppNameConflict("anything", emptySet()))
+    }
+
+    @Test
+    fun `checkAppNameConflict returns null when name is null`() {
+        assertNull(checkAppNameConflict(null, setOf("micro", "fd")))
+    }
+
+    @Test
+    fun `checkAppNameConflict returns null when name is blank`() {
+        assertNull(checkAppNameConflict("", setOf("micro", "fd")))
+    }
 }
 
 private fun parseJsonObject(json: String): JsonObject =
