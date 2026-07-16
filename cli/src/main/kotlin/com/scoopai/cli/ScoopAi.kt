@@ -2,8 +2,11 @@ package com.scoopai.cli
 
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.PrintHelpMessage
+import com.github.ajalt.clikt.core.context
 import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.parameters.options.versionOption
+import com.github.ajalt.mordant.rendering.AnsiLevel
+import com.github.ajalt.mordant.terminal.Terminal
 import com.scoopai.cli.command.CompletionCommand
 import com.scoopai.cli.command.ConfigCommand
 import com.scoopai.cli.command.DoctorCommand
@@ -29,6 +32,12 @@ class ScoopAi : CliktCommand(
 ) {
     init {
         versionOption(Version.fullVersion(), message = { it })
+        // Disable ANSI color codes in --help and --version output.
+        // Clikt 4.x uses Mordant (truecolor Terminal) by default; setting
+        // AnsiLevel.NONE on the root context propagates to all subcommands.
+        context {
+            terminal = Terminal(AnsiLevel.NONE)
+        }
         subcommands(
             GenerateCommand(),
             DoctorCommand(),
