@@ -27,10 +27,17 @@ configurations.all {
 
 kotlin {
     jvm {
+        // Align with :cli jvmToolchain(17) so cli tests can load tools/core classes.
+        compilations.configureEach {
+            compileTaskProvider.configure {
+                compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+            }
+        }
         testRuns["test"].executionTask.configure {
             useJUnitPlatform()
         }
     }
+    jvmToolchain(17)
 
     sourceSets {
         commonMain.dependencies {

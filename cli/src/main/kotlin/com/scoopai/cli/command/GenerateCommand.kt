@@ -314,15 +314,16 @@ open class GenerateCommand(
                 }
             }
 
-            // ── Finalize cache entries ─────────────────────────────────
+            // Finalize cache entries (prefer registry cache from DefaultScoopAiFactory)
             if (envArgs.keepCache) {
                 val parsed = parseManifestMeta(manifest)
-                // Use local copies for smart-cast (properties from different module)
                 val pVersion = parsed.version
                 val pUrl = parsed.url
                 logger.info { "[cache] Finalizing: app=$appNameForOutput version=$pVersion url=$pUrl" }
                 if (pVersion != null && pUrl != null) {
-                    val finalized = compositionRoot.cache.finalizeCacheEntry(
+                    val cache = DefaultToolRegistryFactory.getCacheManager()
+                        ?: compositionRoot.cache
+                    val finalized = cache.finalizeCacheEntry(
                         pUrl, appNameForOutput, pVersion
                     )
                     if (finalized != null && !isJsonOutput) {

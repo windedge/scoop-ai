@@ -21,9 +21,9 @@ class LlmProviderFactoryTest {
     }
 
     @Test
-    fun `defaultModel for openai-compatible with DeepSeek model uses DeepSeek provider and thinking capability`() {
+    fun `defaultModel for openai-compatible with DeepSeek model uses OpenAI provider and thinking capability`() {
         val model = LlmProviderFactory.defaultModel("openai-compatible", "opencode/deepseek-v4-flash")
-        assertEquals(LLMProvider.DeepSeek, model.provider)
+        assertEquals(LLMProvider.OpenAI, model.provider)
         assertEquals("opencode/deepseek-v4-flash", model.id)
         assertTrue(model.capabilities?.contains(LLMCapability.Thinking) == true,
             "DeepSeek models via openai-compatible should have Thinking capability")
@@ -68,14 +68,12 @@ class LlmProviderFactoryTest {
 
     @Test
     fun `create for openai-compatible with DeepSeek model name succeeds`() {
-        // DeepSeek model → DeepSeekLLMClient (expects systemFingerprint in response)
         LlmProviderFactory.create(
             provider = "openai-compatible",
             apiKey = "sk-test",
             baseUrl = "http://localhost:8080",
             modelName = "opencode/deepseek-v4-flash",
         )
-        // Client construction only — no network call, should not throw
     }
 
     @Test

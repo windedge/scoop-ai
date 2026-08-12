@@ -31,6 +31,9 @@ object DefaultToolRegistryFactory {
     private var cacheManager: ScoopCacheManager? = null
     private var toolBudget: ToolCallBudget? = null
 
+    /**
+     * @param nonInteractive when non-null, sets [SafeAskUser.nonInteractiveOverride]
+     */
     fun create(
         cache: ScoopCacheManager = ScoopCacheManager(),
         githubToken: String? = null,
@@ -39,13 +42,16 @@ object DefaultToolRegistryFactory {
         manifestIo: ManifestIo = FileManifestIo(),
         scoopVerifier: ScoopVerifier? = null,
         extraTools: List<Tool<*, *>> = emptyList(),
+        nonInteractive: Boolean? = null,
     ): ToolRegistry {
+        if (nonInteractive != null) {
+            SafeAskUser.nonInteractiveOverride = nonInteractive
+        }
         cacheManager = cache
         toolBudget = ToolCallBudget()
         val budget = toolBudget
         val hashComputer = StreamingHashComputer(cache)
         val archiveInspector = ZipArchiveInspector(cache, budget = budget)
-        // Wrap default webFetcher with budget if it's a JdkHttpWebFetcher without one
         val effectiveWebFetcher = if (webFetcher is JdkHttpWebFetcher) {
             JdkHttpWebFetcher(budget = budget)
         } else {

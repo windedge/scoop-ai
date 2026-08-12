@@ -6,9 +6,12 @@ import ai.koog.prompt.executor.clients.anthropic.AnthropicLLMClient
 import ai.koog.prompt.executor.clients.deepseek.DeepSeekClientSettings
 import ai.koog.prompt.executor.clients.deepseek.DeepSeekLLMClient
 import ai.koog.prompt.executor.clients.deepseek.DeepSeekModels
+import ai.koog.prompt.executor.clients.openai.OpenAIClientSettings
 import ai.koog.prompt.executor.clients.openai.OpenAILLMClient
 import ai.koog.prompt.executor.clients.openai.OpenAIModels
 import ai.koog.prompt.executor.clients.openai.base.AbstractOpenAILLMClient
+import ai.koog.prompt.executor.clients.openai.base.OpenAIBaseSettings
+import ai.koog.prompt.executor.clients.openrouter.OpenRouterClientSettings
 import ai.koog.prompt.executor.clients.openrouter.OpenRouterLLMClient
 import ai.koog.prompt.executor.llms.MultiLLMPromptExecutor
 import ai.koog.prompt.executor.model.PromptExecutor
@@ -26,61 +29,63 @@ object LlmProviderFactory {
     /**
      * Create a PromptExecutor for the given provider.
      *
-     * For openai-compatible + DeepSeek models, the Koog 1.0.0 DeepSeekLLMClient
-     * already uses AdditionalPropertiesFlatteningSerializer internally, so we no
-     * longer need the manual InterceptBodyPlugin workaround from Koog 0.8.0.
+     * OpenAI-family clients always use the explicit Java HTTP factory so SPI
+     * auto-resolution does not break when both Java and Ktor clients are present.
      */
     fun create(provider: String, apiKey: String, baseUrl: String? = null, modelName: String? = null): PromptExecutor = when (provider) {
-        "deepseek" -> MultiLLMPromptExecutor(DeepSeekLLMClient(apiKey))
-        "openai" -> MultiLLMPromptExecutor(OpenAILLMClient(apiKey = apiKey))
+        "deepseek" -> {
+            val settings = DeepSeekClientSettings()
+            MultiLLMPromptExecutor(
+                DeepSeekLLMClient(settings = settings, httpClient = javaHttpClient(apiKey, settings, "DeepSeekLLMClient"))
+            )
+        }
+        "openai" -> {
+            val settings = OpenAIClientSettings()
+            MultiLLMPromptExecutor(
+                OpenAILLMClient(settings = settings, httpClient = javaHttpClient(apiKey, settings, "OpenAILLMClient"))
+            )
+        }
         "anthropic" -> MultiLLMPromptExecutor(AnthropicLLMClient(apiKey = apiKey))
         "ollama" -> MultiLLMPromptExecutor(OllamaClient())
-        "openrouter" -> MultiLLMPromptExecutor(OpenRouterLLMClient(apiKey = apiKey))
+        "openrouter" -> {
+            val settings = OpenRouterClientSettings()
+            MultiLLMPromptExecutor(
+                OpenRouterLLMClient(settings = settings, httpClient = javaHttpClient(apiKey, settings, "OpenRouterLLMClient"))
+            )
+        }
         "openai-compatible" -> {
             val resolvedBaseUrl = baseUrl ?: error("--base-url is required for openai-compatible provider")
-            val deepSeekSettings = DeepSeekClientSettings(
-                baseUrl = resolvedBaseUrl,
-                chatCompletionsPath = "v1/chat/completions",
-            )
-            val baseHttpClient: KoogHttpClient = AbstractOpenAILLMClient.createConfiguredHttpClient(
+            // Always OpenAILLMClient: proxy responses follow OpenAI schema (no systemFingerprint).
+            // Thinking capability for DeepSeek model names is set in openAICompatibleCapabilities().
+            val baseHttpClient = javaHttpClient(
                 apiKey = apiKey,
-                settings = deepSeekSettings,
-                httpClientFactory = JavaKoogHttpClient.Factory(),
+                settings = DeepSeekClientSettings(
+                    baseUrl = resolvedBaseUrl,
+                    chatCompletionsPath = "v1/chat/completions",
+                ),
                 clientName = "OpenAICompatibleLLMClient",
             )
-            // Compose interceptors based on model requirements:
-            // - fixDoubleEncoding: all models (Koog serialization bug)
-            // - downgradeToolChoice: DeepSeek only (API gateway rejects tool_choice: required)
-            // - logRequestBody: debug only (SCOOP_AI_DEBUG_HTTP env var)
-            // Use OpenAILLMClient for all openai-compatible models to avoid
-            // DeepSeek's strict response schema (required systemFingerprint field).
-            // When the API proxy (e.g. liteapi) proxies DeepSeek models, the response
-            // follows OpenAI schema and lacks DeepSeek-specific fields like systemFingerprint.
-            // The DeepSeek-specific capabilities (e.g. Thinking) are still configured
-            // separately via openAICompatibleCapabilities().
             val interceptors = buildList {
                 add(::fixDoubleEncoding)
                 if (modelName.isDeepSeekModelName()) add(::downgradeToolChoice)
                 if (isDebugHttpEnabled()) add(::logRequestBody)
             }
-            val httpClient = InterceptingHttpClient(baseHttpClient, interceptors)
-            val client = OpenAILLMClient(
-                settings = ai.koog.prompt.executor.clients.openai.OpenAIClientSettings(
-                    baseUrl = resolvedBaseUrl,
-                    chatCompletionsPath = "v1/chat/completions",
-                ),
-                httpClient = httpClient,
+            MultiLLMPromptExecutor(
+                OpenAILLMClient(
+                    settings = OpenAIClientSettings(
+                        baseUrl = resolvedBaseUrl,
+                        chatCompletionsPath = "v1/chat/completions",
+                    ),
+                    httpClient = InterceptingHttpClient(baseHttpClient, interceptors),
+                )
             )
-            MultiLLMPromptExecutor(client)
         }
         else -> error("Unsupported provider: $provider. Supported: deepseek, openai, anthropic, ollama, openrouter, openai-compatible")
     }
 
     fun defaultModel(provider: String, modelName: String? = null, baseUrl: String? = null): LLModel = when {
-        // openai-compatible + DeepSeek model name → use OpenAI provider identity
-        // (because the API proxy returns OpenAI-compatible responses, not DeepSeek-specific ones)
-        // The DeepSeek-specific capabilities (e.g. Thinking) are still configured via
-        // openAICompatibleCapabilities().
+        // openai-compatible + DeepSeek model name uses OpenAI provider identity
+        // (proxy returns OpenAI-shaped responses) but keeps Thinking capability.
         modelName != null && provider == "openai-compatible" && modelName.isDeepSeekModelName() -> LLModel(
             provider = LLMProvider.OpenAI,
             id = modelName,
@@ -107,6 +112,18 @@ object LlmProviderFactory {
             else -> DeepSeekModels.DeepSeekV4Flash
         }
     }
+
+    /** Explicit Java factory avoids multi-SPI resolution failures on consumer classpaths. */
+    private fun javaHttpClient(
+        apiKey: String,
+        settings: OpenAIBaseSettings,
+        clientName: String,
+    ): KoogHttpClient = AbstractOpenAILLMClient.createConfiguredHttpClient(
+        apiKey = apiKey,
+        settings = settings,
+        httpClientFactory = JavaKoogHttpClient.Factory(),
+        clientName = clientName,
+    )
 
     private fun providerToLLMProvider(provider: String): LLMProvider = when (provider) {
         "deepseek" -> LLMProvider.DeepSeek
@@ -140,12 +157,6 @@ object LlmProviderFactory {
         else -> listOf(LLMCapability.Completion, LLMCapability.Tools)
     }
 
-    /**
-     * DeepSeek V4 models support Thinking capability.
-     * When using an openai-compatible proxy with a DeepSeek model name,
-     * include LLMCapability.Thinking so the agent framework passes
-     * thinking parameters correctly.
-     */
     private fun deepSeekCapabilities(): List<LLMCapability> = listOf(
         LLMCapability.Temperature,
         LLMCapability.ToolChoice,
@@ -167,7 +178,6 @@ object LlmProviderFactory {
             LLMCapability.Completion,
             LLMCapability.OpenAIEndpoint.Completions,
         )
-        // DeepSeek models accessed via openai-compatible proxy also support thinking
         if (modelName.isDeepSeekModelName()) {
             base.add(LLMCapability.Thinking)
         }

@@ -22,6 +22,18 @@ class ProcessScoopVerifier : ScoopVerifier, ToolSet {
     companion object {
         private const val INSTALL_TIMEOUT_MINUTES = 5L
         private const val UNINSTALL_TIMEOUT_SECONDS = 30L
+
+        /** Create a verifier only when `scoop --version` succeeds. */
+        fun tryCreate(): ProcessScoopVerifier? = try {
+            val check = ProcessBuilder("scoop", "--version")
+                .redirectErrorStream(true)
+                .start()
+            check.inputStream.bufferedReader().readText()
+            check.waitFor()
+            if (check.exitValue() == 0) ProcessScoopVerifier() else null
+        } catch (_: Exception) {
+            null
+        }
     }
 
     @Tool
