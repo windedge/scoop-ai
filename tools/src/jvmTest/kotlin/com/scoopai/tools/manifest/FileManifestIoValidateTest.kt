@@ -398,4 +398,65 @@ class FileManifestIoValidateTest {
         assertFalse(result.contains("Invalid JSON"), "Architecture array extract_dir should not crash: $result")
         assertTrue(result.contains("\"valid\":true"), "Architecture array extract_dir should be valid: $result")
     }
+
+    // ---------------------------------------------------------------
+    // Missing hash is an error
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `architecture url without hash is an error`() {
+        val manifest = """
+        {
+            "version": "9.4.7",
+            "description": "BOSS",
+            "homepage": "https://example.com",
+            "license": "Apache-2.0",
+            "architecture": {
+                "64bit": { "url": "https://example.com/BOSS-9.4.7.msi" }
+            },
+            "bin": "BOSS.exe"
+        }
+        """.trimIndent()
+        val result = io.validate(manifest)
+        assertTrue(result.contains("\"valid\":false"), "Missing hash should invalidate: $result")
+        assertTrue(result.contains("hash"), "Should report missing hash as error: $result")
+    }
+
+    @Test
+    fun `top-level url without hash is an error`() {
+        val manifest = """
+        {
+            "version": "1.0.0",
+            "description": "Test",
+            "homepage": "https://example.com",
+            "license": "MIT",
+            "url": "https://example.com/app.zip",
+            "bin": "app.exe"
+        }
+        """.trimIndent()
+        val result = io.validate(manifest)
+        assertTrue(result.contains("\"valid\":false"), "Top-level url without hash should be invalid: $result")
+        assertTrue(result.contains("hash"), "Should mention hash: $result")
+    }
+
+    @Test
+    fun `architecture with hash remains valid`() {
+        val manifest = """
+        {
+            "version": "9.4.7",
+            "description": "BOSS",
+            "homepage": "https://example.com",
+            "license": "Apache-2.0",
+            "architecture": {
+                "64bit": {
+                    "url": "https://example.com/BOSS-9.4.7.msi",
+                    "hash": "85040d7800049be1d1f3db2178d3294d2deec614a9680d1bdbf26c54243a3e4d"
+                }
+            },
+            "bin": "BOSS.exe"
+        }
+        """.trimIndent()
+        val result = io.validate(manifest)
+        assertTrue(result.contains("\"valid\":true"), "Hash present should be valid: $result")
+    }
 }

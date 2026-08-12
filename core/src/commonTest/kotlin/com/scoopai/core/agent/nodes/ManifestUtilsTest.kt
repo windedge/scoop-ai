@@ -27,6 +27,37 @@ class ManifestUtilsTest {
         return Json.parseToJsonElement(manifestStr).jsonObject
     }
 
+    /** Top-level and architecture.64bit extract_dir values from a manifest JSON string. */
+    private fun extractDirs(manifestJson: String): Pair<String?, String?> {
+        val obj = parseJsonObject(manifestJson)
+        val top = obj["extract_dir"]?.jsonPrimitive?.content
+        val arch = obj["architecture"]?.jsonObject?.get("64bit")?.jsonObject
+            ?.get("extract_dir")?.jsonPrimitive?.content
+        return top to arch
+    }
+
+    private fun msiAnalyze(
+        url: String,
+        filename: String,
+        hash: String,
+        bin: List<String>,
+        appName: String,
+    ) = AnalyzeOutput(
+        strategy = "installer",
+        installer_type = "msi",
+        entries = listOf(
+            AssetEntry(
+                architecture = "64bit",
+                url = url,
+                hash = hash,
+                filename = filename,
+                extract_dir = "",
+            ),
+        ),
+        bin = bin,
+        suggested_app_name = appName,
+    )
+
     // ---------------------------------------------------------------
     // detectArchitecture
     // ---------------------------------------------------------------
@@ -274,12 +305,75 @@ class ManifestUtilsTest {
     }
 
     @Test
-    fun `applyInstallerTransformations MSI adds extract_dir with backslashes`() {
-        val manifest = buildTestManifest(url = "https://example.com/app.msi")
+    fun `applyInstallerTransformations MSI adds extract_dir with product name not PFiles`() {
+        val manifest = buildTestManifest(url = "https://example.com/BOSS-9.4.7.msi")
+        val result = applyInstallerTransformations(manifest, InstallerRoute.MSI, msiProductName = "BOSS")
+        val extractDir = result.getValue("architecture").jsonObject
+            .getValue("64bit").jsonObject["extract_dir"]?.jsonPrimitive?.content
+        assertEquals("BOSS", extractDir, "MSI extract_dir should be product name (jpackage layout), got: $extractDir")
+        assertFalse(extractDir!!.startsWith("PFiles"), "Should not use classic PFiles fallback")
+    }
+
+    @Test
+    fun `applyInstallerTransformations MSI leaves extract_dir unset without product name`() {
+        val manifest = buildTestManifest(url = "https://github.com/x/y/releases/download/v9.4.7/BOSS-9.4.7.msi")
         val result = applyInstallerTransformations(manifest, InstallerRoute.MSI)
-        val arch64 = result.getValue("architecture").jsonObject.getValue("64bit").jsonObject
-        val extractDir = arch64["extract_dir"]?.jsonPrimitive?.content
-        assertTrue(extractDir != null && extractDir.contains("\\"), "MSI extract_dir should use backslashes, got: $extractDir")
+        val extractDir = result.getValue("architecture").jsonObject
+            .getValue("64bit").jsonObject["extract_dir"]?.jsonPrimitive?.content
+        assertNull(extractDir, "Without msiProductName, extract_dir must stay unset, got: $extractDir")
+    }
+
+    @Test
+    fun `applyInstallerTransformations MSI does not override existing extract_dir`() {
+        val manifestStr = """{"version":"1.0.0","architecture":{"64bit":{"url":"https://example.com/BOSS.msi","hash":"abc123","extract_dir":"CustomDir"}},"bin":["BOSS.exe"]}"""
+        val manifest = Json.parseToJsonElement(manifestStr).jsonObject
+        val result = applyInstallerTransformations(manifest, InstallerRoute.MSI, msiProductName = "BOSS")
+        val extractDir = result.getValue("architecture").jsonObject
+            .getValue("64bit").jsonObject["extract_dir"]?.jsonPrimitive?.content
+        assertEquals("CustomDir", extractDir)
+    }
+
+    @Test
+    fun `finalizeManifestSkeleton applies MSI extract_dir from bin when missing`() {
+        val research = ResearchOutput(
+            project = "risa-labs-inc/BossConsole",
+            version = "9.4.7",
+            description = "BOSS",
+            homepage = "https://github.com/risa-labs-inc/BossConsole",
+            license = LicenseInfo("Apache-2.0"),
+        )
+        val analyze = msiAnalyze(
+            url = "https://github.com/risa-labs-inc/BossConsole/releases/download/v9.4.7/BOSS-9.4.7.msi",
+            filename = "BOSS-9.4.7.msi",
+            hash = "85040d7800049be1d1f3db2178d3294d2deec614a9680d1bdbf26c54243a3e4d",
+            bin = listOf("BOSS.exe"),
+            appName = "bossterm",
+        )
+        val finalized = finalizeManifestSkeleton(assembleManifestSkeleton(research, analyze), analyze)
+        val (top, arch) = extractDirs(finalized)
+        assertEquals("BOSS", top ?: arch, "finalize should set MSI extract_dir from bin BOSS.exe, got top=$top arch=$arch")
+    }
+
+    @Test
+    fun `finalizeManifestSkeleton leaves MSI extract_dir unset without bin`() {
+        val research = ResearchOutput(
+            project = "example/app",
+            version = "1.0.0",
+            description = "App",
+            homepage = "https://github.com/example/app",
+            license = LicenseInfo("MIT"),
+        )
+        val analyze = msiAnalyze(
+            url = "https://github.com/example/app/releases/download/v1.0.0/App-1.0.0.msi",
+            filename = "App-1.0.0.msi",
+            hash = "abc123",
+            bin = emptyList(),
+            appName = "app",
+        )
+        val finalized = finalizeManifestSkeleton(assembleManifestSkeleton(research, analyze), analyze)
+        val (top, arch) = extractDirs(finalized)
+        assertNull(top, "Without bin, top-level extract_dir must stay unset, got: $top")
+        assertTrue(arch.isNullOrBlank(), "Without bin, arch extract_dir must stay unset, got: $arch")
     }
 
     @Test

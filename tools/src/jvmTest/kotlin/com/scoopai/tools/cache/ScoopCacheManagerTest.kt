@@ -76,6 +76,40 @@ class ScoopCacheManagerTest {
     // -----------------------------------------------------------------------
 
     @Test
+    fun `download allows files around 270MB with default 1GB limit`() {
+        // Size gate uses Content-Length; body can be small.
+        val server = HttpServer.create(InetSocketAddress(0), 0)
+        val url = "http://localhost:${server.address.port}/large-msi"
+
+        server.createContext("/large-msi") { exchange ->
+            when (exchange.requestMethod) {
+                "HEAD" -> {
+                    exchange.responseHeaders.set("Content-Length", "${270L * 1024 * 1024}")
+                    exchange.sendResponseHeaders(200, -1)
+                }
+                "GET" -> {
+                    exchange.sendResponseHeaders(200, 64)
+                    exchange.responseBody.write(ByteArray(64) { 0x42 })
+                    exchange.responseBody.close()
+                }
+            }
+        }
+        server.executor = Executors.newSingleThreadExecutor()
+        server.start()
+
+        val tmpDir = Files.createTempDirectory("scoop-cache-test-")
+        try {
+            val cacheManager = ScoopCacheManager(keepCache = false, customCacheDir = tmpDir)
+            val path = cacheManager.getOrDownload(url)
+            assertTrue(Files.exists(path), "270MB-class file should download with 1GB default limit")
+            assertTrue(Files.size(path) > 0, "Downloaded file should have content")
+        } finally {
+            server.stop(0)
+            tmpDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun `download rejects files exceeding size limit via Content-Length`() {
         val server = HttpServer.create(InetSocketAddress(0), 0)
         val url = "http://localhost:${server.address.port}/content-length-test"

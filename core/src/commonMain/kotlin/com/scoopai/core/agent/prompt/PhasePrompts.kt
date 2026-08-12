@@ -247,7 +247,9 @@ $researchJson
 ⚠️ **API hash priority**: If the research `windows_assets` entry for an asset already has a `hash` field filled in (from GitHub API's `digest`), **use it directly**. Do NOT call `computeSha256FromUrl` for that URL — the hash from GitHub API is authoritative. Only call `computeSha256FromUrl` for assets whose `hash` is empty in the research JSON.
    - NEVER fabricate or guess hashes.
    - Do NOT hash every possible candidate if many are obviously lower priority.
-   - **For very large assets** (size > 100MB in the research data): call `detectInstallerType` first to check if it's usable before calling `computeSha256FromUrl`.
+   - **Large assets (even when size > 100MB / hundreds of MB)**: still call `computeSha256FromUrl` for the chosen asset. Hash computation streams to disk and is memory-safe; do NOT skip hashing just because the file is large.
+   - **MSI installers (any size)**: MUST call both `computeSha256FromUrl` AND `listArchiveContents`. MSI `extract_dir` is a hard install requirement; omitting hash or extract_dir will fail Scoop install (e.g. "Can't shim").
+   - Only skip deep analysis when a zip/7z asset is clearly unusable (corrupt, password-protected, or wrong platform). Never skip MSI analysis due to size alone.
 
 3. **Inspect archives for selected manifest candidates**:
    - For ZIP: Use listArchiveContents to see directory structure, findExecutables to locate .exe files. The tool may return a `nested_archive` field when the ZIP contains another archive inside it.
@@ -258,7 +260,7 @@ $researchJson
      Expand-7zipArchive "\${'$'}dir\_inner.zip" "\${'$'}dir"
      Remove-Item "\${'$'}dir\_inner.zip"
      ```
-   - For MSI (only when no ZIP is available): Use listArchiveContents to see the full extracted file paths. The tool auto-detects archive type and returns paths like `PFiles/AppName/app.exe`. You MUST set `extract_dir` to the directory containing the executable with backslashes ONLY (e.g. `PFiles\\AppName`), because Scoop extracts MSI into subdirectories. Omitting `extract_dir` for MSI will cause "File doesn't exist" errors at install time. Never use forward slashes.
+   - For MSI (only when no ZIP is available): ALWAYS use listArchiveContents (even for large MSI files) to see the full extracted file paths. The tool auto-detects archive type and returns paths like `PFiles/AppName/app.exe` or jpackage layout `BOSS/BOSS.exe`. You MUST set `extract_dir` to the directory containing the executable with backslashes ONLY (e.g. `PFiles\\AppName` or `BOSS`), because Scoop extracts MSI into subdirectories. Omitting `extract_dir` for MSI will cause "File doesn't exist" / "Can't shim" errors at install time. Never use forward slashes.
    - Only use detectInstallerType when you are actually choosing an installer/portable-exe strategy, or when ZIP analysis is insufficient.
    - **InnoSetup handling**: If `detectInstallerType` returns `innosetup`, set `"installer_type": "innosetup"` regardless. If `listArchiveContents` returns files, use them to set `bin`. If `listArchiveContents` returns empty (innounp cannot list this version), still report `innosetup` — Scoop may still be able to extract. In this case, set `bin` based on common InnoSetup conventions (main exe usually named after the app), or omit `bin` if uncertain.
    - **NSIS unsupported handling**: If `detectInstallerType` returns `nsis_unsupported` (the NSIS installer cannot be extracted by 7z), set `"installer_type": "nsis"` AND `"nsis_unsupported": true` in your output. This tells the generate phase that `#/dl.7z` will NOT work. In this case, look for alternative ZIP or MSI assets for the same version. If no alternative exists, you may need to use a silent install script strategy.

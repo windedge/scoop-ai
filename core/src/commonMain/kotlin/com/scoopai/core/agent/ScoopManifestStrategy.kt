@@ -10,6 +10,7 @@ import com.scoopai.core.ManifestResult
 import com.scoopai.core.RefineContext
 import com.scoopai.core.observer.GenerationObserver
 import com.scoopai.core.agent.nodes.assembleManifestSkeleton
+import com.scoopai.core.agent.nodes.finalizeManifestSkeleton
 import com.scoopai.core.agent.nodes.autoFillBinFromShortcuts
 import com.scoopai.core.agent.nodes.normalizeEnvSet
 import com.scoopai.core.agent.nodes.enforceArchitectureWrap
@@ -162,7 +163,8 @@ fun scoopManifestStrategy(
     // ── Deterministic: assemble JSON skeleton from research + analyze data ──
     val prepareManifest by node<AnalyzeOutput, String>("prepareManifest") { analyzeOutput ->
         storage.set(analyzeDataKey, analyzeOutput)
-        assembleManifestSkeleton(storage.get(researchDataKey)!!, analyzeOutput)
+        val skeleton = assembleManifestSkeleton(storage.get(researchDataKey)!!, analyzeOutput)
+        finalizeManifestSkeleton(skeleton, analyzeOutput)
     }
 
     // ── Generate phase (LLM, no tools: review skeleton + finalize) ──

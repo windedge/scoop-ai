@@ -607,46 +607,104 @@ fun routeInstallerType(type: String, isElectron: Boolean): InstallerRoute = when
 // ---------------------------------------------------------------------------
 
 /**
+ * Derives MSI product/dir name from the main bin entry (e.g. `BOSS.exe` -> `BOSS`).
+ * Used as extract_dir fallback for jpackage-style MSI layouts.
+ * Does not guess from URL filenames; returns null when bin is empty.
+ */
+internal fun productNameFromBin(bin: List<String>): String? =
+    bin.firstOrNull()
+        ?.substringAfterLast('\\')
+        ?.substringAfterLast('/')
+        ?.removeSuffix(".exe")
+        ?.removeSuffix(".EXE")
+        ?.takeIf { it.isNotBlank() }
+
+/** True if extract_dir is set at top level or under any architecture entry. */
+private fun hasExtractDir(manifest: JsonObject): Boolean {
+    if (manifest.containsKey("extract_dir")) return true
+    val arch = manifest["architecture"] as? JsonObject ?: return false
+    return arch.values.any { (it as? JsonObject)?.containsKey("extract_dir") == true }
+}
+
+/**
  * Applies installer-type-specific transformations to a manifest JsonObject.
  *
- * - NSIS: Appends `#/dl.7z` to URL
- * - MSI: Adds `extract_dir` with backslashes
- * - PORTABLE_EXE: Appends `#/app.exe` to URL
- * - NSIS_ELECTRON: Adds two-layer extraction pre_install
- * - ZIP: No transformation
+ * - NSIS / NSIS_ELECTRON: Appends `#/dl.7z` to URL
+ * - MSI: Fills missing `extract_dir` from [msiProductName] (per-arch, or top-level if none)
+ * - PORTABLE_EXE: Appends `#/<filename>` to URL
+ * - ZIP / INNOSETUP: No transformation
+ *
+ * @param msiProductName Product name for MSI extract_dir fallback (from bin basename).
+ *   When null/blank, leave extract_dir unset.
  */
-fun applyInstallerTransformations(manifest: JsonObject, route: InstallerRoute): JsonObject {
+fun applyInstallerTransformations(
+    manifest: JsonObject,
+    route: InstallerRoute,
+    msiProductName: String? = null,
+): JsonObject {
     if (route == InstallerRoute.ZIP || route == InstallerRoute.INNOSETUP) return manifest
 
-    val archMap = manifest["architecture"] as? JsonObject ?: return manifest
-    val newArchEntries = mutableMapOf<String, JsonElement>()
+    val product = msiProductName?.takeIf { it.isNotBlank() }
+    val archMap = manifest["architecture"] as? JsonObject
+    val hasTopLevelExtractDir = manifest.containsKey("extract_dir")
 
-    for ((archKey, archValue) in archMap) {
-        val archEntry = (archValue as? JsonObject)?.toMutableMap() ?: continue
-        val url = archEntry["url"]?.let { (it as? JsonPrimitive)?.content } ?: continue
+    val withArch = if (archMap == null) {
+        manifest
+    } else {
+        val newArchEntries = mutableMapOf<String, JsonElement>()
+        for ((archKey, archValue) in archMap) {
+            val archEntry = (archValue as? JsonObject)?.toMutableMap() ?: continue
+            val url = (archEntry["url"] as? JsonPrimitive)?.content ?: continue
 
-        when (route) {
-            InstallerRoute.ZIP, InstallerRoute.INNOSETUP -> {}
-            InstallerRoute.NSIS, InstallerRoute.NSIS_ELECTRON -> {
-                if (!url.contains("#/")) archEntry["url"] = JsonPrimitive("$url#/dl.7z")
-            }
-            InstallerRoute.MSI -> {
-                if (!archEntry.containsKey("extract_dir")) {
-                    val baseName = url.substringAfterLast("/").removeSuffix(".msi")
-                    archEntry["extract_dir"] = JsonPrimitive("PFiles\\${baseName.replace("-", "")}")
+            when (route) {
+                InstallerRoute.ZIP, InstallerRoute.INNOSETUP -> {}
+                InstallerRoute.NSIS, InstallerRoute.NSIS_ELECTRON -> {
+                    if (!url.contains("#/")) archEntry["url"] = JsonPrimitive("$url#/dl.7z")
+                }
+                InstallerRoute.MSI -> {
+                    if (!hasTopLevelExtractDir && !archEntry.containsKey("extract_dir") && product != null) {
+                        archEntry["extract_dir"] = JsonPrimitive(product)
+                    }
+                }
+                InstallerRoute.PORTABLE_EXE -> {
+                    val exeName = url.substringAfterLast("/")
+                    if (!url.contains("#/")) archEntry["url"] = JsonPrimitive("$url#/$exeName")
                 }
             }
-            InstallerRoute.PORTABLE_EXE -> {
-                val exeName = url.substringAfterLast("/")
-                if (!url.contains("#/")) archEntry["url"] = JsonPrimitive("$url#/$exeName")
-            }
+            newArchEntries[archKey] = JsonObject(archEntry)
         }
-        newArchEntries[archKey] = JsonObject(archEntry)
+        JsonObject(manifest.toMutableMap().apply {
+            put("architecture", JsonObject(newArchEntries))
+        })
     }
 
-    return JsonObject(manifest.toMutableMap().apply {
-        put("architecture", JsonObject(newArchEntries))
-    })
+    // MSI: if still no extract_dir anywhere (flat format or unfilled arch), lift product to top level
+    if (route == InstallerRoute.MSI && product != null && !hasExtractDir(withArch)) {
+        return JsonObject(withArch.toMutableMap().apply {
+            put("extract_dir", JsonPrimitive(product))
+        })
+    }
+    return withArch
+}
+
+/**
+ * Post-process skeleton after [assembleManifestSkeleton]: installer-type transforms
+ * (MSI extract_dir from bin, NSIS #/dl.7z, portable_exe fragment).
+ * No-op for zip/innosetup or invalid JSON.
+ */
+fun finalizeManifestSkeleton(skeletonJson: String, analyze: AnalyzeOutput): String {
+    val route = routeInstallerType(
+        type = analyze.installer_type,
+        isElectron = analyze.installer_scripts.isNotEmpty(),
+    )
+    if (route == InstallerRoute.ZIP || route == InstallerRoute.INNOSETUP) return skeletonJson
+
+    val manifest = try {
+        Json.parseToJsonElement(skeletonJson).jsonObject
+    } catch (_: Exception) {
+        return skeletonJson
+    }
+    return applyInstallerTransformations(manifest, route, productNameFromBin(analyze.bin)).toString()
 }
 
 // ---------------------------------------------------------------------------

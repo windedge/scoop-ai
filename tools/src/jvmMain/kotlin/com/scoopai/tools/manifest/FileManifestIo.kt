@@ -85,14 +85,16 @@ class FileManifestIo(
                 }
             }
 
-            // Check hash or architecture.hash
+            // Missing hash is an error (blocks install / triggers refine)
             val hasHash = obj.containsKey("hash")
-            val hasArchHash = obj["architecture"]?.jsonObject?.let { arch ->
-                arch["64bit"]?.jsonObject?.containsKey("hash") == true ||
-                    arch["32bit"]?.jsonObject?.containsKey("hash") == true
-            } ?: false
-            if (!hasHash && !hasArchHash) {
-                warnings.add("No hash field found; consider adding 'hash' for verification")
+            val hasArchHash = obj["architecture"]?.jsonObject?.values?.any {
+                (it as? JsonObject)?.containsKey("hash") == true
+            } == true
+            when {
+                !hasHash && !hasArchHash ->
+                    errors.add("No hash field found; each url must have a corresponding hash (SHA-256)")
+                obj.containsKey("url") && !hasHash ->
+                    errors.add("Top-level 'url' is present but 'hash' is missing")
             }
 
             // Validate hash format if present
@@ -504,7 +506,7 @@ class FileManifestIo(
             val hasUrl = archElement.containsKey("url")
             val hasHash = archElement.containsKey("hash")
             if (hasUrl && !hasHash) {
-                warnings.add("architecture.$archName has 'url' but no 'hash'")
+                errors.add("architecture.$archName has 'url' but no 'hash'")
             }
             if (hasHash && !hasUrl) {
                 errors.add("architecture.$archName has 'hash' but no 'url'")
