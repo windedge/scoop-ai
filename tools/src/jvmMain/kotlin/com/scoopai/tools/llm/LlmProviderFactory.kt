@@ -54,7 +54,9 @@ object LlmProviderFactory {
             )
         }
         "openai-compatible" -> {
-            val resolvedBaseUrl = baseUrl ?: error("--base-url is required for openai-compatible provider")
+            val rawBaseUrl = baseUrl ?: error("--base-url is required for openai-compatible provider")
+            // Clients append "v1/chat/completions"; strip user-supplied /v1 to avoid double path (404).
+            val resolvedBaseUrl = normalizeBaseUrl(rawBaseUrl)
             // Always OpenAILLMClient: proxy responses follow OpenAI schema (no systemFingerprint).
             // Thinking capability for DeepSeek model names is set in openAICompatibleCapabilities().
             val baseHttpClient = javaHttpClient(
@@ -183,4 +185,31 @@ object LlmProviderFactory {
         }
         return base.toList()
     }
+}
+
+/**
+ * Normalize an OpenAI-compatible base URL so clients can safely append
+ * `v1/chat/completions` without producing a double `/v1` path (HTTP 404).
+ *
+ * - trims whitespace
+ * - strips trailing `/`
+ * - strips trailing `/v1` or `/v1/`
+ * - strips trailing `/v1/chat/completions`
+ */
+internal fun normalizeBaseUrl(baseUrl: String): String {
+    var url = baseUrl.trim()
+    while (url.endsWith('/')) {
+        url = url.dropLast(1)
+    }
+    val suffixes = listOf("/v1/chat/completions", "/v1")
+    for (suffix in suffixes) {
+        if (url.endsWith(suffix, ignoreCase = true)) {
+            url = url.dropLast(suffix.length)
+            break
+        }
+    }
+    while (url.endsWith('/')) {
+        url = url.dropLast(1)
+    }
+    return url
 }

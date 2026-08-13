@@ -10,6 +10,74 @@ import kotlin.test.assertTrue
 class LlmProviderFactoryTest {
 
     // ---------------------------------------------------------------
+    // normalizeBaseUrl tests
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `normalizeBaseUrl trims whitespace`() {
+        assertEquals(
+            "http://192.168.40.130:8317",
+            normalizeBaseUrl("  http://192.168.40.130:8317  "),
+        )
+    }
+
+    @Test
+    fun `normalizeBaseUrl strips trailing slash`() {
+        assertEquals(
+            "http://192.168.40.130:8317",
+            normalizeBaseUrl("http://192.168.40.130:8317/"),
+        )
+    }
+
+    @Test
+    fun `normalizeBaseUrl strips trailing v1`() {
+        assertEquals(
+            "http://192.168.40.130:8317",
+            normalizeBaseUrl("http://192.168.40.130:8317/v1"),
+        )
+    }
+
+    @Test
+    fun `normalizeBaseUrl strips trailing v1 with slash`() {
+        assertEquals(
+            "http://192.168.40.130:8317",
+            normalizeBaseUrl("http://192.168.40.130:8317/v1/"),
+        )
+    }
+
+    @Test
+    fun `normalizeBaseUrl strips trailing v1 chat completions`() {
+        assertEquals(
+            "http://192.168.40.130:8317",
+            normalizeBaseUrl("http://192.168.40.130:8317/v1/chat/completions"),
+        )
+    }
+
+    @Test
+    fun `normalizeBaseUrl strips trailing v1 chat completions with slash`() {
+        assertEquals(
+            "http://192.168.40.130:8317",
+            normalizeBaseUrl("http://192.168.40.130:8317/v1/chat/completions/"),
+        )
+    }
+
+    @Test
+    fun `normalizeBaseUrl leaves bare host unchanged`() {
+        assertEquals(
+            "https://api.example.com",
+            normalizeBaseUrl("https://api.example.com"),
+        )
+    }
+
+    @Test
+    fun `normalizeBaseUrl is case insensitive for v1 path`() {
+        assertEquals(
+            "http://localhost:8080",
+            normalizeBaseUrl("http://localhost:8080/V1/Chat/Completions"),
+        )
+    }
+
+    // ---------------------------------------------------------------
     // defaultModel tests
     // ---------------------------------------------------------------
 
