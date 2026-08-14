@@ -22,6 +22,7 @@ import ai.koog.prompt.llm.LLModel
 import com.scoopai.core.llm.InterceptingHttpClient
 import com.scoopai.core.llm.downgradeToolChoice
 import com.scoopai.core.llm.fixDoubleEncoding
+import com.scoopai.core.llm.normalizeMissingCreated
 
 @OptIn(kotlin.time.ExperimentalTime::class)
 object LlmProviderFactory {
@@ -72,13 +73,26 @@ object LlmProviderFactory {
                 if (modelName.isDeepSeekModelName()) add(::downgradeToolChoice)
                 if (isDebugHttpEnabled()) add(::logRequestBody)
             }
+            val responseLogger: ((String) -> Unit)? = if (isDebugHttpEnabled()) {
+                { body -> System.err.println("[SCOOP_AI_DEBUG_HTTP] response: ${body.take(2000)}") }
+            } else {
+                null
+            }
+            // Some OpenAI-compatible gateways omit the required `created` field.
+            // Rewrite responses before Koog decodes them, filling in 0.
+            val responseRewriter: ((String) -> String)? = { json -> normalizeMissingCreated(json, 0L) }
             MultiLLMPromptExecutor(
                 OpenAILLMClient(
                     settings = OpenAIClientSettings(
                         baseUrl = resolvedBaseUrl,
                         chatCompletionsPath = "v1/chat/completions",
                     ),
-                    httpClient = InterceptingHttpClient(baseHttpClient, interceptors),
+                    httpClient = InterceptingHttpClient(
+                        delegate = baseHttpClient,
+                        interceptors = interceptors,
+                        responseRewriter = responseRewriter,
+                        onResponse = responseLogger,
+                    ),
                 )
             )
         }
