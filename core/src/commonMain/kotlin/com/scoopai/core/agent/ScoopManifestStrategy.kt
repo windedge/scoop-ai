@@ -210,7 +210,7 @@ fun scoopManifestStrategy(
     val buildFinalResult by node<RefineContext?, ManifestResult>("buildFinalResult") { _ ->
         val manifest = storage.get(finalManifestKey) ?: ""
         ManifestResult(
-            manifest = extractJsonBlock(manifest) ?: manifest,
+            manifest = extractJsonBlock(manifest)?.let { formatManifestJson(it) } ?: manifest,
             suggestedAppName = storage.get(suggestedAppNameKey),
         )
     }
@@ -220,7 +220,7 @@ fun scoopManifestStrategy(
         logger.warn { "[strategy] Refine exhausted after $maxRetries attempts. Returning last manifest with issues." }
         val manifest = storage.get(finalManifestKey) ?: ""
         ManifestResult(
-            manifest = extractJsonBlock(manifest) ?: manifest,
+            manifest = extractJsonBlock(manifest)?.let { formatManifestJson(it) } ?: manifest,
             suggestedAppName = storage.get(suggestedAppNameKey),
         )
     }
