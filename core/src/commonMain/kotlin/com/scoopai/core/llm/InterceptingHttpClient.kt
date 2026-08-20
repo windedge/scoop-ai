@@ -23,9 +23,9 @@ import kotlin.reflect.KClass
  * logging of the response direction. Rewriting happens first, so the logged
  * body reflects the final JSON that Koog will decode.
  *
- * This replaces separate decorator classes (logging + per-issue rewriters)
- * LoggingKoogHttpClient, ToolChoiceDowngradeHttpClient) with a single
- * reusable decorator + composable interceptor functions.
+ * This replaces the separate decorator classes (LoggingKoogHttpClient,
+ * ToolChoiceDowngradeHttpClient) with a single reusable decorator plus
+ * composable interceptor functions.
  *
  * Usage:
  * ```kotlin

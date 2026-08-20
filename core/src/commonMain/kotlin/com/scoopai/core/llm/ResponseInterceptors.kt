@@ -26,14 +26,20 @@ private fun parseJsonObjectOrNull(rawJson: String): JsonObject? = try {
 }
 
 /**
- * True only when [element] holds a non-blank, non-null string.
+ * True only when [element] holds non-blank content.
  * `JsonNull` is excluded explicitly: it serializes as the literal "null"
- * text but must be treated as blank content.
+ * text but must be treated as blank content. A non-empty `JsonArray`
+ * (e.g. chat-completions content parts `[{"type":"text","text":"..."}]`)
+ * or a non-empty `JsonObject` also counts as existing content, so the
+ * reasoning fallback must not overwrite it.
  */
 private fun isNonBlankContent(element: JsonElement?): Boolean {
     if (element == null || element is JsonNull) return false
-    val text = (element as? JsonPrimitive)?.content
-    return !text.isNullOrBlank()
+    return when (element) {
+        is JsonArray -> element.isNotEmpty()
+        is JsonObject -> element.isNotEmpty()
+        is JsonPrimitive -> !element.content.isNullOrBlank()
+    }
 }
 
 /**
@@ -121,4 +127,69 @@ public fun normalizeMissingCreated(rawJson: String, createdEpochSeconds: Long): 
     responseLogger.warn { "[normalizeMissingCreated] Added missing created field to OpenAI-compatible response" }
     val normalized = JsonObject(root + ("created" to JsonPrimitive(createdEpochSeconds)))
     return responseJson.encodeToString(JsonElement.serializer(), normalized)
+}
+
+/** Gateway finish_reason signalling a rejected/malformed function call. */
+private const val MALFORMED_FUNCTION_CALL_FINISH_REASON = "malformed_function_call"
+
+/**
+ * Hint injected into `message.content` so Koog can route a malformed tool-call
+ * response onto its text retry edge, prompting the model to re-emit the call.
+ */
+private const val MALFORMED_FUNCTION_CALL_RETRY_HINT =
+    "My previous function call was malformed. I will retry the tool call with valid JSON arguments."
+
+/**
+ * Recovers from a Gemini-family model emitting
+ * `finish_reason: "malformed_function_call"` (via an OpenAI-compatible
+ * gateway) with no `tool_calls` and no `content` (outputTokens=0).
+ *
+ * Background: when the model's tool call is rejected as malformed the gateway
+ * returns an empty assistant turn, which Koog decodes as `parts=[]`. That
+ * lands on the `subgraphWithTask` Unhandled fallback edge
+ * (AIAgentSubgraphExt.kt) and throws "Unhandled response from LLM" directly,
+ * without even triggering Koog's 3-text-retry loop (retry requires a Text
+ * part). Such corruption is often transient: if we rewrite the response so it
+ * carries a Text `content`, Koog routes it onto the text/`handleAssistantMessage`
+ * edge which appends "DO NOT CHAT... CALL TOOLS" and re-prompts the model,
+ * letting it re-issue the tool call (which usually succeeds).
+ *
+ * Trigger is strict: `choices[0].finish_reason == "malformed_function_call"`
+ * AND `content` null/blank AND `tool_calls` missing/empty (reusing
+ * [isNonBlankContent] / [hasToolCalls]). Whether a reasoning key is present is
+ * irrelevant (it triggers in both cases); in the live chain it runs after
+ * [reasoningFallbackToContent] so a non-blank content already wins. Anything
+ * else (other finish_reason such as length/safety/recitation, non-blank
+ * content, real tool_calls, non chat-completions shape, invalid JSON) is left
+ * untouched -- those are deliberately out of scope and can be extended on demand.
+ */
+public fun malformedFunctionCallRetryHint(rawJson: String): String {
+    val root = parseJsonObjectOrNull(rawJson) ?: return rawJson
+
+    // Must be a chat-completions response with at least one choice.
+    val choices = root["choices"] as? JsonArray ?: return rawJson
+    if (choices.isEmpty()) return rawJson
+
+    val firstChoice = choices.firstOrNull() as? JsonObject ?: return rawJson
+    val finishReason = (firstChoice["finish_reason"] as? JsonPrimitive)?.content
+    if (finishReason != MALFORMED_FUNCTION_CALL_FINISH_REASON) return rawJson
+
+    val message = firstChoice["message"] as? JsonObject ?: return rawJson
+
+    // Already has non-blank content -> do not touch.
+    if (isNonBlankContent(message["content"])) return rawJson
+
+    // Has tool_calls -> do not touch (a real tool request survived).
+    if (hasToolCalls(message)) return rawJson
+
+    val updatedMessage = JsonObject(message + ("content" to JsonPrimitive(MALFORMED_FUNCTION_CALL_RETRY_HINT)))
+    val updatedChoice = JsonObject(firstChoice + ("message" to updatedMessage))
+    val updatedChoices = JsonArray(
+        choices.mapIndexed { index, choice -> if (index == 0) updatedChoice else choice }
+    )
+    val updatedRoot = JsonObject(root + ("choices" to updatedChoices))
+    responseLogger.info {
+        "[malformedFunctionCallRetryHint] Injected tool-call retry hint into content for malformed_function_call"
+    }
+    return responseJson.encodeToString(JsonElement.serializer(), updatedRoot)
 }

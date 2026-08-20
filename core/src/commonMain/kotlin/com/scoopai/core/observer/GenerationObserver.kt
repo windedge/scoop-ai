@@ -112,5 +112,6 @@ class GenerationObserver {
     fun reset() {
         current = null
         completed.clear()
+        lastLlmCallCount = 0
     }
 }

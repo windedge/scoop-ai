@@ -17,11 +17,17 @@ private val fixJson = Json { ignoreUnknownKeys = true; prettyPrint = false }
 /**
  * Removes the whole `tool_choice` field from the request body.
  *
- * Koog's `setToolChoiceRequired()` has no capability gating, so the request
- * body always carries `"tool_choice": "required"`, and some OpenAI-compatible
- * gateways (e.g. proxies that route DeepSeek V4 Flash to a reasoner backend)
- * reject the field outright. The model still calls tools under the default
- * `auto` mode, so stripping the field is transparent.
+ * This is a workaround for OpenAI-compatible gateways (e.g. proxies that
+ * route DeepSeek V4 Flash to a reasoner backend) that reject an explicit
+ * `tool_choice` field outright. Koog's `setToolChoiceRequired()` has no
+ * capability gating, so the request body always carries
+ * `"tool_choice": "required"` even when the gateway cannot accept it.
+ *
+ * Caveat: stripping the field is only transparent when the gateway's default
+ * `tool_choice` is `auto`. If the default is not `auto` (e.g. `none`), the
+ * model may stop emitting tool calls entirely, and the run must rely on
+ * Koog's retry/re-prompt path (e.g. the ToolChoice-less model used by
+ * `ScoopManifestGenerator.modelWithoutToolChoice`) to recover.
  *
  * The field is removed for every value (`required`, `auto`, object form):
  * the interceptor is unconditional and must be included in openai-compatible

@@ -128,6 +128,29 @@ class ResponseInterceptorsTest {
     }
 
     @Test
+    fun `reasoningFallbackToContent treats array content as existing and leaves JSON unchanged`() {
+        // Content that is a non-empty JsonArray (chat-completions content parts)
+        // counts as existing content, so the rewriter must NOT copy the
+        // reasoning text into content. Assert the whole JSON is byte-for-byte
+        // unchanged (not via the contentOf helper, which only reads string content).
+        val input = """{"choices":[{"message":{"role":"assistant","content":[{"type":"text","text":"real answer"}],"reasoning_content":"ignore me"}}]}"""
+
+        val result = reasoningFallbackToContent(input)
+
+        assertEquals(input, result)
+    }
+
+    @Test
+    fun `reasoningFallbackToContent treats object content as existing and leaves JSON unchanged`() {
+        // Content that is a non-empty JsonObject also counts as existing content.
+        val input = """{"choices":[{"message":{"role":"assistant","content":{"type":"text","text":"real answer"},"reasoning_content":"ignore me"}}]}"""
+
+        val result = reasoningFallbackToContent(input)
+
+        assertEquals(input, result)
+    }
+
+    @Test
     fun `reasoningFallbackToContent does not overwrite when tool_calls present`() {
         val input = """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","function":{"name":"f","arguments":"{}"}}],"reasoning_content":"ignore me"}}]}"""
 
@@ -180,6 +203,117 @@ class ResponseInterceptorsTest {
         val input = """{"choices":[{"message":{"role":"assistant","content":null,"reasoning":null,"reasoningContent":null}}]}"""
 
         assertEquals(input, reasoningFallbackToContent(input))
+    }
+
+    // ---------------------------------------------------------------
+    // malformedFunctionCallRetryHint pure function
+    // ---------------------------------------------------------------
+
+    private val RETRY_HINT = "My previous function call was malformed. I will retry the tool call with valid JSON arguments."
+
+    @Test
+    fun `malformed function call injects retry hint into content when content missing and no tool calls`() {
+        val input = """{"id":"chatcmpl-test","model":"test-model","choices":[{"index":0,"finish_reason":"malformed_function_call","message":{"role":"assistant","content":null}}]}"""
+
+        val result = malformedFunctionCallRetryHint(input)
+
+        assertEquals(RETRY_HINT, contentOf(result))
+    }
+
+    @Test
+    fun `malformed function call responds to blank content and empty tool_calls array`() {
+        val input = """{"choices":[{"index":0,"finish_reason":"malformed_function_call","message":{"role":"assistant","content":"","tool_calls":[]}}]}"""
+
+        val result = malformedFunctionCallRetryHint(input)
+
+        assertEquals(RETRY_HINT, contentOf(result))
+    }
+
+    @Test
+    fun `malformed function call retry hint triggers regardless of reasoning key presence`() {
+        // The rewriter is deliberately orthogonal to reasoning keys: it only
+        // reacts to finish_reason + blank content + absent tool_calls, so a
+        // malformed response with or without reasoning is handled identically.
+        val input = """{"choices":[{"index":0,"finish_reason":"malformed_function_call","message":{"role":"assistant","content":null,"reasoning_content":"some thinking"}}]}"""
+
+        val result = malformedFunctionCallRetryHint(input)
+
+        assertEquals(RETRY_HINT, contentOf(result))
+    }
+
+    @Test
+    fun `malformed function call does not overwrite existing non-blank content`() {
+        val input = """{"choices":[{"index":0,"finish_reason":"malformed_function_call","message":{"role":"assistant","content":"real answer"}}]}"""
+
+        val result = malformedFunctionCallRetryHint(input)
+
+        assertEquals("real answer", contentOf(result))
+    }
+
+    @Test
+    fun `malformed function call does not overwrite when tool_calls present`() {
+        val input = """{"choices":[{"index":0,"finish_reason":"malformed_function_call","message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}"""
+
+        val result = malformedFunctionCallRetryHint(input)
+
+        assertEquals(null, contentOf(result))
+    }
+
+    @Test
+    fun `malformed function call leaves non malformed finish reasons unchanged`() {
+        // length/safety/recitation etc are left untouched for now; only the
+        // specific "malformed_function_call" terminal signal is handled.
+        val input = """{"choices":[{"index":0,"finish_reason":"length","message":{"role":"assistant","content":null}}]}"""
+
+        val result = malformedFunctionCallRetryHint(input)
+
+        assertEquals(input, result)
+    }
+
+    @Test
+    fun `malformed function call leaves stop response unchanged`() {
+        val input = """{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hello"}}]}"""
+
+        val result = malformedFunctionCallRetryHint(input)
+
+        assertEquals(input, result)
+    }
+
+    @Test
+    fun `malformed function call leaves invalid JSON unchanged`() {
+        val input = "not json"
+
+        assertEquals(input, malformedFunctionCallRetryHint(input))
+    }
+
+    @Test
+    fun `malformed function call leaves non chat completion responses unchanged`() {
+        val input = """{"error":{"message":"bad request"}}"""
+
+        assertEquals(input, malformedFunctionCallRetryHint(input))
+    }
+
+    // ---------------------------------------------------------------
+    // malformedFunctionCallRetryHint combined with normalizeMissingCreated
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `malformed response still gets created filled when combined with normalizeMissingCreated`() {
+        // Mirrors the live factory chain:
+        //   normalizeMissingCreated(malformedFunctionCallRetryHint(reasoningFallbackToContent(raw)), 0L)
+        val chain: (String) -> String = { raw ->
+            normalizeMissingCreated(
+                malformedFunctionCallRetryHint(reasoningFallbackToContent(raw)),
+                0L,
+            )
+        }
+        val input = """{"id":"chatcmpl-malformed","model":"test-model","choices":[{"index":0,"finish_reason":"malformed_function_call","message":{"role":"assistant","content":null}}]}"""
+
+        val result = chain(input)
+
+        // content injected with retry hint AND missing created filled with 0.
+        assertEquals(RETRY_HINT, contentOf(result))
+        assertEquals(0, createdOf(result))
     }
 
     // ---------------------------------------------------------------

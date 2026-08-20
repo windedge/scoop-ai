@@ -133,4 +133,41 @@ class ScoopAiGenerationExceptionTest {
         )
         assertContains(msg, "Manifest generation failed: the model 'm'")
     }
+
+    // -----------------------------------------------------------------
+    // buildToolCallExhaustionMessage: malformed_function_call diagnosis
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `original error mentioning malformed_function_call uses targeted diagnosis`() {
+        val original =
+            "Unhandled response from LLM. Subgraph with task must always call tools, " +
+                "but no Tool.Call was generated, got instead: finishReason=malformed_function_call, parts=[]"
+        val msg = buildToolCallExhaustionMessage(
+            modelId = "gemini/gemini-2.5-flash-lite",
+            phase = "research",
+            originalMessage = original,
+        )
+        assertContains(msg, "malformed")
+        assertContains(msg, "gemini")
+        assertContains(msg, "retry")
+        // The original diagnostic must still be surfaced.
+        assertContains(msg, "malformed_function_call")
+    }
+
+    @Test
+    fun `original error without malformed_function_call keeps old copy`() {
+        val original =
+            "Unable to finish subgraph with task. Reason: the model 'nv/muse-glimmer-30bl' does not support tool choice, " +
+                "and was not able to call `finalize_task_result` tool after <3> attempts."
+        val msg = buildToolCallExhaustionMessage(
+            modelId = "nv/muse-glimmer-30bl",
+            phase = "research",
+            originalMessage = original,
+        )
+        // The general tool-call exhaustion copy still applies (no malformed hint).
+        assertContains(msg, "function calling")
+        assertContains(msg, "SCOOP_AI_DEBUG_HTTP")
+        assertContains(msg, original)
+    }
 }

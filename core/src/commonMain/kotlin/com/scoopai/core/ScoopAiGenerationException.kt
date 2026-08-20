@@ -57,6 +57,14 @@ internal const val SUBGRAPH_TASK_MUST_CALL_TOOLS_MARKER = "Subgraph with task mu
 private const val CAUSE_CHAIN_MAX_DEPTH = 5
 
 /**
+ * Marker of a gateway-reported malformed tool call. Gemini flash-lite
+ * variants emitting large JSON tool arguments occasionally get their call
+ * rejected as `finish_reason: "malformed_function_call"`; the finish_reason is
+ * serialized into the original Koog error message, so we can detect it here.
+ */
+internal const val MALFORMED_FUNCTION_CALL_MARKER = "malformed_function_call"
+
+/**
  * Detects whether [e] (or a wrapped cause) is Koog's
  * "model never called a tool / subgraphWithTask exhausted" failure.
  *
@@ -94,6 +102,19 @@ internal fun buildToolCallExhaustionMessage(
     originalMessage: String,
 ): String {
     val where = phase?.let { " during the '$it' phase" } ?: ""
+
+    // When the gateway explicitly reported the tool call as malformed, give a
+    // precise diagnosis instead of the generic "never issued a tool call" copy.
+    if (MALFORMED_FUNCTION_CALL_MARKER in originalMessage) {
+        return "Manifest generation failed$where: the model '$modelId' produced at least one tool call that the " +
+            "gateway rejected as malformed (finish_reason \"malformed_function_call\"). This is a typical symptom " +
+            "for Gemini flash-lite variants that emit large JSON tool arguments; it is often transient - the " +
+            "built-in retry may recover, but it persisted here. " +
+            "Fix: retry the generation, or switch to a model with more robust function calling " +
+            "(e.g. deepseek / gpt-4o / claude). " +
+            "Original error: $originalMessage"
+    }
+
     return "Manifest generation failed$where: the model '$modelId' never issued a tool call after repeated reminders. " +
         "The workflow requires an LLM with function calling (OpenAI-style \"tool_calls\"): the model must call tools " +
         "and finish each phase via the 'finalize_task_result' tool. " +

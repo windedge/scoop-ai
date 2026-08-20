@@ -20,6 +20,7 @@ import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.llm.LLMProvider
 import ai.koog.prompt.llm.LLModel
 import com.scoopai.core.llm.InterceptingHttpClient
+import com.scoopai.core.llm.malformedFunctionCallRetryHint
 import com.scoopai.core.llm.normalizeMissingCreated
 import com.scoopai.core.llm.reasoningFallbackToContent
 import com.scoopai.core.llm.stripToolChoice
@@ -84,9 +85,14 @@ object LlmProviderFactory {
             }
             // Some OpenAI-compatible gateways omit the required `created` field.
             // Reasoning-only responses (content blank, no tool_calls, reasoning in an
-            // auxiliary key) are mapped to content first, then `created` is filled.
+            // auxiliary key) are mapped to content first, then `malformed_function_call`
+            // empty turns get a text retry hint injected (so Koog can re-prompt), then
+            // `created` is filled.
             val responseRewriter = { raw: String ->
-                normalizeMissingCreated(reasoningFallbackToContent(raw), 0L)
+                normalizeMissingCreated(
+                    malformedFunctionCallRetryHint(reasoningFallbackToContent(raw)),
+                    0L,
+                )
             }
             MultiLLMPromptExecutor(
                 OpenAILLMClient(

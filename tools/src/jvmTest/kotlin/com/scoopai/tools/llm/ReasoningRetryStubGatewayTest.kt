@@ -216,9 +216,73 @@ class ReasoningRetryStubGatewayTest {
         }
     }
 
+    // ---------------------------------------------------------------
+    // malformed_function_call 恢复：malformedFunctionCallRetryHint 注入
+    // content → Koog 重试环激活 → 全链路成功
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `malformed function call is rewritten and Koog retry drives the full 3-phase flow`() = runBlocking {
+        val stub = StubOpenAiGateway(firstResearch = FirstResearch.Malformed).also { gateway = it }
+        stub.start()
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = LlmProviderFactory.create(
+                provider = "openai-compatible",
+                apiKey = "sk-test",
+                baseUrl = stub.baseUrl,
+                modelName = MODEL_ID,
+            ),
+            model = LlmProviderFactory.defaultModel(
+                provider = "openai-compatible",
+                modelName = MODEL_ID,
+                baseUrl = stub.baseUrl,
+            ),
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+        )
+
+        val result = generator.generate("https://github.com/sharkdp/fd")
+
+        // -- 1. 全链路成功：malformed rewrite 任一环节失效都会在 research 抛异常 --
+        assertTrue(
+            result.manifest.contains("10.2.0"),
+            "manifest should contain the version. manifest=${result.manifest}${stub.dump()}",
+        )
+        assertEquals("fd-stub", result.suggestedAppName, "suggestedAppName should come from the stub ResearchOutput")
+
+        // stub 真的发出了"malformed_function_call + 缺 created"响应（防止路径被静默跳过）
+        assertEquals(
+            1,
+            stub.malformedServed.get(),
+            "stub must have served exactly one malformed_function_call response${stub.dump()}",
+        )
+
+        // -- 2. B 层铁证：第 2 个请求携带 Koog 重提示（malformed rewrite 把
+        //       content 注入为 Text 后，Koog 走 handleAssistantMessage 重试环）----
+        assertTrue(
+            KOOG_RETRY_PROMPT in stub.requests[1],
+            "second request must contain the Koog re-prompt ($KOOG_RETRY_PROMPT)${stub.dump()}",
+        )
+        assertFalse(
+            KOOG_RETRY_PROMPT in stub.requests[0],
+            "first request must not contain the Koog re-prompt${stub.dump()}",
+        )
+
+        // -- 3. 阶段顺序：research, research-retry, analyze, generate, review --
+        assertEquals(
+            listOf("research", "research-retry", "analyze", "generate", "review"),
+            stub.servedRoutes.take(5),
+            "unexpected phase routing${stub.dump()}",
+        )
+    }
+
     // ===============================================================
     // Stub OpenAI chat-completions 网关
     // ===============================================================
+
+    /** 第一次 research 响应应模拟的"空助手响应"类型。 */
+    private enum class FirstResearch { Reasoning, Malformed }
 
     /**
      * 脚本式 stub 网关：按每个请求的**最后一条消息**分发响应。
@@ -226,7 +290,9 @@ class ReasoningRetryStubGatewayTest {
      * 之所以看最后一条消息而不是整个 body：Koog 的 prompt 历史跨 subgraph 累积，
      * analyze / generate 请求的 body 里仍然含有 "RESEARCH phase" 与重提示文本。
      */
-    private class StubOpenAiGateway {
+    private class StubOpenAiGateway(
+        private val firstResearch: FirstResearch = FirstResearch.Reasoning,
+    ) {
 
         private val server: HttpServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
 
@@ -245,6 +311,9 @@ class ReasoningRetryStubGatewayTest {
         /** 已发出的"纯推理 + 缺 created"响应数量。 */
         val reasoningOnlyServed = AtomicInteger(0)
 
+        /** 已发出的"malformed_function_call + 缺 created"响应数量。 */
+        val malformedServed = AtomicInteger(0)
+
         val baseUrl: String get() = "http://127.0.0.1:${server.address.port}"
 
         /**
@@ -253,6 +322,9 @@ class ReasoningRetryStubGatewayTest {
          * would otherwise keep the JVM alive after the test finishes.
          */
         private var executor: ExecutorService? = null
+
+        /** 第一次 research 是否已服务（两种场景共用同一计数）。 */
+        private val researchFirstServed = AtomicInteger(0)
 
         fun start() {
             server.createContext("/v1/chat/completions", ::handle)
@@ -296,11 +368,20 @@ class ReasoningRetryStubGatewayTest {
                     servedRoutes += "research-retry"
                     toolCallResponse("chatcmpl-research-retry", RESEARCH_RESULT_JSON)
                 }
-                // research 第一次 → 纯推理响应，且故意缺 created
-                RESEARCH_MARKER in lastMessage && reasoningOnlyServed.get() == 0 -> {
+                // research 第一次 → 按场景返回"空助手响应"，且故意缺 created
+                RESEARCH_MARKER in lastMessage && researchFirstServed.get() == 0 -> {
                     servedRoutes += "research"
-                    reasoningOnlyServed.incrementAndGet()
-                    reasoningOnlyResponse()
+                    researchFirstServed.incrementAndGet()
+                    when (firstResearch) {
+                        FirstResearch.Malformed -> {
+                            malformedServed.incrementAndGet()
+                            malformedFunctionCallResponse()
+                        }
+                        FirstResearch.Reasoning -> {
+                            reasoningOnlyServed.incrementAndGet()
+                            reasoningOnlyResponse()
+                        }
+                    }
                 }
                 // 兜底：research 再次被问到时直接 finalize，避免无限循环
                 RESEARCH_MARKER in lastMessage -> {
@@ -349,6 +430,20 @@ class ReasoningRetryStubGatewayTest {
             put("role", "assistant")
             put("content", JsonNull)
             put("reasoning_content", REASONING_TEXT)
+        }
+
+        /**
+         * malformed_function_call 响应：`content: null`、无 `tool_calls`、无
+         * reasoning，`finish_reason = "malformed_function_call"`，**不带 created**
+         * （一次性命中 malformedFunctionCallRetryHint + normalizeMissingCreated）。
+         */
+        private fun malformedFunctionCallResponse(): String = chatCompletion(
+            id = "chatcmpl-research-malformed",
+            finishReason = "malformed_function_call",
+            includeCreated = false,
+        ) {
+            put("role", "assistant")
+            put("content", JsonNull)
         }
 
         /** 正常 tool_calls 响应：arguments 是"字符串化的 arguments 对象"。 */

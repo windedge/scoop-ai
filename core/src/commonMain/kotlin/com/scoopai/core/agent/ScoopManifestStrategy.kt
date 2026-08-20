@@ -426,7 +426,9 @@ internal suspend fun validateManifest(
             errors.addAll(reviewErrors)
             logger.info { "[verify] Semantic review found ${reviewErrors.size} issues" }
         } catch (e: Exception) {
-            logger.warn { "[verify] Review agent error: ${e.message}" }
+            val message = "Review agent error: ${e.message}"
+            errors.add(message)
+            logger.warn { "[verify] $message" }
         }
     } else if (errors.isNotEmpty()) {
         logger.info { "[verify] Skipping semantic review due to ${errors.size} validation errors" }
@@ -519,26 +521,35 @@ internal fun parseValidateErrors(validateJson: String): List<String> {
 
 /**
  * Extracts error-severity issue messages from a review JSON result.
- * Returns empty list when approved=true.
- */
-
-/**
- * Checks whether a manifest represents a portable archive (ZIP, tar.gz, 7z) vs an installer.
  *
- * Portable archives can have their exe files added to `bin` for CLI access.
- * Installers (innosetup/nsis/msi/msix) should keep their `shortcuts`-only judgment from the LLM.
+ * Fail-closed semantics: `approved == "true"` short-circuits to an empty list
+ * (the manifest passes), but anything that cannot be positively interpreted as
+ * a rejected-but-actionable review returns [REVIEW_UNPARSEABLE] so an
+ * unexpected review output cannot silently pass the manifest. In particular,
+ * parse failures, pure narrative text, `approved: false` with no error-severity
+ * issue, or a JSON object that declares nothing interpretable all fail closed.
+ * A markdown fence around the JSON is tolerated via [extractJsonBlock].
  */
-
-
 internal fun parseReviewErrors(reviewJson: String): List<String> {
-    return try {
-        val obj = Json.parseToJsonElement(reviewJson).jsonObject
+    val jsonText = extractJsonBlock(reviewJson) ?: return listOf(REVIEW_UNPARSEABLE)
+    try {
+        val obj = Json.parseToJsonElement(jsonText).jsonObject
         if (obj["approved"]?.jsonPrimitive?.content == "true") return emptyList()
-        obj["issues"]?.jsonArray
+        val errorIssues = obj["issues"]?.jsonArray
             ?.filter { it.jsonObject["severity"]?.jsonPrimitive?.content == "error" }
             ?.mapNotNull { it.jsonObject["message"]?.jsonPrimitive?.content }
-            ?: emptyList()
+            .orEmpty()
+        return if (errorIssues.isEmpty()) listOf(REVIEW_UNPARSEABLE) else errorIssues
     } catch (_: Exception) {
-        emptyList()
+        return listOf(REVIEW_UNPARSEABLE)
     }
 }
+
+/**
+ * Message returned by [parseReviewErrors] when the review output cannot be
+ * interpreted (unparseable JSON, or not approved and no error-severity issue
+ * could be extracted). Keeps semantic review fail-closed: an unexpected review
+ * result must not silently pass the manifest.
+ */
+internal const val REVIEW_UNPARSEABLE =
+    "Semantic review returned an unparseable or unexpected result"

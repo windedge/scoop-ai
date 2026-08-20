@@ -65,6 +65,7 @@ class ScoopManifestGeneratorMockTest {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
             mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"No issues found. Manifest looks good."}""") onCondition { text -> text.trim().startsWith("{") }
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -118,6 +119,7 @@ class ScoopManifestGeneratorMockTest {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
             mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"No issues found. Manifest looks good."}""") onCondition { text -> text.trim().startsWith("{") }
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -204,6 +206,7 @@ class ScoopManifestGeneratorMockTest {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
             mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"No issues found. Manifest looks good."}""") onCondition { text -> text.trim().startsWith("{") }
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -256,6 +259,7 @@ class ScoopManifestGeneratorMockTest {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
             mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"No issues found. Manifest looks good."}""") onCondition { text -> text.trim().startsWith("{") }
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -312,6 +316,7 @@ class ScoopManifestGeneratorMockTest {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
             mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"No issues found. Manifest looks good."}""") onCondition { text -> text.trim().startsWith("{") }
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -370,6 +375,7 @@ class ScoopManifestGeneratorMockTest {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
             mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"No issues found. Manifest looks good."}""") onCondition { text -> text.trim().startsWith("{") }
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -434,6 +440,7 @@ class ScoopManifestGeneratorMockTest {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
             mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"No issues found. Manifest looks good."}""") onCondition { text -> text.trim().startsWith("{") }
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -523,6 +530,7 @@ class ScoopManifestGeneratorMockTest {
                 mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
                 mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
                 mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+                mockLLMAnswer("""{"approved":true,"issues":[],"summary":"No issues found. Manifest looks good."}""") onCondition { text -> text.trim().startsWith("{") }
                 mockLLMAnswer("").asDefaultResponse
             }
 
@@ -590,6 +598,7 @@ class ScoopManifestGeneratorMockTest {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
             mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"No issues found. Manifest looks good."}""") onCondition { text -> text.trim().startsWith("{") }
             mockLLMAnswer("").asDefaultResponse
         }
         val generator1 = ScoopManifestGenerator(
@@ -607,6 +616,7 @@ class ScoopManifestGeneratorMockTest {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
             mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"No issues found. Manifest looks good."}""") onCondition { text -> text.trim().startsWith("{") }
             mockLLMAnswer("").asDefaultResponse
         }
         val generator2 = ScoopManifestGenerator(
@@ -703,6 +713,77 @@ class ScoopManifestGeneratorMockTest {
     }
 
     // =========================================================================
+    // Review fail-closed: an unparseable review result must NOT silently pass.
+    // =========================================================================
+
+    @Test
+    fun `unparseable review result triggers refine instead of silently passing`() = runBlocking {
+        val researchResult = ResearchOutput(
+            status = ResearchStatus.OK,
+            project = "sharkdp/fd",
+            version = "10.2.0",
+            windows_assets = listOf(
+                WindowsAsset(
+                    url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                    architecture = "64bit",
+                    asset_type = "zip",
+                    source = "release_api"
+                )
+            )
+        )
+        val analyzeResult = AnalyzeOutput(
+            status = AnalyzeStatus.OK,
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                    hash = "abc123",
+                    extract_dir = "fd-v10.2.0-x86_64-pc-windows-msvc"
+                )
+            ),
+            bin = emptyList()
+        )
+        val manifestJson = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip","hash":"abc123","extract_dir":"fd-v10.2.0-x86_64-pc-windows-msvc"}},"bin":["fd.exe"]}"""
+
+        val phases = mutableListOf<String>()
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            // Review agent receives the bare manifest JSON as its last message;
+            // it returns narrative garbage (no parseable JSON): fail-closed, so
+            // verify fails and the run must go through the refine loop.
+            mockLLMAnswer("This manifest looks perfectly fine to me!") onCondition { text -> text.trim().startsWith("{") }
+            // Refine repairs (returns the same manifest), but review keeps failing,
+            // so the loop runs to exhaustion.
+            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "manifest refiner"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = model,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 200,
+            onPhase = { name -> phases.add(name) },
+        )
+
+        val result = generator.generate("https://github.com/sharkdp/fd")
+
+        // Must NOT silently pass: the run iterates through refine...
+        assertTrue("refine" in phases, "unparseable review should drive the refine loop, phases=$phases")
+        // ...and exhausts retries with the review issue surfaced.
+        assertTrue(result.exhausted, "exhausted should be true after refine gives up")
+        assertTrue(
+            result.issues.any { it.contains("Semantic review returned an unparseable or unexpected result") },
+            "issues should carry the unparseable-review error, got: ${result.issues}"
+        )
+    }
+
+    // =========================================================================
     // Storage key refactoring verification (S5 batch 2)
     // =========================================================================
 
@@ -744,6 +825,7 @@ class ScoopManifestGeneratorMockTest {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
             mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"No issues found. Manifest looks good."}""") onCondition { text -> text.trim().startsWith("{") }
             mockLLMAnswer("").asDefaultResponse
         }
 

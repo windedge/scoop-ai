@@ -133,6 +133,7 @@ class RunArtifactsIntegrationTest {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
             mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"No issues found. Manifest looks good."}""") onCondition { text -> text.trim().startsWith("{") }
             mockLLMAnswer("").asDefaultResponse
         }
 

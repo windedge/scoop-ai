@@ -525,4 +525,98 @@ class ScoopManifestStrategyTest {
         assertEquals(ResearchStatus.OK, parseResearchStatus("""{"noStatus":true}"""))
         assertEquals(ResearchStatus.OK, parseResearchStatus(""))
     }
+
+    // =========================================================================
+    // parseReviewErrors: semantic review must be fail-closed.
+    // approved=="true" short-circuits to empty; anything unexpected MUST NOT
+    // silently pass the manifest (regression: parse failure / missing error
+    // issues used to return an empty list, i.e. pass).
+    // =========================================================================
+
+    @Test
+    fun `parseReviewErrors returns error issues from markdown-fenced JSON`() {
+        val input = """
+            ```json
+            {"approved":false,"issues":[{"severity":"error","field":"checkver","message":"checkver is missing"}],"summary":"1 issue"}
+            ```
+        """.trimIndent()
+
+        assertEquals(listOf("checkver is missing"), parseReviewErrors(input))
+    }
+
+    @Test
+    fun `parseReviewErrors returns empty for approved true even when issues present`() {
+        val input = """{"approved":true,"issues":[{"severity":"error","field":"checkver","message":"stale issue"}],"summary":"ok"}"""
+
+        assertEquals(emptyList(), parseReviewErrors(input))
+    }
+
+    @Test
+    fun `parseReviewErrors fails closed on plain narrative text`() {
+        val input = "The manifest looks fine to me. No problems found."
+
+        assertEquals(listOf(REVIEW_UNPARSEABLE), parseReviewErrors(input))
+    }
+
+    @Test
+    fun `parseReviewErrors fails closed when approved false with no issues`() {
+        val input = """{"approved":false,"issues":[],"summary":"rejected without details"}"""
+
+        assertEquals(listOf(REVIEW_UNPARSEABLE), parseReviewErrors(input))
+    }
+
+    @Test
+    fun `parseReviewErrors fails closed when approved false with only warnings`() {
+        val input = """{"approved":false,"issues":[{"severity":"warning","field":"homepage","message":"use https"}],"summary":"1 warning"}"""
+
+        assertEquals(listOf(REVIEW_UNPARSEABLE), parseReviewErrors(input))
+    }
+
+    @Test
+    fun `parseReviewErrors returns error issues when approved false`() {
+        val input = """{"approved":false,"issues":[{"severity":"error","field":"checkver","message":"checkver is missing"},{"severity":"warning","field":"homepage","message":"use https"}],"summary":"2 issues"}"""
+
+        assertEquals(listOf("checkver is missing"), parseReviewErrors(input))
+    }
+
+    @Test
+    fun `parseReviewErrors fails closed when JSON parses but declares nothing interpretable`() {
+        val input = """{"foo":1}"""
+
+        assertEquals(listOf(REVIEW_UNPARSEABLE), parseReviewErrors(input))
+    }
+
+    // =========================================================================
+    // splitFeedback: reverse of errors.joinToString("\n- ", "- ").
+    // =========================================================================
+
+    @Test
+    fun `splitFeedback round-trips joined error list`() {
+        val errors = listOf("checkver is missing", "license should be GPL-3.0-or-later", "bin includes updater.exe")
+
+        val feedback = errors.joinToString("\n- ", "- ")
+
+        assertEquals(errors, splitFeedback(feedback))
+    }
+
+    @Test
+    fun `splitFeedback splits an embedded newline inside an issue into separate entries`() {
+        // Newlines inside an issue message are not preserved: feedback is a
+        // line-based protocol, so a multi-line message becomes several issues.
+        val errors = listOf("first line\nsecond line", "another")
+
+        val feedback = errors.joinToString("\n- ", "- ")
+
+        assertEquals(listOf("first line", "second line", "another"), splitFeedback(feedback))
+    }
+
+    @Test
+    fun `splitFeedback drops blank issues and returns empty for blank feedback`() {
+        assertEquals(emptyList(), splitFeedback(""))
+        assertEquals(emptyList(), splitFeedback("   "))
+
+        val feedback = listOf("real issue", "", "  ").joinToString("\n- ", "- ")
+
+        assertEquals(listOf("real issue"), splitFeedback(feedback))
+    }
 }

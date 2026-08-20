@@ -236,4 +236,17 @@ class GenerationObserverTest {
         observer.recordLlmCall(1, 1)
         assertEquals(0, observer.lastCompletedLlmCallCount())
     }
+
+    @Test
+    fun `reset clears last completed llm call count`() {
+        val observer = GenerationObserver()
+        observer.enterPhase("research")
+        observer.recordLlmCall(10, 5)
+        observer.exitPhase("research", 100)
+        assertEquals(1, observer.lastCompletedLlmCallCount())
+
+        observer.reset()
+
+        assertEquals(0, observer.lastCompletedLlmCallCount())
+    }
 }

@@ -71,8 +71,11 @@ java -jar cli.jar https://github.com/sharkdp/fd
 - Some proxy gateways reject explicit `tool_choice` values. When using such a
   gateway through the `openai-compatible` provider, scoop-ai strips the whole
   `tool_choice` field from every request (see the
-  [openai-compatible](#openai-compatible) section); the model still calls tools
-  under the default `auto` mode.
+  [openai-compatible](#openai-compatible) section). This is a workaround for
+  gateways that reject the field: it is only transparent when the gateway's
+  default `tool_choice` is `auto`. If the default is not `auto` (e.g. `none`),
+  tool calls may stop, and the run relies on Koog's retry/re-prompt path to
+  recover.
 - See the [Double Encoding Workaround](#double-encoding-workaround) section
   below -- this applies to DeepSeek models accessed both directly and via
   `openai-compatible`.
@@ -240,10 +243,23 @@ java -jar cli.jar -P openai-compatible -m opencode/deepseek-v4-flash https://git
   capability set (ToolChoice included, no Thinking capability) and the
   `tool_choice` field is unconditionally stripped from every request body
   (`stripToolChoice`) because Koog's `setToolChoiceRequired()` has no
-  capability gating and some gateways reject the field. Model-specific
+  capability gating and some gateways reject the field. This is only
+  transparent when the gateway's default `tool_choice` is `auto`; if the
+  default is not `auto` (e.g. `none`), tool calls may stop and the run relies
+  on Koog's retry/re-prompt path. Model-specific
   reasoning retry behavior is handled at runtime by
   `ScoopManifestGenerator.modelWithoutToolChoice` (which strips the ToolChoice
   capability), not by the factory.
+- **Recovering malformed tool calls.** Gemini-family models reached through an
+  OpenAI-compatible gateway sometimes return `finish_reason:
+  "malformed_function_call"` with no `tool_calls` and no `content` (an empty
+  assistant turn that Koog would otherwise decode as an "unhandled response" and
+  abort on). The response rewriter chain injects a short text retry hint into
+  `message.content` (`malformedFunctionCallRetryHint`), so Koog routes the reply
+  onto its text/re-prompt edge and the model re-issues the tool call, which
+  usually succeeds. Other `finish_reason` values (length/safety/recitation) are
+  left untouched. This is a workaround for a transient model output; switch to a
+  more robust tool-calling model if it persists.
 - All models route to the OpenAI LLM client (OpenAI-shaped responses).
 
 ---
@@ -287,7 +303,8 @@ captured from a stub gateway are single-encoded.
 
 The fix was applied transparently -- no user configuration was needed, and the
 remaining request/response interceptors (`stripToolChoice`,
-`reasoningFallbackToContent`, `normalizeMissingCreated`) are unaffected.
+`reasoningFallbackToContent`, `malformedFunctionCallRetryHint`,
+`normalizeMissingCreated`) are unaffected.
 
 ### Which providers were affected?
 
