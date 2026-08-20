@@ -95,6 +95,33 @@ class CliErrorTest {
     }
 
     @Test
+    fun `classifyException maps ScoopAiGenerationException to LlmError with exit 65`() {
+        // Typed generation failure (e.g. model without function calling support):
+        // must be classified as an LLM error, exit 65.
+        val e = com.scoopai.core.ScoopAiGenerationException(
+            "Manifest generation failed during the 'research' phase: the model 'nv/muse-glimmer-30bl' never issued a tool call."
+        )
+        val result = classifyException(e)
+        assertTrue(result is LlmError)
+        assertEquals(ExitCode.LLM_ERROR, result.exit)
+        assertSame(e, result.cause)
+    }
+
+    @Test
+    fun `classifyException keeps multi-line actionable hint of ScoopAiGenerationException`() {
+        // The typed exception's message is crafted for end users and may span
+        // multiple lines (cause analysis + fix hint). It must NOT be truncated
+        // to the first line (unlike raw third-party exceptions).
+        val hint = "line 1: model never called a tool" +
+            "\nline 2: Fix: switch to a tool-capable model."
+        val e = com.scoopai.core.ScoopAiGenerationException(hint)
+        val result = classifyException(e)
+        val msg = result.message ?: ""
+        assertTrue(msg.contains("line 1"), "first line must be preserved: $msg")
+        assertTrue(msg.contains("Fix: switch to a tool-capable model"), "actionable hint must be preserved: $msg")
+    }
+
+    @Test
     fun `classifyException maps IOException to IoError with exit 70`() {
         val e = java.io.IOException("File not found: bucket/app.json")
         val result = classifyException(e)

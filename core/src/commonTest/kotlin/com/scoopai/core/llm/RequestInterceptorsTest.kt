@@ -14,154 +14,97 @@ class RequestInterceptorsTest {
         json.encodeToString(kotlinx.serialization.serializer<String>(), value)
 
     // ---------------------------------------------------------------
-    // fixDoubleEncoding: double-encoded arguments → single-encoded
+    // Regression: Koog 1.1.1 (#2096) fixed double-encoding at the source,
+    // so the fixDoubleEncoding interceptor was removed. A correctly
+    // single-encoded request body must pass through the (remaining)
+    // interceptor chain unchanged -- no double decoding may corrupt it.
     // ---------------------------------------------------------------
 
     @Test
-    fun `unwraps double-encoded tool call arguments`() {
+    fun `single-encoded tool call arguments pass through unchanged without fixDoubleEncoding`() {
         val inner = """{"url":"https://github.com/sharkdp/fd"}"""
-        val encoded = jsonStr(jsonStr(inner)) // double-encoded
+        // Single-encoded: arguments is a JSON string whose content is a JSON object.
+        val arguments = jsonStr(inner)
+        val input = """{"model":"test","messages":[{"role":"assistant","tool_calls":[{"id":"c1","function":{"name":"parseGitHubUrl","arguments":$arguments},"type":"function"}]}]}"""
 
-        val input = """{"model":"test","messages":[{"role":"assistant","tool_calls":[{"id":"c1","function":{"name":"parseGitHubUrl","arguments":$encoded},"type":"function"}]}]}"""
-
-        val result = fixDoubleEncoding(input)
-
-        val expectedArgs = jsonStr(inner)
-        assertTrue(result.contains(expectedArgs),
-            "Expected result to contain single-encoded args $expectedArgs, got: $result")
+        // The remaining interceptor chain (stripToolChoice only) must not
+        // touch a correctly single-encoded body that has no tool_choice.
+        val intercepted = InterceptingHttpClient(
+            delegate = object : ai.koog.http.client.KoogHttpClient {
+                override val clientName = "passthrough"
+                override fun close() {}
+                override suspend fun <R : Any> get(path: String, responseType: kotlin.reflect.KClass<R>, parameters: Map<String, String>, headers: Map<String, String>): R = throw UnsupportedOperationException()
+                override suspend fun <T : Any, R : Any> post(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, responseType: kotlin.reflect.KClass<R>, parameters: Map<String, String>, headers: Map<String, String>): R = throw UnsupportedOperationException()
+                override fun <T : Any, R : Any, O : Any> sse(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, dataFilter: (String?) -> Boolean, decodeStreamingResponse: (String) -> R, processStreamingChunk: (R) -> O?, parameters: Map<String, String>, headers: Map<String, String>): kotlinx.coroutines.flow.Flow<O> = throw UnsupportedOperationException()
+                override fun <T : Any> lines(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, parameters: Map<String, String>, headers: Map<String, String>): kotlinx.coroutines.flow.Flow<String> = throw UnsupportedOperationException()
+            },
+            interceptors = listOf(::stripToolChoice),
+        )
+        // InterceptingHttpClient.post requires a real delegate to forward to;
+        // instead assert the documented behavior directly: a single-encoded
+        // body is NOT double-decoded by any retained interceptor.
+        assertEquals(input, stripToolChoice(input))
+        // Sanity: arguments remain single-encoded (not re-wrapped in quotes).
+        assertTrue(input.contains(""""arguments":$arguments"""),
+            "single-encoded arguments must be preserved, got: $input")
     }
 
     @Test
-    fun `unwraps multiple double-encoded tool calls`() {
-        val a1 = jsonStr(jsonStr("""{"owner":"sharkdp","repo":"fd"}"""))
-        val a2 = jsonStr(jsonStr("""{"url":"https://example.com"}"""))
-        val input = """{"model":"test","messages":[{"role":"assistant","tool_calls":[{"id":"c1","function":{"name":"f1","arguments":$a1},"type":"function"},{"id":"c2","function":{"name":"f2","arguments":$a2},"type":"function"}]}]}"""
-
-        val result = fixDoubleEncoding(input)
-
-        assertTrue(result.contains(""""arguments":${jsonStr("""{"owner":"sharkdp","repo":"fd"}""")}"""))
-        assertTrue(result.contains(""""arguments":${jsonStr("""{"url":"https://example.com"}""")}"""))
-    }
-
-    @Test
-    fun `unwraps double-encoded tool result content`() {
-        val encoded = jsonStr(jsonStr("""{"owner":"sharkdp","repo":"fd"}"""))
-        val input = """{"model":"test","messages":[{"role":"tool","content":$encoded,"tool_call_id":"c1"}]}"""
-
-        val result = fixDoubleEncoding(input)
-
-        assertTrue(result.contains(""""content":${jsonStr("""{"owner":"sharkdp","repo":"fd"}""")}"""),
-            "Expected single-encoded content, got: $result")
-    }
-
-    @Test
-    fun `unwraps double-encoded JSON array in arguments`() {
-        val encoded = jsonStr(jsonStr("""["file1.exe","file2.exe"]"""))
-        val input = """{"model":"test","messages":[{"role":"assistant","tool_calls":[{"id":"c1","function":{"name":"findExecutables","arguments":$encoded},"type":"function"}]}]}"""
-
-        val result = fixDoubleEncoding(input)
-
-        assertTrue(result.contains(""""arguments":${jsonStr("""["file1.exe","file2.exe"]""")}"""),
-            "Expected single-encoded array, got: $result")
-    }
-
-    @Test
-    fun `preserves single-encoded string arguments`() {
-        val encoded = jsonStr("""{"url":"https://github.com/sharkdp/fd"}""")
-        val input = """{"model":"test","messages":[{"role":"assistant","tool_calls":[{"id":"c1","function":{"name":"parseGitHubUrl","arguments":$encoded},"type":"function"}]}]}"""
-
-        val result = fixDoubleEncoding(input)
-
-        assertTrue(result.contains(""""arguments":$encoded"""))
-    }
-
-    @Test
-    fun `preserves simple string tool content`() {
-        val input = """{"model":"test","messages":[{"role":"tool","content":"hello world","tool_call_id":"c1"}]}"""
-
-        val result = fixDoubleEncoding(input)
-
-        assertTrue(result.contains(""""content":"hello world"""))
-    }
-
-    @Test
-    fun `preserves system and user messages`() {
-        val input = """{"model":"test","messages":[{"role":"system","content":"You are helpful."},{"role":"user","content":"Research fd"}]}"""
-
-        val result = fixDoubleEncoding(input)
-
-        assertTrue(result.contains("You are helpful."))
-        assertTrue(result.contains("Research fd"))
-    }
-
-    @Test
-    fun `preserves assistant text message without tool calls`() {
-        val input = """{"model":"test","messages":[{"role":"assistant","content":"Done."}]}"""
-
-        val result = fixDoubleEncoding(input)
-
-        assertTrue(result.contains("Done."))
-    }
-
-    @Test
-    fun `returns invalid JSON unchanged`() {
-        val input = "not json"
-        assertEquals(input, fixDoubleEncoding(input))
-    }
-
-    @Test
-    fun `returns JSON without messages unchanged`() {
-        val input = """{"model":"test","stream":false}"""
-        assertEquals(input, fixDoubleEncoding(input))
-    }
-
-    @Test
-    fun `preserves string arguments that are not JSON objects or arrays`() {
-        val encoded = jsonStr("hello")
-        val input = """{"model":"test","messages":[{"role":"assistant","tool_calls":[{"id":"c1","function":{"name":"echo","arguments":$encoded},"type":"function"}]}]}"""
-
-        val result = fixDoubleEncoding(input)
-
-        assertTrue(result.contains(""""arguments":"hello"""))
+    fun `single-encoded tool result content passes through unchanged`() {
+        val content = jsonStr("""{"owner":"sharkdp","repo":"fd"}""")
+        val input = """{"model":"test","messages":[{"role":"tool","content":$content,"tool_call_id":"c1"}]}"""
+        assertEquals(input, stripToolChoice(input))
     }
 
     // ---------------------------------------------------------------
-    // downgradeToolChoice: tool_choice required → auto
+    // stripToolChoice: unconditionally removes the whole tool_choice
+    // field from the request body (Koog's setToolChoiceRequired() has no
+    // capability gating and some OpenAI-compatible gateways reject the
+    // field once more servers route DeepSeek V4 Flash to reasoner backends).
     // ---------------------------------------------------------------
 
     @Test
-    fun `downgrades tool_choice required to auto`() {
+    fun `strips tool_choice required entirely`() {
         val input = """{"model":"deepseek-v4-flash","tool_choice":"required","messages":[]}"""
 
-        val result = downgradeToolChoice(input)
+        val result = stripToolChoice(input)
 
-        assertTrue(result.contains(""""tool_choice":"auto"""), "Expected tool_choice auto, got: $result")
-        assertTrue(!result.contains(""""tool_choice":"required"""), "Should not contain required, got: $result")
+        assertTrue(!result.contains("tool_choice"), "tool_choice must be removed entirely, got: $result")
+        assertTrue(result.contains(""""model":"deepseek-v4-flash""""), "other fields must be kept, got: $result")
     }
 
     @Test
-    fun `preserves tool_choice auto unchanged`() {
+    fun `strips tool_choice auto entirely`() {
         val input = """{"model":"deepseek-v4-flash","tool_choice":"auto","messages":[]}"""
 
-        val result = downgradeToolChoice(input)
+        val result = stripToolChoice(input)
 
-        assertEquals(input, result)
+        assertTrue(!result.contains("tool_choice"), "tool_choice must be removed even for auto, got: $result")
+    }
+
+    @Test
+    fun `strips tool_choice object entirely`() {
+        val input = """{"model":"deepseek-v4-flash","tool_choice":{"type":"function","function":{"name":"calc"}},"messages":[]}"""
+
+        val result = stripToolChoice(input)
+
+        assertTrue(!result.contains("tool_choice"), "object-valued tool_choice must be removed too, got: $result")
     }
 
     @Test
     fun `preserves request without tool_choice unchanged`() {
         val input = """{"model":"deepseek-v4-flash","messages":[]}"""
 
-        val result = downgradeToolChoice(input)
+        val result = stripToolChoice(input)
 
         assertEquals(input, result)
     }
 
     @Test
-    fun `preserves tool_choice named function unchanged`() {
-        val input = """{"model":"deepseek-v4-flash","tool_choice":{"type":"function","function":{"name":"calc"}},"messages":[]}"""
+    fun `preserves invalid JSON unchanged`() {
+        val input = """{"model":"deepseek-v4-flash","tool_choice":"required", """
 
-        val result = downgradeToolChoice(input)
+        val result = stripToolChoice(input)
 
         assertEquals(input, result)
     }

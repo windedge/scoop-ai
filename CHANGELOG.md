@@ -5,9 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **NOTE**: `gradle.properties` remains at `0.1.0` until the first GitHub
-> Release is cut (T-3.11 blocked on git remote). The [0.2.0] and [0.3.0]
-> sections below document completed work that has not been tagged yet.
+> **NOTE**: 0.1.4 artifacts (Maven Local + shadow jar) are published locally
+> only; no GitHub Release exists yet. The [0.1.0], [0.2.0], and [0.3.0]
+> sections below document completed work that shipped as part of the 0.1.4
+> artifact.
 
 ## [0.3.0] - 2026-06-18
 
@@ -72,7 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - No `--from <stage>` checkpoint resume (planned for v0.4.0+ per T-3.05b spike)
 - No internationalization (English only, no Chinese README)
 
-## [Unreleased]
+## [0.1.4] - 2026-08-18
 
 ### Added
 
@@ -86,13 +87,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CheckpointResumeTest.kt`: 9 tests covering ANALYZE/GENERATE resume, missing
   artifacts, corrupt JSON, and checkpoint construction
 - `--from` CLI tests: 7 tests for parsing, validation, and combined flags
+- `LenientStringFinishTool`: drop-in replacement for Koog's `FinishTool<String>`
+  used by the generate/refine subgraphs; accepts the manifest result as JSON
+  string, JSON object, array, literal, or null and always decodes to a string.
+  Fixes the `IndexOutOfBoundsException(-1)` when the model passes the manifest
+  as a JSON object instead of a stringified manifest (tool name stays
+  `finalize_task_result`, prompts and strategy unchanged)
+- `ScoopAiGenerationException`: typed generation failure, thrown when Koog's
+  `subgraphWithTask` exhausts re-prompts without a single tool call (model
+  lacks function calling); message carries a multi-line cause analysis and fix
+  hint; CLI classifies it as LLM_ERROR (exit 65) and passes the message through
+  untruncated
+- `ManifestResult.exhausted` / `issues`: refine-loop exhaustion now surfaces
+  the unresolved validation/review issues as a structured list; CLI adds a
+  manifest rejection guard that refuses to report blank, exhausted, or
+  invalid-JSON output as success ("Manifest NOT ready")
+- Observability: `GenerationObserver` records the per-phase LLM call count
+  (`lastCompletedLlmCallCount()`), and `PhaseProgressLogger.completed()`
+  appends ", N LLM calls" (useful for proving Koog retries occurred)
+- Retry / stub-gateway tests: `ScoopManifestGeneratorRetryMockTest`,
+  `ScoopManifestGeneratorToolCallExhaustionMockTest`, and
+  `ReasoningRetryStubGatewayTest` (stub gateway full chain, incl. the
+  "Koog 1.1.1 no longer double-encodes tool call arguments" regression)
 
 ### Changed
 
+- Koog upgraded 1.0.0 -> 1.1.1 (`koog-agents`); `prompt-executor-deepseek-client`
+  upgraded 1.0.0-beta-preview7 -> 1.1.1-beta
+- Removed the `fixDoubleEncoding` request interceptor and its helpers
+  (`fixAssistantMessage` / `fixToolMessage` / `unwrapIfDoubleEncoded`): Koog
+  1.1.1 (#2096) fixed the double-encoding of tool call arguments / tool result
+  content at the source, so the client-side rewrite is no longer needed
+- Response rewriting chain: `reasoningFallbackToContent` runs first (maps
+  reasoner responses with blank `content`, no `tool_calls`, and reasoning held
+  in `reasoning_content` / `reasoning` / `reasoningContent` into `content`),
+  then `normalizeMissingCreated` fills in the omitted `created` field
 - `ScoopManifestGenerator.generate()`: when `resumeData` is provided, uses
   `Persistence.runFromCheckpoint` instead of `agent.run()` to skip completed phases
+- `openai-compatible` provider: removed all DeepSeek model-name special-casing.
+  Capabilities are now uniform for every model name (ToolChoice included, no
+  Thinking capability); `defaultModel()` uses the generic model-name branch
+  (no borrowed `DeepSeekV4Flash` contextLength/maxOutputTokens);
+  `isDeepSeekModelName()` was deleted. The request-side `downgradeToolChoice`
+  interceptor (DeepSeek-only) was replaced by unconditional `stripToolChoice`,
+  which removes the whole `tool_choice` field from every openai-compatible
+  request body because Koog's `setToolChoiceRequired()` has no capability
+  gating and some gateways reject the field. Reasoning retry behavior is still
+  handled at runtime by `ScoopManifestGenerator.modelWithoutToolChoice`.
 
 ### Fixed
+
+- Blank / exhausted / invalid-JSON manifests are no longer reported as success:
+  the CLI prints "Manifest NOT ready" with the rejection detail ("no manifest
+  generated", "refine loop exhausted with N unresolved issue(s): ...", or
+  "generated manifest is not valid JSON") and exits with the GENERAL code
+- Pure-reasoning responses (blank `content`, no `tool_calls`, thinking held in
+  `reasoning_content`) no longer abort `subgraphWithTask` with "must always
+  call tools": `reasoningFallbackToContent` maps the reasoning text into
+  `message.content` so Koog decodes it as text and the strategy graph recovers
+- OpenAI-compatible gateways that omit the required `created` field no longer
+  fail decoding with `MissingFieldException`: `normalizeMissingCreated` adds a
+  locally observed timestamp before Koog parses the response
+- Koog's `FinishTool<String>` no longer throws `IndexOutOfBoundsException(-1)`
+  when the model returns the manifest as a JSON object: generate/refine use
+  `LenientStringFinishTool` which accepts object / string / literal results
+- Tool-call exhaustion in `subgraphWithTask` now surfaces as
+  `ScoopAiGenerationException` (exit 65 LLM_ERROR) with an actionable hint
+  instead of a bare `IllegalStateException`; the exception message is passed
+  through the CLI without first-line truncation so the cause analysis / fix
+  hint reaches the user
 
 ### Notes
 
@@ -165,6 +228,8 @@ Unreleased alongside 0.3.0; documents the clikt subcommand architecture introduc
 - No man page (planned for v0.3.0).
 - No internationalization (English only, no Chinese README).
 
+<!-- TODO: replace the placeholder repo URL below with the real repository once the first GitHub Release is cut -->
+[0.1.4]: https://github.com/placeholder/scoop-ai/releases/tag/v0.1.4
 [0.3.0]: https://github.com/placeholder/scoop-ai/releases/tag/v0.3.0
 [0.2.0]: https://github.com/placeholder/scoop-ai/releases/tag/v0.2.0
 [0.1.0]: https://github.com/placeholder/scoop-ai/releases/tag/v0.1.0

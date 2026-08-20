@@ -7,7 +7,9 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.reflect.KClass
 import kotlin.test.Test
@@ -65,6 +67,119 @@ class ResponseInterceptorsTest {
         val input = "not json"
 
         assertEquals(input, normalizeMissingCreated(input, createdEpochSeconds = 0))
+    }
+
+    // ---------------------------------------------------------------
+    // reasoningFallbackToContent pure function
+    // ---------------------------------------------------------------
+
+    private fun contentOf(rawJson: String): String? {
+        val choices = json.parseToJsonElement(rawJson).jsonObject["choices"]?.jsonArray ?: return null
+        val message = choices.firstOrNull()?.jsonObject?.get("message")?.jsonObject ?: return null
+        val contentElement = message["content"]
+        // Mirror reasoningFallbackToContent semantics: JsonNull content is treated as absent.
+        if (contentElement == null || contentElement is kotlinx.serialization.json.JsonNull) return null
+        return (contentElement as? JsonPrimitive)?.content
+    }
+
+    @Test
+    fun `reasoningFallbackToContent fills content from reasoning_content when content missing`() {
+        val input = """{"id":"chatcmpl-test","model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"let me think"}}]}"""
+
+        val result = reasoningFallbackToContent(input)
+
+        assertEquals("let me think", contentOf(result))
+    }
+
+    @Test
+    fun `reasoningFallbackToContent prefers reasoning_content over reasoning and reasoningContent`() {
+        val input = """{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"rc","reasoning":"r","reasoningContent":"rc2"}}]}"""
+
+        val result = reasoningFallbackToContent(input)
+
+        assertEquals("rc", contentOf(result))
+    }
+
+    @Test
+    fun `reasoningFallbackToContent falls back to reasoning when reasoning_content absent`() {
+        val input = """{"choices":[{"message":{"role":"assistant","content":null,"reasoning":"thinking hard"}}]}"""
+
+        val result = reasoningFallbackToContent(input)
+
+        assertEquals("thinking hard", contentOf(result))
+    }
+
+    @Test
+    fun `reasoningFallbackToContent falls back to reasoningContent last`() {
+        val input = """{"choices":[{"message":{"role":"assistant","content":null,"reasoningContent":"last resort"}}]}"""
+
+        val result = reasoningFallbackToContent(input)
+
+        assertEquals("last resort", contentOf(result))
+    }
+
+    @Test
+    fun `reasoningFallbackToContent does not overwrite existing non-blank content`() {
+        val input = """{"choices":[{"message":{"role":"assistant","content":"real answer","reasoning_content":"ignore me"}}]}"""
+
+        val result = reasoningFallbackToContent(input)
+
+        assertEquals("real answer", contentOf(result))
+    }
+
+    @Test
+    fun `reasoningFallbackToContent does not overwrite when tool_calls present`() {
+        val input = """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","function":{"name":"f","arguments":"{}"}}],"reasoning_content":"ignore me"}}]}"""
+
+        val result = reasoningFallbackToContent(input)
+
+        assertEquals(null, contentOf(result))
+    }
+
+    @Test
+    fun `reasoningFallbackToContent leaves invalid JSON unchanged`() {
+        val input = "not json"
+
+        assertEquals(input, reasoningFallbackToContent(input))
+    }
+
+    @Test
+    fun `reasoningFallbackToContent leaves non chat completion responses unchanged`() {
+        val input = """{"error":{"message":"bad request"}}"""
+
+        assertEquals(input, reasoningFallbackToContent(input))
+    }
+
+    @Test
+    fun `reasoningFallbackToContent leaves empty choices array unchanged`() {
+        val input = """{"id":"chatcmpl-test","model":"test-model","choices":[]}"""
+
+        assertEquals(input, reasoningFallbackToContent(input))
+    }
+
+    @Test
+    fun `reasoningFallbackToContent leaves message without reasoning keys unchanged`() {
+        val input = """{"choices":[{"message":{"role":"assistant","content":null}}]}"""
+
+        assertEquals(input, reasoningFallbackToContent(input))
+    }
+
+    @Test
+    fun `reasoningFallbackToContent leaves JsonNull reasoning_content unchanged`() {
+        // JsonNull submits an is JsonPrimitive and would otherwise be read as
+        // the literal string "null" and written into content. It must be
+        // treated as absent, matching the isNonBlankContent semantics of the
+        // content field.
+        val input = """{"choices":[{"message":{"role":"assistant","content":null,"reasoning_content":null}}]}"""
+
+        assertEquals(input, reasoningFallbackToContent(input))
+    }
+
+    @Test
+    fun `reasoningFallbackToContent leaves JsonNull reasoning and reasoningContent keys unchanged`() {
+        val input = """{"choices":[{"message":{"role":"assistant","content":null,"reasoning":null,"reasoningContent":null}}]}"""
+
+        assertEquals(input, reasoningFallbackToContent(input))
     }
 
     // ---------------------------------------------------------------

@@ -14,7 +14,7 @@ AI-powered Scoop manifest generator for Windows packages. Given a GitHub reposit
 scoop install bucket/scoop-ai.json
 
 # Or via direct URL once published
-scoop install https://github.com/placeholder/scoop-ai/releases/download/v0.1.0/cli-0.1.0-all.jar
+scoop install https://github.com/placeholder/scoop-ai/releases/download/v0.1.4/cli-0.1.4-all.jar
 ```
 
 The manifest bundles scoop-ai as a fat JAR with all dependencies. Scoop creates
@@ -75,7 +75,7 @@ Dependency direction: `cli -> core + tools`, `tools -> core`, `core -> Koog fram
 
 ```bash
 # Generate a manifest from a GitHub URL (uses DeepSeek by default)
-java -jar cli/build/libs/cli-0.1.0-all.jar https://github.com/sharkdp/fd
+java -jar cli/build/libs/cli-0.1.4-all.jar https://github.com/sharkdp/fd
 
 # Or via Gradle
 ./gradlew :cli:run --args="https://github.com/sharkdp/fd"
@@ -167,7 +167,7 @@ Example output:
 [OK  ] api-key: Found in $SCOOP_AI_API_KEY (sk-a...bc12)
 [OK  ] cache-dir: C:\Users\user\scoop\cache (writable)
 [OK  ] write-permission: Current directory is writable
-[OK  ] version: scoop-ai 0.1.0 (commit a1b2c3d)
+[OK  ] version: scoop-ai 0.1.4 (commit a1b2c3d)
 
 0 failure(s), 1 warning(s), 6/7 checks passed
 ```
@@ -239,7 +239,7 @@ scoop-ai completion powershell >> $PROFILE
 Print version information and exit.
 
 ```
-scoop-ai 0.1.0 (commit a1b2c3d)
+scoop-ai 0.1.4 (commit a1b2c3d)
 ```
 
 ## Environment Variables

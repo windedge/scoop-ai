@@ -20,9 +20,9 @@ import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.llm.LLMProvider
 import ai.koog.prompt.llm.LLModel
 import com.scoopai.core.llm.InterceptingHttpClient
-import com.scoopai.core.llm.downgradeToolChoice
-import com.scoopai.core.llm.fixDoubleEncoding
 import com.scoopai.core.llm.normalizeMissingCreated
+import com.scoopai.core.llm.reasoningFallbackToContent
+import com.scoopai.core.llm.stripToolChoice
 
 @OptIn(kotlin.time.ExperimentalTime::class)
 object LlmProviderFactory {
@@ -59,7 +59,7 @@ object LlmProviderFactory {
             // Clients append "v1/chat/completions"; strip user-supplied /v1 to avoid double path (404).
             val resolvedBaseUrl = normalizeBaseUrl(rawBaseUrl)
             // Always OpenAILLMClient: proxy responses follow OpenAI schema (no systemFingerprint).
-            // Thinking capability for DeepSeek model names is set in openAICompatibleCapabilities().
+            // Capabilities are uniform for every model name (no DeepSeek special-case).
             val baseHttpClient = javaHttpClient(
                 apiKey = apiKey,
                 settings = DeepSeekClientSettings(
@@ -68,19 +68,26 @@ object LlmProviderFactory {
                 ),
                 clientName = "OpenAICompatibleLLMClient",
             )
+            val debugHttp = isDebugHttpEnabled()
             val interceptors = buildList {
-                add(::fixDoubleEncoding)
-                if (modelName.isDeepSeekModelName()) add(::downgradeToolChoice)
-                if (isDebugHttpEnabled()) add(::logRequestBody)
+                // fixDoubleEncoding removed: Koog 1.1.1 (#2096) fixed the
+                // double-encoding of tool call arguments at the source.
+                // Koog's setToolChoiceRequired() has no gating, so strip
+                // tool_choice unconditionally for every model name.
+                add(::stripToolChoice)
+                if (debugHttp) add(::logRequestBody)
             }
-            val responseLogger: ((String) -> Unit)? = if (isDebugHttpEnabled()) {
+            val responseLogger: ((String) -> Unit)? = if (debugHttp) {
                 { body -> System.err.println("[SCOOP_AI_DEBUG_HTTP] response: ${body.take(2000)}") }
             } else {
                 null
             }
             // Some OpenAI-compatible gateways omit the required `created` field.
-            // Rewrite responses before Koog decodes them, filling in 0.
-            val responseRewriter: ((String) -> String)? = { json -> normalizeMissingCreated(json, 0L) }
+            // Reasoning-only responses (content blank, no tool_calls, reasoning in an
+            // auxiliary key) are mapped to content first, then `created` is filled.
+            val responseRewriter = { raw: String ->
+                normalizeMissingCreated(reasoningFallbackToContent(raw), 0L)
+            }
             MultiLLMPromptExecutor(
                 OpenAILLMClient(
                     settings = OpenAIClientSettings(
@@ -100,19 +107,12 @@ object LlmProviderFactory {
     }
 
     fun defaultModel(provider: String, modelName: String? = null, baseUrl: String? = null): LLModel = when {
-        // openai-compatible + DeepSeek model name uses OpenAI provider identity
-        // (proxy returns OpenAI-shaped responses) but keeps Thinking capability.
-        modelName != null && provider == "openai-compatible" && modelName.isDeepSeekModelName() -> LLModel(
-            provider = LLMProvider.OpenAI,
-            id = modelName,
-            capabilities = openAICompatibleCapabilities(modelName),
-            contextLength = DeepSeekModels.DeepSeekV4Flash.contextLength,
-            maxOutputTokens = DeepSeekModels.DeepSeekV4Flash.maxOutputTokens,
-        )
+        // openai-compatible + model name goes through the generic branch:
+        // provider identity OpenAI, capabilties uniform (no DeepSeek special-case).
         modelName != null -> LLModel(
             provider = providerToLLMProvider(provider),
             id = modelName,
-            capabilities = modelCapabilities(provider, modelName),
+            capabilities = modelCapabilities(provider),
         )
         else -> when (provider) {
             "deepseek" -> DeepSeekModels.DeepSeekV4Flash
@@ -150,11 +150,8 @@ object LlmProviderFactory {
         else -> LLMProvider.OpenAI
     }
 
-    private fun String?.isDeepSeekModelName(): Boolean =
-        this?.contains("deepseek", ignoreCase = true) == true
-
-    private fun modelCapabilities(provider: String, modelName: String? = null): List<LLMCapability> = when (provider) {
-        "openai", "openrouter", "openai-compatible" -> openAICompatibleCapabilities(modelName)
+    private fun modelCapabilities(provider: String): List<LLMCapability> = when (provider) {
+        "openai", "openrouter", "openai-compatible" -> openAICompatibleCapabilities()
         "deepseek" -> deepSeekCapabilities()
         "anthropic" -> listOf(
             LLMCapability.Temperature,
@@ -184,21 +181,16 @@ object LlmProviderFactory {
         LLMCapability.Thinking,
     )
 
-    private fun openAICompatibleCapabilities(modelName: String? = null): List<LLMCapability> {
-        val base = mutableListOf(
-            LLMCapability.Temperature,
-            LLMCapability.ToolChoice,
-            LLMCapability.Schema.JSON.Basic,
-            LLMCapability.Schema.JSON.Standard,
-            LLMCapability.Tools,
-            LLMCapability.Completion,
-            LLMCapability.OpenAIEndpoint.Completions,
-        )
-        if (modelName.isDeepSeekModelName()) {
-            base.add(LLMCapability.Thinking)
-        }
-        return base.toList()
-    }
+    /** Uniform capability set for every openai-compatible model name. */
+    private fun openAICompatibleCapabilities(): List<LLMCapability> = listOf(
+        LLMCapability.Temperature,
+        LLMCapability.ToolChoice,
+        LLMCapability.Schema.JSON.Basic,
+        LLMCapability.Schema.JSON.Standard,
+        LLMCapability.Tools,
+        LLMCapability.Completion,
+        LLMCapability.OpenAIEndpoint.Completions,
+    )
 }
 
 /**
@@ -215,12 +207,13 @@ internal fun normalizeBaseUrl(baseUrl: String): String {
     while (url.endsWith('/')) {
         url = url.dropLast(1)
     }
-    val suffixes = listOf("/v1/chat/completions", "/v1")
-    for (suffix in suffixes) {
-        if (url.endsWith(suffix, ignoreCase = true)) {
-            url = url.dropLast(suffix.length)
-            break
-        }
+    // Longest suffix first so "/v1/chat/completions" is not mis-stripped by "/v1".
+    url = when {
+        url.endsWith("/v1/chat/completions", ignoreCase = true) ->
+            url.dropLast("/v1/chat/completions".length)
+        url.endsWith("/v1", ignoreCase = true) ->
+            url.dropLast("/v1".length)
+        else -> url
     }
     while (url.endsWith('/')) {
         url = url.dropLast(1)

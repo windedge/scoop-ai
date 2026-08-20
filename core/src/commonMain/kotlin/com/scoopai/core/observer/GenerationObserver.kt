@@ -31,10 +31,13 @@ class GenerationObserver {
         var inputTokens: Long = 0L
         var outputTokens: Long = 0L
         var toolCallCount: Int = 0
+        var llmCallCount: Int = 0
     }
 
     private var current: PhaseAccumulator? = null
     private val completed = mutableListOf<StageInfo>()
+    /** Number of LLM calls recorded in the most recently completed (exited) phase. */
+    private var lastLlmCallCount = 0
 
     /**
      * Start tracking a new phase.
@@ -65,6 +68,7 @@ class GenerationObserver {
                 toolCallCount = phase.toolCallCount,
             )
         )
+        lastLlmCallCount = phase.llmCallCount
         current = null
     }
 
@@ -76,6 +80,7 @@ class GenerationObserver {
         current?.let {
             it.inputTokens += inputTokens
             it.outputTokens += outputTokens
+            it.llmCallCount++
         }
     }
 
@@ -87,6 +92,13 @@ class GenerationObserver {
             it.toolCallCount++
         }
     }
+
+    /**
+     * Number of LLM calls recorded in the most recently completed (exited) phase.
+     * Returns 0 before any phase has been exited. Useful for logging the
+     * per-phase LLM call count (e.g. proving a Koog retry occurred).
+     */
+    fun lastCompletedLlmCallCount(): Int = lastLlmCallCount
 
     /**
      * Return all completed phases in order.

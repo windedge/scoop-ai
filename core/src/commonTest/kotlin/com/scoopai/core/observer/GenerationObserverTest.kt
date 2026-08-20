@@ -198,4 +198,42 @@ class GenerationObserverTest {
         assertEquals(1, observer.snapshot().size)
         assertEquals("generate", observer.snapshot()[0].phaseName)
     }
+
+    // ---------------------------------------------------------------
+    // llmCallCount tracking (retry observability)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `recordLlmCall increments llmCallCount per call`() {
+        val observer = GenerationObserver()
+        observer.enterPhase("research")
+        observer.recordLlmCall(10, 5)
+        observer.recordLlmCall(20, 8)
+        observer.exitPhase("research", 1000)
+        assertEquals(2, observer.lastCompletedLlmCallCount())
+    }
+
+    @Test
+    fun `llmCallCount accumulates within a phase and resets per phase`() {
+        val observer = GenerationObserver()
+        observer.enterPhase("research")
+        observer.recordLlmCall(1, 1)
+        observer.recordLlmCall(2, 2)
+        observer.exitPhase("research", 100)
+        assertEquals(2, observer.lastCompletedLlmCallCount())
+
+        observer.enterPhase("analyze")
+        observer.recordLlmCall(3, 3)
+        observer.exitPhase("analyze", 200)
+        // The counter reflects only the most recently exited phase
+        assertEquals(1, observer.lastCompletedLlmCallCount())
+    }
+
+    @Test
+    fun `lastCompletedLlmCallCount is zero before any phase exits`() {
+        val observer = GenerationObserver()
+        observer.enterPhase("research")
+        observer.recordLlmCall(1, 1)
+        assertEquals(0, observer.lastCompletedLlmCallCount())
+    }
 }

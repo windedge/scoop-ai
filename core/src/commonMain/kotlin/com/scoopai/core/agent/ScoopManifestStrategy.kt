@@ -136,7 +136,7 @@ fun scoopManifestStrategy(
     val researchDone by node<ResearchOutput, ResearchOutput>("researchDone") { output ->
         val elapsed = researchStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
         observer.exitPhase("research", elapsed)
-        logger.info { PhaseProgressLogger.completed("research", elapsed) }
+        logger.info { PhaseProgressLogger.completed("research", elapsed, llmCalls = observer.lastCompletedLlmCallCount()) }
         onPhaseOutput?.invoke("research", phaseJson.encodeToString(ResearchOutput.serializer(), output))
         output
     }
@@ -168,8 +168,12 @@ fun scoopManifestStrategy(
     }
 
     // ── Generate phase (LLM, no tools: review skeleton + finalize) ──
-    val generate by subgraphWithTask<String, String>(
+    // Uses LenientStringFinishTool instead of Koog's default FinishTool<String>:
+    // when the model passes the manifest as a JSON object instead of a string,
+    // Koog 1.0.0 fails with "Index -1 out of bounds" (see LenientStringFinishTool kdoc).
+    val generate by subgraphWithTask<String, String, String>(
         tools = emptyList<ToolBase<*, *>>(),
+        finishTool = LenientStringFinishTool(),
         llmParams = llmParams,
     ) { skeleton ->
         onPhase?.invoke("generate")
@@ -181,8 +185,10 @@ fun scoopManifestStrategy(
     }
 
     // ── Refine phase (LLM, no tools, lightweight fix loop) ──
-    val refine by subgraphWithTask<RefineContext, String>(
+    // Same lenient finish tool as generate: refine also finalizes a String manifest.
+    val refine by subgraphWithTask<RefineContext, String, String>(
         tools = emptyList<ToolBase<*, *>>(),
+        finishTool = LenientStringFinishTool(),
         llmParams = llmParams,
     ) { input ->
         onPhase?.invoke("refine")
@@ -216,12 +222,15 @@ fun scoopManifestStrategy(
     }
 
     // ── Build exhausted result node ──
-    val buildExhaustedResult by node<RefineContext?, ManifestResult>("buildExhaustedResult") {
-        logger.warn { "[strategy] Refine exhausted after $maxRetries attempts. Returning last manifest with issues." }
+    val buildExhaustedResult by node<RefineContext?, ManifestResult>("buildExhaustedResult") { ctx ->
+        val issueList = ctx?.let { splitFeedback(it.feedback) } ?: emptyList()
+        logger.warn { "[strategy] Refine exhausted after $maxRetries attempts. Returning last manifest with ${issueList.size} issue(s)." }
         val manifest = storage.get(finalManifestKey) ?: ""
         ManifestResult(
             manifest = extractJsonBlock(manifest)?.let { formatManifestJson(it) } ?: manifest,
             suggestedAppName = storage.get(suggestedAppNameKey),
+            exhausted = true,
+            issues = issueList,
         )
     }
 
@@ -249,7 +258,7 @@ fun scoopManifestStrategy(
     edge(analyze forwardTo prepareManifest transformed { output ->
         val elapsed = analyzeStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
         observer.exitPhase("analyze", elapsed)
-        logger.info { PhaseProgressLogger.completed("analyze", elapsed) }
+        logger.info { PhaseProgressLogger.completed("analyze", elapsed, llmCalls = observer.lastCompletedLlmCallCount()) }
         onPhaseOutput?.invoke("analyze", phaseJson.encodeToString(AnalyzeOutput.serializer(), output))
         output
     })
@@ -257,7 +266,7 @@ fun scoopManifestStrategy(
     edge(generate forwardTo normalize transformed { output ->
         val elapsed = generateStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
         observer.exitPhase("generate", elapsed)
-        logger.info { PhaseProgressLogger.completed("generate", elapsed) }
+        logger.info { PhaseProgressLogger.completed("generate", elapsed, llmCalls = observer.lastCompletedLlmCallCount()) }
         onPhaseOutput?.invoke("generate", output)
         output
     })
@@ -280,7 +289,7 @@ fun scoopManifestStrategy(
     edge(refine forwardTo normalize transformed { output ->
         val elapsed = refineStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
         observer.exitPhase("refine", elapsed)
-        logger.info { PhaseProgressLogger.completed("refine", elapsed) }
+        logger.info { PhaseProgressLogger.completed("refine", elapsed, llmCalls = observer.lastCompletedLlmCallCount()) }
         onPhaseOutput?.invoke("refine", output)
         output
     })
@@ -460,6 +469,21 @@ internal fun isValidJson(text: String): Boolean = try {
     Json.parseToJsonElement(text) is JsonObject
 } catch (_: Exception) {
     false
+}
+
+/**
+ * Splits a [RefineContext.feedback] string back into the individual issue messages.
+ *
+ * `feedback` is produced by `errors.joinToString("\n- ", "- ")`, so each issue line
+ * is prefixed with "- ". This reverses that join so the issues can be surfaced as a
+ * structured list on [ManifestResult.issues].
+ */
+internal fun splitFeedback(feedback: String): List<String> {
+    if (feedback.isBlank()) return emptyList()
+    return feedback.lineSequence()
+        .map { it.removePrefix("- ").trim() }
+        .filter { it.isNotBlank() }
+        .toList()
 }
 
 @kotlinx.serialization.Serializable

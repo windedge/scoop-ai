@@ -23,7 +23,7 @@ import kotlin.reflect.KClass
  * logging of the response direction. Rewriting happens first, so the logged
  * body reflects the final JSON that Koog will decode.
  *
- * This replaces separate decorator classes (DoubleEncodingFixHttpClient,
+ * This replaces separate decorator classes (logging + per-issue rewriters)
  * LoggingKoogHttpClient, ToolChoiceDowngradeHttpClient) with a single
  * reusable decorator + composable interceptor functions.
  *
@@ -32,8 +32,9 @@ import kotlin.reflect.KClass
  * val httpClient = InterceptingHttpClient(
  *     delegate = baseClient,
  *     interceptors = buildList {
- *         add(::fixDoubleEncoding)
- *         if (isDeepSeekModel) add(::downgradeToolChoice)
+ *         // Koog's setToolChoiceRequired() has no capability gating; some
+ *         // gateways reject the field, so strip it unconditionally.
+ *         add(::stripToolChoice)
  *     },
  *     responseRewriter = { json -> normalizeMissingCreated(json, 0L) },
  *     onResponse = { body -> println(body) },

@@ -95,6 +95,9 @@ class ScoopManifestGenerator(
     ): ManifestResult {
         val startTime = TimeSource.Monotonic.markNow()
         observer.reset()
+        // Phase name last announced by the strategy; used to enrich typed errors
+        // when a subgraph fails mid-phase (e.g. tool-call exhaustion).
+        var activePhase: String? = null
         // -- Track token usage across all LLM calls ------------------------
         val tokenAccumulator = TokenAccumulator()
 
@@ -167,6 +170,7 @@ class ScoopManifestGenerator(
             gitHubApi = gitHubApi,
             archiveInspector = archiveInspector,
             onPhase = { name ->
+                activePhase = name
                 onPhase?.invoke(name)
             },
             observer = observer,
@@ -229,8 +233,23 @@ class ScoopManifestGenerator(
                 agent.run(url)
             }
         } catch (e: Exception) {
-            artifacts?.let { it.markFailed("${e::class.simpleName}: ${e.message}") }
-            throw e
+            // Koog's subgraphWithTask throws a bare IllegalStateException when the model
+            // never calls a tool after the re-prompt budget is spent. Translate it into
+            // a typed exception with an actionable hint (model may lack function calling).
+            val toThrow: Exception = if (isSubgraphTaskToolCallExhaustion(e)) {
+                ScoopAiGenerationException(
+                    message = buildToolCallExhaustionMessage(
+                        modelId = model.id,
+                        phase = activePhase,
+                        originalMessage = e.message ?: e::class.simpleName ?: "unknown",
+                    ),
+                    cause = e,
+                )
+            } else {
+                e
+            }
+            artifacts?.let { it.markFailed("${toThrow::class.simpleName}: ${toThrow.message}") }
+            throw toThrow
         }
         val elapsed = startTime.elapsedNow().inWholeMilliseconds
 

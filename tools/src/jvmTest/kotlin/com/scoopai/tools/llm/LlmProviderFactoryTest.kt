@@ -89,23 +89,40 @@ class LlmProviderFactoryTest {
     }
 
     @Test
-    fun `defaultModel for openai-compatible with DeepSeek model uses OpenAI provider and thinking capability`() {
+    fun `openai-compatible with DeepSeek model uses uniform OpenAI capabilities with ToolChoice`() {
+        // B 批次：openai-compatible 不再对 DeepSeek 模型名特判。DeepSeek 模型
+        // 走与其它模型相同的统一能力集（含 ToolChoice、不含 Thinking）。
         val model = LlmProviderFactory.defaultModel("openai-compatible", "opencode/deepseek-v4-flash")
         assertEquals(LLMProvider.OpenAI, model.provider)
         assertEquals("opencode/deepseek-v4-flash", model.id)
-        assertTrue(model.capabilities?.contains(LLMCapability.Thinking) == true,
-            "DeepSeek models via openai-compatible should have Thinking capability")
+        assertTrue(model.capabilities?.contains(LLMCapability.ToolChoice) == true,
+            "DeepSeek models via openai-compatible must keep ToolChoice after capability unification")
+        assertTrue(model.capabilities?.contains(LLMCapability.Thinking) != true,
+            "DeepSeek models must not get Thinking from the DeepSeek name special-case anymore")
+        assertTrue(model.capabilities?.contains(LLMCapability.Tools) == true)
     }
 
     @Test
-    fun `defaultModel for openai-compatible with non-DeepSeek model uses OpenAI provider`() {
+    fun `openai-compatible with non-DeepSeek model uses OpenAI provider, keeps ToolChoice, no Thinking`() {
         val model = LlmProviderFactory.defaultModel("openai-compatible", "ollama/glm-4.7")
         assertEquals(LLMProvider.OpenAI, model.provider)
         assertEquals("ollama/glm-4.7", model.id)
         assertTrue(model.capabilities?.contains(LLMCapability.Tools) == true)
-        // Non-DeepSeek should NOT have Thinking capability
+        assertTrue(model.capabilities?.contains(LLMCapability.ToolChoice) == true,
+            "Non-DeepSeek models should keep ToolChoice capability")
         assertTrue(model.capabilities?.contains(LLMCapability.Thinking) != true,
             "Non-DeepSeek models should not have Thinking capability")
+    }
+
+    @Test
+    fun `openai-compatible capabilities are identical for every model name`() {
+        val deepSeek = LlmProviderFactory.defaultModel("openai-compatible", "opencode/deepseek-v4-flash")
+        val glm = LlmProviderFactory.defaultModel("openai-compatible", "zai/glm-4.7")
+        val default = LlmProviderFactory.defaultModel("openai-compatible")
+        assertEquals(glm.capabilities, deepSeek.capabilities,
+            "capabilities must not depend on the model name")
+        assertEquals(default.capabilities, deepSeek.capabilities,
+            "capabilities must be the same with and without a model name")
     }
 
     @Test
@@ -135,33 +152,17 @@ class LlmProviderFactoryTest {
     }
 
     @Test
-    fun `create for openai-compatible with DeepSeek model name succeeds`() {
-        LlmProviderFactory.create(
-            provider = "openai-compatible",
-            apiKey = "sk-test",
-            baseUrl = "http://localhost:8080",
-            modelName = "opencode/deepseek-v4-flash",
-        )
-    }
-
-    @Test
-    fun `create for openai-compatible with non-DeepSeek model name succeeds`() {
-        // Non-DeepSeek model (GLM, Qwen etc.) → OpenAILLMClient (no systemFingerprint required)
-        LlmProviderFactory.create(
-            provider = "openai-compatible",
-            apiKey = "sk-test",
-            baseUrl = "http://localhost:8080",
-            modelName = "zai/glm-4.7",
-        )
-    }
-
-    @Test
-    fun `create for openai-compatible with Qwen model name succeeds`() {
-        LlmProviderFactory.create(
-            provider = "openai-compatible",
-            apiKey = "sk-test",
-            baseUrl = "http://localhost:8080",
-            modelName = "qwen2.5:72b",
-        )
+    fun `create for openai-compatible with various model names succeeds`() {
+        // DeepSeek reasoner, non-DeepSeek GLM, and Qwen all route to OpenAILLMClient
+        // (no systemFingerprint required); the interceptor chain strips tool_choice
+        // unconditionally for every model name (no DeepSeek special-case).
+        for (modelName in listOf("opencode/deepseek-v4-flash", "zai/glm-4.7", "qwen2.5:72b")) {
+            LlmProviderFactory.create(
+                provider = "openai-compatible",
+                apiKey = "sk-test",
+                baseUrl = "http://localhost:8080",
+                modelName = modelName,
+            )
+        }
     }
 }

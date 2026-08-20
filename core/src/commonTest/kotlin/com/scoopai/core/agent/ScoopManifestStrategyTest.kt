@@ -2,8 +2,13 @@ package com.scoopai.core.agent
 
 import ai.koog.agents.core.agent.AIAgent
 import ai.koog.agents.core.agent.config.AIAgentConfig
+import ai.koog.agents.core.tools.Tool
+import ai.koog.agents.core.tools.ToolDescriptor
+import ai.koog.agents.core.tools.ToolParameterDescriptor
+import ai.koog.agents.core.tools.ToolParameterType
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.core.tools.annotations.InternalAgentToolsApi
+import ai.koog.agents.ext.agent.SubgraphWithTaskUtils
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.deepseek.DeepSeekModels
 import ai.koog.prompt.llm.LLMCapability
@@ -12,10 +17,15 @@ import ai.koog.agents.ext.agent.FinishTool
 import ai.koog.agents.testing.feature.withTesting
 import ai.koog.agents.testing.tools.getMockExecutor
 import ai.koog.prompt.executor.model.PromptExecutor
+import ai.koog.serialization.JSONElement
+import ai.koog.serialization.JSONSerializer
+import ai.koog.serialization.JSONObject
+import ai.koog.serialization.kotlinx.toKoogJSONObject
 import ai.koog.serialization.typeToken
 import com.scoopai.core.ManifestResult
 import com.scoopai.core.agent.prompt.buildAnalyzePrompt
 import com.scoopai.core.agent.prompt.buildGeneratePrompt
+import com.scoopai.core.agent.prompt.buildRefinePrompt
 import com.scoopai.core.agent.prompt.buildResearchPrompt
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -42,6 +52,17 @@ class ScoopManifestStrategyTest {
     @OptIn(InternalAgentToolsApi::class)
     private val generateFinishTool = FinishTool<String>(typeToken<String>())
 
+    @OptIn(InternalAgentToolsApi::class)
+    private val refineFinishTool = FinishTool<String>(typeToken<String>())
+
+    /** A [ManifestIo] that always reports a validation failure (used to drive the refine loop to exhaustion). */
+    private val failingManifestIo = object : com.scoopai.core.tools.api.ManifestIo {
+        override fun validate(json: String?): String =
+            """{"valid":false,"errors":["sample structural validation error"]}"""
+        override fun write(json: String?, path: String?): String = ""
+        override fun read(path: String?): String = ""
+    }
+
     /**
      * Model without ToolChoice capability, used to simulate the generate subgraph environment
      * where normalize/verify must execute without tool_choice forced.
@@ -54,11 +75,14 @@ class ScoopManifestStrategyTest {
         promptExecutor: PromptExecutor,
         maxIterations: Int = 50,
         model: LLModel = DeepSeekModels.DeepSeekV4Flash,
+        manifestIo: com.scoopai.core.tools.api.ManifestIo? = null,
     ): AIAgent<String, ManifestResult> {
         val strategy = scoopManifestStrategy(
             researchPromptBuilder = { buildResearchPrompt(it, null) },
             analyzePromptBuilder = { buildAnalyzePrompt(it) },
             generatePromptBuilder = { skeleton, analyze, _ -> buildGeneratePrompt(skeleton, analyze, null) },
+            refinePromptBuilder = { buildRefinePrompt(it) },
+            manifestIo = manifestIo,
         )
         return AIAgent(
             promptExecutor = promptExecutor,
@@ -133,6 +157,66 @@ class ScoopManifestStrategyTest {
         val result = createTestAgent(promptExecutor)
             .run("https://github.com/sharkdp/fd")
         assertTrue(result.manifest.contains("10.2.0"), "Result should contain version, got: $result")
+        // Normal pass (verify succeeds) must NOT be flagged as exhausted.
+        assertTrue(!result.exhausted, "Normal pass should have exhausted=false")
+        assertTrue(result.issues.isEmpty(), "Normal pass should have empty issues")
+    }
+
+    @Test
+    fun `refine loop exhausted after max retries marks result exhausted with issues`() = runBlocking {
+        // Given: research + analyze + generate produce valid data, but the deterministic
+        // verify node always fails validation (failingManifestIo). The refine loop runs
+        // up to maxRetries=3 times and then gives up.
+        val researchResult = ResearchOutput(
+            status = ResearchStatus.OK,
+            project = "sharkdp/fd",
+            version = "10.2.0",
+            windows_assets = listOf(
+                WindowsAsset(
+                    url = "https://example.com/fd.zip",
+                    architecture = "64bit",
+                    asset_type = "zip",
+                    source = "release_api"
+                )
+            )
+        )
+        val analyzeResult = AnalyzeOutput(
+            status = AnalyzeStatus.OK,
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://example.com/fd.zip",
+                    hash = "abc123",
+                    extract_dir = "fd-10.2.0"
+                )
+            ),
+            bin = emptyList()
+        )
+        val manifestJson = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://example.com/fd.zip","hash":"abc123"}},"bin":["fd.exe"]}"""
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            // Refine is invoked up to 3 times (retryCount 1..3), each time verify still fails.
+            mockLLMToolCall(refineFinishTool, manifestJson) onRequestContains "manifest refiner"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        // When: agent runs through all phases with a validator that always rejects.
+        val result = createTestAgent(promptExecutor, maxIterations = 200, manifestIo = failingManifestIo)
+            .run("https://github.com/sharkdp/fd")
+
+        // Then: the result must be flagged as exhausted with the unresolved issues attached.
+        assertTrue(result.exhausted, "exhausted should be true after refine loop gives up")
+        assertTrue(result.issues.isNotEmpty(), "issues should be non-empty, got: ${result.issues}")
+        assertTrue(
+            result.issues.any { it.contains("sample structural validation error") },
+            "issues should include the validation error, got: ${result.issues}"
+        )
+        // The last known (invalid) manifest is still returned, but it must not read as success.
+        assertTrue(result.manifest.isNotBlank(), "exhausted result should still carry last manifest")
     }
 
     @Test
@@ -343,6 +427,94 @@ class ScoopManifestStrategyTest {
             "Mixed response: Top-level 'url' key should NOT exist. Manifest: ${result.manifest}")
         assertTrue(result.manifest.isNotBlank(),
             "Mixed response: Result manifest should not be blank (proves verify->nodeFinish)")
+    }
+
+    // =========================================================================
+    // P0 regression: object-form finalize_task_result in generate phase
+    //
+    // Koog 1.0.0 FinishTool<String> throws IndexOutOfBoundsException("Index -1
+    // out of bounds for length 0") when the model passes the manifest as a JSON
+    // object. The strategy now wires LenientStringFinishTool into generate/refine,
+    // which stringifies object-form results instead of crashing.
+    // =========================================================================
+
+    /**
+     * Test-only finalize tool that emits the result parameter as a JSON OBJECT
+     * (simulating the real buggy model behavior on string-typed finish tools).
+     */
+    @OptIn(InternalAgentToolsApi::class)
+    private val objectFormFinishTool = object : Tool<String, String>(
+        argsType = typeToken<String>(),
+        resultType = typeToken<String>(),
+        descriptor = ToolDescriptor(
+            name = SubgraphWithTaskUtils.FINALIZE_SUBGRAPH_TOOL_NAME,
+            description = "test-only finalize emitting object-form result",
+            requiredParameters = listOf(
+                ToolParameterDescriptor(name = "result", description = "result", type = ToolParameterType.String)
+            ),
+        ),
+    ) {
+        override fun encodeArgs(args: String, serializer: JSONSerializer): JSONObject =
+            JSONObject(mapOf("result" to Json.parseToJsonElement(args).jsonObject.toKoogJSONObject()))
+
+        override fun decodeArgs(rawArgs: JSONObject, serializer: JSONSerializer): String = ""
+
+        override fun encodeResult(result: String, serializer: JSONSerializer): JSONElement =
+            encodeArgs(result, serializer)
+
+        override fun decodeResult(rawResult: JSONElement, serializer: JSONSerializer): String = ""
+
+        override suspend fun execute(args: String): String = args
+    }
+
+    @Test
+    fun `object-form finalize result in generate phase is recovered by lenient finish tool`() = runBlocking {
+        val researchResult = ResearchOutput(
+            status = ResearchStatus.OK,
+            project = "test/app",
+            version = "1.0",
+            windows_assets = listOf(
+                WindowsAsset(
+                    url = "https://example.com/app-x64.zip",
+                    architecture = "64bit",
+                    asset_type = "zip",
+                    source = "release_api"
+                )
+            )
+        )
+        val analyzeResult = AnalyzeOutput(
+            status = AnalyzeStatus.OK,
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://example.com/app-x64.zip",
+                    hash = "abc123",
+                )
+            ),
+            bin = listOf("app.exe"),
+        )
+        val flatManifest = """{"version":"1.0","url":"https://example.com/app-x64.zip","hash":"abc123","bin":["app.exe"]}"""
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            // The model passes the manifest as an object, not as a string
+            mockLLMToolCall(objectFormFinishTool, flatManifest) onRequestContains "GENERATE phase"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val result = createTestAgent(promptExecutor, model = modelWithoutToolChoice)
+            .run("https://github.com/test/app")
+
+        assertTrue(
+            result.manifest.contains("1.0"),
+            "manifest must survive object-form finalize (no 'index -1' crash). Got: " + result.manifest,
+        )
+        assertTrue(
+            result.manifest.contains("architecture"),
+            "normalize must still run after object-form finalize. Got: " + result.manifest,
+        )
     }
 
     @Test

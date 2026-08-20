@@ -79,4 +79,26 @@ class PhaseProgressLoggerTest {
             assertEquals("[phase:$phase] completed in 1s, tokens=N/A", msg)
         }
     }
+
+    // ---------------------------------------------------------------
+    // completed() with llmCalls (retry observability)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `completed without llmCalls omits the count`() {
+        val msg = PhaseProgressLogger.completed("research", 5000, "100")
+        assertEquals("[phase:research] completed in 5s, tokens=100", msg)
+    }
+
+    @Test
+    fun `completed with llmCalls appends count at the end`() {
+        val msg = PhaseProgressLogger.completed("research", 5000, "100", 2)
+        assertEquals("[phase:research] completed in 5s, tokens=100, 2 LLM calls", msg)
+    }
+
+    @Test
+    fun `completed with llmCalls and no tokens uses NA fallback`() {
+        val msg = PhaseProgressLogger.completed("research", 5000, null, 2)
+        assertEquals("[phase:research] completed in 5s, tokens=N/A, 2 LLM calls", msg)
+    }
 }

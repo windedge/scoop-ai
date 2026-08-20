@@ -637,4 +637,70 @@ class GenerateCommandTest {
         assertEquals("run-001", cmd.runId)
         assertEquals("out.json", cmd.output)
     }
+
+    // ---------------------------------------------------------------
+    // Manifest rejection guard (manifestRejectionDetail)
+    //
+    // Regressions for the guard ordering bug: the exhausted/invalid JSON
+    // guard was checked first, so the blank-manifest branch was unreachable
+    // and an empty manifest got mislabeled "not valid JSON".
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `blank manifest reports blank message even when exhausted`() {
+        val detail = GenerateCommand.manifestRejectionDetail(
+            "", exhausted = true, issues = listOf("issue1")
+        )
+        assertEquals("no manifest generated", detail)
+    }
+
+    @Test
+    fun `blank manifest reports blank message instead of invalid JSON`() {
+        val detail = GenerateCommand.manifestRejectionDetail(
+            "   ", exhausted = false, issues = emptyList()
+        )
+        assertEquals("no manifest generated", detail)
+    }
+
+    @Test
+    fun `exhausted with valid JSON reports refine loop exhaustion`() {
+        val detail = GenerateCommand.manifestRejectionDetail(
+            """{"version":"1.0"}""",
+            exhausted = true,
+            issues = listOf("a", "b"),
+        )
+        assertEquals(
+            "manifest generation failed: refine loop exhausted with 2 unresolved issue(s): a; b",
+            detail,
+        )
+    }
+
+    @Test
+    fun `exhausted with invalid JSON still reports exhaustion not JSON error`() {
+        val detail = GenerateCommand.manifestRejectionDetail(
+            "{not json", exhausted = true, issues = listOf("x")
+        )
+        assertTrue(
+            detail != null && detail.contains("refine loop exhausted"),
+            "exhausted must win over invalid JSON, got: $detail",
+        )
+    }
+
+    @Test
+    fun `not exhausted with invalid JSON reports invalid JSON`() {
+        val detail = GenerateCommand.manifestRejectionDetail(
+            "{not json", exhausted = false, issues = emptyList()
+        )
+        assertEquals("manifest generation failed: generated manifest is not valid JSON", detail)
+    }
+
+    @Test
+    fun `valid non-blank manifest passes the guard`() {
+        val detail = GenerateCommand.manifestRejectionDetail(
+            """{"version":"1.0"}""",
+            exhausted = false,
+            issues = emptyList(),
+        )
+        assertNull(detail, "valid manifest must not be rejected")
+    }
 }

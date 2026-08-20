@@ -3,6 +3,7 @@ package com.scoopai.cli.error
 import ai.koog.agents.core.tools.ToolException
 import ai.koog.http.client.KoogHttpClientException
 import ai.koog.prompt.executor.clients.LLMClientException
+import com.scoopai.core.ScoopAiGenerationException
 import java.io.IOException
 
 /**
@@ -12,6 +13,7 @@ import java.io.IOException
  * without mocking infrastructure.
  *
  * Mapping:
+ * - [ScoopAiGenerationException] -> [LlmError] with exit code 65 (LLM_ERROR), message passed through untruncated
  * - [LLMClientException], [KoogHttpClientException] -> [LlmError] with exit code 65 (LLM_ERROR)
  * - [IOException] -> [IoError] with exit code 70 (IO_ERROR)
  * - [ToolException] -> [VerifyFailedError] with exit code 66 (VERIFY_FAILED)
@@ -32,6 +34,7 @@ private fun firstLine(message: String?, className: String): String =
  * in user-facing output.
  *
  * Mapping:
+ * - [ScoopAiGenerationException] -> [LlmError] with exit code 65 (LLM_ERROR), message passed through untruncated
  * - [LLMClientException], [KoogHttpClientException] -> [LlmError] with exit code 65 (LLM_ERROR)
  * - [IOException] -> [IoError] with exit code 70 (IO_ERROR)
  * - [ToolException] -> [VerifyFailedError] with exit code 66 (VERIFY_FAILED)
@@ -40,6 +43,11 @@ private fun firstLine(message: String?, className: String): String =
 fun classifyException(e: Throwable): CliError {
     val message = firstLine(e.message, e.javaClass.simpleName)
     return when (e) {
+        // Typed generation failure (e.g. model without function calling support).
+        // Its message is crafted for end users (multi-line cause analysis + fix
+        // hint), so it is passed through WITHOUT first-line truncation.
+        is ScoopAiGenerationException ->
+            LlmError(e.message ?: message, e)
         is LLMClientException, is KoogHttpClientException ->
             LlmError("LLM request failed: $message", e)
         is IOException ->

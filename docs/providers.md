@@ -68,9 +68,11 @@ java -jar cli.jar https://github.com/sharkdp/fd
 ```
 
 **Known pitfalls**:
-- DeepSeek's API may return `tool_choice: required` errors when using certain
-  proxy gateways. scoop-ai automatically downgrades `tool_choice` for DeepSeek
-  models to avoid this issue.
+- Some proxy gateways reject explicit `tool_choice` values. When using such a
+  gateway through the `openai-compatible` provider, scoop-ai strips the whole
+  `tool_choice` field from every request (see the
+  [openai-compatible](#openai-compatible) section); the model still calls tools
+  under the default `auto` mode.
 - See the [Double Encoding Workaround](#double-encoding-workaround) section
   below -- this applies to DeepSeek models accessed both directly and via
   `openai-compatible`.
@@ -233,28 +235,30 @@ java -jar cli.jar -P openai-compatible -m opencode/deepseek-v4-flash https://git
   provider will throw a configuration error (exit code 3).
 - The agent appends `v1/chat/completions` to the base URL automatically -- do
   not include the path in the base URL.
-- If the model ID contains "deepseek" (case-insensitive), scoop-ai
-  automatically:
-  1. Uses the DeepSeek LLM client (with the correct response schema).
-  2. Injects `LLMCapability.Thinking` for reasoning support.
-  3. Applies the `downgradeToolChoice` fix for proxy gateways that reject
-     `tool_choice: required`.
-- For non-DeepSeek models (e.g. GLM, Qwen), scoop-ai uses the OpenAI LLM
-  client to avoid DeepSeek's strict response schema.
+- **Capabilities are uniform for every model name.** scoop-ai no longer
+  special-cases DeepSeek model IDs: every openai-compatible model gets the same
+  capability set (ToolChoice included, no Thinking capability) and the
+  `tool_choice` field is unconditionally stripped from every request body
+  (`stripToolChoice`) because Koog's `setToolChoiceRequired()` has no
+  capability gating and some gateways reject the field. Model-specific
+  reasoning retry behavior is handled at runtime by
+  `ScoopManifestGenerator.modelWithoutToolChoice` (which strips the ToolChoice
+  capability), not by the factory.
+- All models route to the OpenAI LLM client (OpenAI-shaped responses).
 
 ---
 
 ## Double Encoding Workaround
 
-### The Problem
+### The Problem (historical, now fixed upstream)
 
 The Koog agent framework serialises tool call arguments using
 `kotlinx.serialization`. When an argument value is a string that already
 contains JSON (e.g. a manifest snippet or URL parameter), the framework
-double-encodes it: the inner JSON is serialised as a string, then the outer
-JSON serialises that string again.
+previously double-encoded it: the inner JSON was serialised as a string, then
+the outer JSON serialised that string again.
 
-This produces payloads like:
+This produced payloads like:
 
 ```json
 {
@@ -263,39 +267,43 @@ This produces payloads like:
 ```
 
 Most LLM providers handle this correctly. However, some proxy gateways
-(particularly those running older or stricter JSON parsers) reject the
+(particularly those running older or stricter JSON parsers) rejected the
 double-encoded payload with a parse error.
 
-### The Fix
+### The Fix (resolved in Koog 1.1.1)
 
-scoop-ai includes a `DoubleEncodingFixHttpClient` that intercepts HTTP
-request bodies before they are sent to the LLM provider. It detects
-double-encoded arguments and unwraps them to a single encoding level.
+Koog 1.1.1 (issue #2096) fixed the root cause of the double encoding in the
+OpenAI/DeepSeek clients, so no client-side workaround is needed anymore.
 
-The fix is applied transparently -- no user configuration is needed.
+scoop-ai previously shipped a `DoubleEncodingFixHttpClient` interceptor
+(`fixDoubleEncoding`) that unwrapped double-encoded arguments/tool-result
+content on the outgoing request body. As of the Koog 1.1.1 upgrade this
+interceptor -- and its helpers `fixAssistantMessage` / `fixToolMessage` /
+`unwrapIfDoubleEncoded` -- has been removed from
+`core/.../llm/RequestInterceptors.kt` and from the `LlmProviderFactory`
+interceptor chain. A regression test in
+`tools/.../llm/ReasoningRetryStubGatewayTest` asserts the real request bodies
+captured from a stub gateway are single-encoded.
 
-**Code reference**:
-- `DoubleEncodingFixHttpClient`:
-  `core/src/main/kotlin/com/scoopai/core/llm/DoubleEncodingFixHttpClient.kt`
-- Integration in `LlmProviderFactory`:
-  `tools/src/jvmMain/kotlin/com/scoopai/tools/llm/LlmProviderFactory.kt`
-  (see the `fixDoubleEncoding` interceptor in the `openai-compatible` branch)
+The fix was applied transparently -- no user configuration was needed, and the
+remaining request/response interceptors (`stripToolChoice`,
+`reasoningFallbackToContent`, `normalizeMissingCreated`) are unaffected.
 
-### Which providers are affected?
+### Which providers were affected?
 
-| Provider           | Double encoding fix applied |
-|--------------------|-----------------------------|
-| deepseek           | Yes (built-in client)       |
-| openai             | Yes (built-in client)       |
-| anthropic          | Yes (built-in client)       |
-| openai-compatible  | Yes (via `fixDoubleEncoding` interceptor) |
-| ollama             | No (local, no HTTP overhead)|
-| openrouter         | Yes (via OpenAI client)     |
+| Provider           | Double encoding workaround |
+|--------------------|----------------------------|
+| deepseek           | Was built-in; fixed in Koog 1.1.1 |
+| openai             | Was built-in; fixed in Koog 1.1.1 |
+| anthropic          | Was built-in; fixed in Koog 1.1.1 |
+| openai-compatible  | Was via `fixDoubleEncoding` interceptor; removed in Koog 1.1.1 |
+| ollama             | No HTTP overhead |
+| openrouter         | Was via OpenAI client; fixed in Koog 1.1.1 |
 
-The Koog 1.0.0 DeepSeek and OpenAI built-in clients already handle
-double-encoding internally. The `openai-compatible` provider uses an
-additional `InterceptingHttpClient` with the `fixDoubleEncoding` interceptor
-for extra safety.
+The Koog 1.0.0 DeepSeek and OpenAI built-in clients already handled
+double-encoding internally. The `openai-compatible` provider used an
+additional `InterceptingHttpClient`, which previously wrapped the
+`fixDoubleEncoding` interceptor for extra safety (now removed).
 
 ### Debugging double encoding issues
 

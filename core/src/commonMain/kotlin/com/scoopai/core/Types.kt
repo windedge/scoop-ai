@@ -10,6 +10,11 @@ import kotlinx.serialization.Serializable
  * @property suggestedAppName The app name extracted from the write tool's `path` parameter,
  *   or `null` if no write tool call was made.
  * @property noAssets True when the project has no Windows assets at all.
+ * @property exhausted True when the refine loop gave up after [maxRetries] attempts
+ *   (the returned manifest still contains unresolved validation/review issues).
+ *   Frontends must treat an exhausted result as NOT ready (e.g. show red, not green).
+ * @property issues The list of unresolved validation/review errors captured when [exhausted]
+ *   is true. Empty for a successful run.
  * @property tokenUsage Token usage statistics, or null if not tracked.
  * @property stages Per-phase execution statistics.
  */
@@ -18,6 +23,8 @@ data class ManifestResult(
     val manifest: String,
     val suggestedAppName: String? = null,
     val noAssets: Boolean = false,
+    val exhausted: Boolean = false,
+    val issues: List<String> = emptyList(),
     val tokenUsage: TokenUsage? = null,
     /** Total elapsed time in milliseconds */
     val durationMs: Long = 0L,

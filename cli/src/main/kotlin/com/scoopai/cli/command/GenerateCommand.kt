@@ -277,8 +277,21 @@ open class GenerateCommand(
                 }
                 throw NoAssetsError("No Windows assets found for the given project.")
             }
-            if (manifest.isBlank()) {
-                throw GeneralError("no manifest generated")
+            // ── Manifest rejection guard ────────────────────────────
+            // Blank manifest is reported first (clear "no manifest generated"
+            // message), then exhausted / invalid-JSON (NOT ready and must NOT
+            // be reported as a success). Ordering matters: checking exhausted/
+            // invalid first would make the blank branch unreachable and
+            // mislabel an empty manifest as "not valid JSON".
+            val rejection = manifestRejectionDetail(manifest, result.exhausted, result.issues)
+            if (rejection != null) {
+                logger.warn { "[generate] Manifest NOT ready: $rejection" }
+                if (isJsonOutput) {
+                    echo(JsonFormatter.format(result))
+                } else if (result.exhausted && result.issues.isNotEmpty()) {
+                    result.issues.forEach { echo("Issue: $it", err = true) }
+                }
+                throw GeneralError(rejection)
             }
 
             // ── JSON mode: output JSON to stdout, still write file ─────
@@ -417,5 +430,37 @@ open class GenerateCommand(
         /** Deprecation warning text for --no-cache flag. Exposed as constant for test verification. */
         internal const val NO_CACHE_DEPRECATION_WARNING =
             "WARNING: --no-cache is deprecated. Use --cache=discard instead."
+
+        /**
+         * True when [manifest] is a parseable JSON object (used to detect
+         * exhausted/invalid manifests that must not be reported as success).
+         */
+        internal fun isManifestValidJson(manifest: String): Boolean = try {
+            kotlinx.serialization.json.Json.parseToJsonElement(manifest) is kotlinx.serialization.json.JsonObject
+        } catch (_: Exception) {
+            false
+        }
+
+        /**
+         * Computes the rejection reason message when a generation result must
+         * NOT be reported as success; returns null when it passes the guard.
+         *
+         * Ordering matters: a blank manifest is reported with its own
+         * "no manifest generated" message BEFORE the exhausted/invalid-JSON
+         * checks, otherwise an empty manifest would be mislabeled as
+         * "not valid JSON". All rejection paths fall through the caller's
+         * [GeneralError] exit code (GENERAL), keeping the CLI semantics.
+         */
+        internal fun manifestRejectionDetail(
+            manifest: String,
+            exhausted: Boolean,
+            issues: List<String>,
+        ): String? = when {
+            manifest.isBlank() -> "no manifest generated"
+            exhausted -> "manifest generation failed: refine loop exhausted with " +
+                "${issues.size} unresolved issue(s): ${issues.joinToString("; ")}"
+            !isManifestValidJson(manifest) -> "manifest generation failed: generated manifest is not valid JSON"
+            else -> null
+        }
     }
 }
