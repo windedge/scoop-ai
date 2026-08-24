@@ -10,6 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > sections below document completed work that shipped as part of the 0.1.4
 > artifact.
 
+## [0.1.5] - 2026-08-27
+
+### Added
+
+- `ScoopManifestGenerator.phaseOutputListener`: optional in-memory callback invoked
+  once per completed phase (research / analyze / generate / refine) with the raw,
+  unmasked phase output JSON. Merged with the existing artifacts disk writer so
+  both persist simultaneously. Intended for in-memory checkpoints only; content
+  is not masked, so it must not be persisted in sensitive scenarios.
+- `DefaultScoopAiFactory.createGenerator` `onPhaseOutput` parameter transparently
+  forwarded to `ScoopManifestGenerator.phaseOutputListener`.
+- `ResumeData.fromPhaseOutputs` factory: builds a `ResumeData` from raw in-memory
+  phase output JSON strings for in-memory checkpoint resume. ANALYZE needs
+  research; GENERATE needs research + analyze; returns null on missing or corrupt
+  input; ignores irrelevant (e.g. refine/generate) outputs.
+- Tests: `ResumeData.fromPhaseOutputs` round-trip (ANALYZE/GENERATE, missing /
+  corrupt JSON, ignored extras), `phaseOutputListener` mock-executor flow, and
+  `DefaultScoopAiFactory` `onPhaseOutput` construction.
+
 ## [0.3.0] - 2026-06-18
 
 ### Added
@@ -229,6 +248,7 @@ Unreleased alongside 0.3.0; documents the clikt subcommand architecture introduc
 - No internationalization (English only, no Chinese README).
 
 <!-- TODO: replace the placeholder repo URL below with the real repository once the first GitHub Release is cut -->
+[0.1.5]: https://github.com/placeholder/scoop-ai/releases/tag/v0.1.5
 [0.1.4]: https://github.com/placeholder/scoop-ai/releases/tag/v0.1.4
 [0.3.0]: https://github.com/placeholder/scoop-ai/releases/tag/v0.3.0
 [0.2.0]: https://github.com/placeholder/scoop-ai/releases/tag/v0.2.0

@@ -23,6 +23,12 @@ object DefaultScoopAiFactory {
         onPhase: ((String) -> Unit)? = null,
         artifacts: SensitiveArtifactWriter? = null,
         usedAppNamesProvider: (suspend () -> Set<String>)? = UsedAppNameScanner::scanDefault,
+        /**
+         * In-memory listener for raw, un-masked phase output JSON (research /
+         * analyze / generate / refine). Forwarded to
+         * [ScoopManifestGenerator]; intended for in-memory checkpoints only.
+         */
+        onPhaseOutput: ((String, String) -> Unit)? = null,
     ): ScoopManifestGenerator {
         val resolved = ProviderConfigResolver.resolve(
             cliProvider = config.provider,
@@ -62,6 +68,7 @@ object DefaultScoopAiFactory {
             gitHubApi = gitHubApi,
             archiveInspector = archiveInspector,
             onPhase = onPhase,
+            phaseOutputListener = onPhaseOutput,
             artifacts = artifacts,
             usedAppNamesProvider = usedAppNamesProvider,
         )

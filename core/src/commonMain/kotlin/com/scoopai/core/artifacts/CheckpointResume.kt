@@ -103,6 +103,63 @@ data class ResumeData(
     val researchOutput: ResearchOutput? = null,
     val analyzeOutput: AnalyzeOutput? = null,
 ) {
+    companion object {
+        /**
+         * Builds a [ResumeData] from raw in-memory phase output JSON strings
+         * (research / analyze), as delivered by [ScoopManifestGenerator.phaseOutputListener]
+         * or captured from artifacts.
+         *
+         * The factory only consumes the JSON strings it actually needs for the
+         * requested [fromStage]; any additional/ignored outputs (e.g. refine,
+         * generate) are simply not part of the signature and are discarded.
+         *
+         * Stage requirements:
+         * - [CheckpointResume.ResumeStage.ANALYZE]: needs research
+         * - [CheckpointResume.ResumeStage.GENERATE]: needs research + analyze
+         *
+         * Returns null when a required input is missing or fails to decode.
+         *
+         * @param fromStage The stage to resume from.
+         * @param runId The run identifier.
+         * @param researchJson Serialized [ResearchOutput] JSON, or null.
+         * @param analyzeJson Serialized [AnalyzeOutput] JSON, or null.
+         */
+        fun fromPhaseOutputs(
+            fromStage: CheckpointResume.ResumeStage,
+            runId: String,
+            researchJson: String?,
+            analyzeJson: String?,
+        ): ResumeData? {
+            return try {
+                when (fromStage) {
+                    CheckpointResume.ResumeStage.ANALYZE -> {
+                        val research = researchJson ?: return null
+                        val researchOutput = phaseJson.decodeFromString<ResearchOutput>(research)
+                        ResumeData(
+                            fromStage = fromStage,
+                            runId = runId,
+                            researchOutput = researchOutput,
+                        )
+                    }
+                    CheckpointResume.ResumeStage.GENERATE -> {
+                        val research = researchJson ?: return null
+                        val analyze = analyzeJson ?: return null
+                        val researchOutput = phaseJson.decodeFromString<ResearchOutput>(research)
+                        val analyzeOutput = phaseJson.decodeFromString<AnalyzeOutput>(analyze)
+                        ResumeData(
+                            fromStage = fromStage,
+                            runId = runId,
+                            researchOutput = researchOutput,
+                            analyzeOutput = analyzeOutput,
+                        )
+                    }
+                }
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+
     /**
      * Convert this [ResumeData] into a Koog [AgentCheckpointData] for [Persistence.runFromCheckpoint].
      *

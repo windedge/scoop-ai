@@ -172,6 +172,87 @@ class CheckpointResumeTest {
     }
 
     // ---------------------------------------------------------------
+    // fromPhaseOutputs factory
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `fromPhaseOutputs ANALYZE returns data when research json provided`() {
+        val resume = ResumeData.fromPhaseOutputs(
+            fromStage = CheckpointResume.ResumeStage.ANALYZE,
+            runId = "run-123",
+            researchJson = sampleResearchJson,
+            analyzeJson = null,
+        )
+        assertNotNull(resume, "Should return ResumeData when research json provided")
+        assertEquals(CheckpointResume.ResumeStage.ANALYZE, resume.fromStage)
+        assertEquals("run-123", resume.runId)
+        assertEquals("owner/repo", resume.researchOutput?.project)
+        assertNull(resume.analyzeOutput, "analyze output should be absent for ANALYZE stage")
+    }
+
+    @Test
+    fun `fromPhaseOutputs ANALYZE returns null when research json missing`() {
+        val resume = ResumeData.fromPhaseOutputs(
+            fromStage = CheckpointResume.ResumeStage.ANALYZE,
+            runId = "run-123",
+            researchJson = null,
+            analyzeJson = sampleAnalyzeJson,
+        )
+        assertNull(resume, "ANALYZE requires research json")
+    }
+
+    @Test
+    fun `fromPhaseOutputs GENERATE returns data when research and analyze provided`() {
+        val resume = ResumeData.fromPhaseOutputs(
+            fromStage = CheckpointResume.ResumeStage.GENERATE,
+            runId = "run-123",
+            researchJson = sampleResearchJson,
+            analyzeJson = sampleAnalyzeJson,
+        )
+        assertNotNull(resume, "Should return ResumeData when both jsons provided")
+        assertEquals(CheckpointResume.ResumeStage.GENERATE, resume.fromStage)
+        assertEquals("owner/repo", resume.researchOutput?.project)
+        assertEquals("portable_zip", resume.analyzeOutput?.strategy)
+    }
+
+    @Test
+    fun `fromPhaseOutputs GENERATE returns null when analyze json missing`() {
+        val resume = ResumeData.fromPhaseOutputs(
+            fromStage = CheckpointResume.ResumeStage.GENERATE,
+            runId = "run-123",
+            researchJson = sampleResearchJson,
+            analyzeJson = null,
+        )
+        assertNull(resume, "GENERATE requires both research and analyze jsons")
+    }
+
+    @Test
+    fun `fromPhaseOutputs returns null on corrupt json`() {
+        val resume = ResumeData.fromPhaseOutputs(
+            fromStage = CheckpointResume.ResumeStage.GENERATE,
+            runId = "run-123",
+            researchJson = "{not valid json!!!",
+            analyzeJson = sampleAnalyzeJson,
+        )
+        assertNull(resume, "Corrupt research json should yield null")
+    }
+
+    @Test
+    fun `fromPhaseOutputs ignores extra analyze output for ANALYZE stage`() {
+        // The factory only consumes the untyped JSON strings it is given; any
+        // extra/ignored outputs (refine, generate) never reach the signature.
+        // For ANALYZE, a provided analyzeJson must be ignored (not decoded).
+        val resume = ResumeData.fromPhaseOutputs(
+            fromStage = CheckpointResume.ResumeStage.ANALYZE,
+            runId = "run-123",
+            researchJson = sampleResearchJson,
+            analyzeJson = sampleAnalyzeJson, // ignored for ANALYZE
+        )
+        assertNotNull(resume)
+        assertNull(resume.analyzeOutput, "analyze output should be ignored for ANALYZE stage")
+    }
+
+    // ---------------------------------------------------------------
     // toAgentCheckpointData
     // ---------------------------------------------------------------
 

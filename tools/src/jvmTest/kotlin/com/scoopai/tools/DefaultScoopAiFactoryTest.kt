@@ -60,6 +60,21 @@ class DefaultScoopAiFactoryTest {
         assertTrue(!phaseSeen) // only invoked during generate()
     }
 
+    @Test
+    fun `createGenerator with onPhaseOutput callback constructs successfully`() {
+        var outputSeen = false
+        val generator = DefaultScoopAiFactory.createGenerator(
+            config = ScoopAiConfig(
+                provider = "deepseek",
+                apiKey = "sk-fake",
+                nonInteractive = true,
+            ),
+            onPhaseOutput = { _, _ -> outputSeen = true },
+        )
+        assertNotNull(generator)
+        assertTrue(!outputSeen) // only invoked during generate()
+    }
+
     // ---------------------------------------------------------------
     // nonInteractive wiring
     // ---------------------------------------------------------------

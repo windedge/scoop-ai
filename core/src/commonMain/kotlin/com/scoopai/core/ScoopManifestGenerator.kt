@@ -57,8 +57,18 @@ class ScoopManifestGenerator(
     private val gitHubApi: GitHubApi? = null,
     /** Archive inspector for prefetching persist/search data before the LLM phase. */
     private val archiveInspector: ArchiveInspector? = null,
-    /** Callback invoked when a phase starts. Used by cli ConsoleProgress overlay. */
+    /**
+     * Callback invoked when a phase starts. Used by cli ConsoleProgress overlay.
+     */
     private val onPhase: ((String) -> Unit)? = null,
+    /**
+     * In-memory listener invoked once per completed phase (research / analyze /
+     * generate / refine) with the raw, un-masked phase output JSON
+     * (`phaseName, output`). Intended for in-memory checkpoints only (e.g.
+     * [com.scoopai.core.artifacts.ResumeData.fromPhaseOutputs]); do NOT persist
+     * this content in sensitive scenarios, as it is not masked.
+     */
+    private val phaseOutputListener: ((phaseName: String, output: String) -> Unit)? = null,
     /** Observer for recording per-phase execution statistics. If null, creates a default instance. */
     private val observer: GenerationObserver = GenerationObserver(),
     /**
@@ -157,6 +167,17 @@ class ScoopManifestGenerator(
         val phaseWrite: ((String, String) -> Unit)? = artifacts?.let { writer ->
             { phase, content -> writer.writePhase(phase, content) }
         }
+        // Wire both the artifact disk writer and the in-memory listener into the
+        // strategy's onPhaseOutput so neither side is lost when both are present.
+        val onPhaseOutput = if (phaseWrite != null || phaseOutputListener != null) {
+            { phase: String, out: String ->
+                phaseWrite?.invoke(phase, out)
+                phaseOutputListener?.invoke(phase, out)
+                Unit
+            }
+        } else {
+            null
+        }
         val strategy = scoopManifestStrategy(
             researchTools = researchTools,
             analyzeTools = analyzeTools,
@@ -174,7 +195,7 @@ class ScoopManifestGenerator(
                 onPhase?.invoke(name)
             },
             observer = observer,
-            onPhaseOutput = phaseWrite,
+            onPhaseOutput = onPhaseOutput,
             usedAppNamesProvider = usedAppNamesProvider,
         )
 

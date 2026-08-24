@@ -14,6 +14,7 @@ import com.scoopai.core.observer.GenerationObserver
 import com.scoopai.core.tools.api.ManifestIo
 import ai.koog.serialization.typeToken
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.decodeFromString
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -846,6 +847,76 @@ class ScoopManifestGeneratorMockTest {
         assertTrue(result.manifest.contains("10.2.0"), "manifest should contain version (storage-backed finalManifestKey)")
         assertTrue(result.manifest.contains("fd.exe"), "manifest should contain bin entry (storage-backed)")
         assertTrue(result.manifest.isNotBlank(), "manifest should not be blank (buildFinalResult via storage)")
+    }
+
+    // =========================================================================
+    // phaseOutputListener: in-memory phase output callback (0.1.5)
+    // =========================================================================
+
+    @Test
+    fun `phaseOutputListener is invoked once per phase with parseable research json`() = runBlocking {
+        val researchResult = ResearchOutput(
+            status = ResearchStatus.OK,
+            project = "sharkdp/fd",
+            version = "10.2.0",
+            suggested_app_name = "fd",
+            windows_assets = listOf(
+                WindowsAsset(
+                    url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                    architecture = "64bit",
+                    asset_type = "zip",
+                    source = "release_api"
+                )
+            )
+        )
+        val analyzeResult = AnalyzeOutput(
+            status = AnalyzeStatus.OK,
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                    hash = "abc123",
+                    extract_dir = "fd-v10.2.0-x86_64-pc-windows-msvc"
+                )
+            ),
+            bin = emptyList()
+        )
+        val manifestJson = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip","hash":"abc123","extract_dir":"fd-v10.2.0-x86_64-pc-windows-msvc"}},"bin":["fd.exe"]}"""
+
+        val captured = mutableMapOf<String, String>()
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"No issues found. Manifest looks good."}""") onCondition { text -> text.trim().startsWith("{") }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = model,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+            phaseOutputListener = { phase, out -> captured[phase] = out },
+        )
+
+        generator.generate("https://github.com/sharkdp/fd")
+
+        // research / analyze / generate each fired once; refine did not run.
+        assertEquals("research", captured.keys.firstOrNull { it == "research" })
+        assertEquals("analyze", captured.keys.firstOrNull { it == "analyze" })
+        assertEquals("generate", captured.keys.firstOrNull { it == "generate" })
+        assertEquals(setOf("research", "analyze", "generate"), captured.keys)
+
+        // The research payload is raw, un-masked phase JSON decodeable to ResearchOutput.
+        val researchJson = captured.getValue("research")
+        val decoded = com.scoopai.core.agent.phaseJson
+            .decodeFromString<ResearchOutput>(researchJson)
+        assertEquals("sharkdp/fd", decoded.project)
+        assertEquals("fd", decoded.suggested_app_name)
     }
 
     // =========================================================================
