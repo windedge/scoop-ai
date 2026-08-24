@@ -93,6 +93,7 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
   "64bit": { "url": "...", "bin": [["app-3.1.0-x86_64.exe", "app"]] }
   ```
 - The different filenames per architecture are intentional (versioned exe pattern).
+- However, if `bin` is defined inside an architecture block AND a top-level `bin` also exists, that is a **conflict** — flag it as an ERROR. A manifest must have `bin` in exactly one location: either top-level `bin` OR architecture-specific `bin`, never both (Scoop CLI rejects a manifest defining both with "Both top-level 'bin' and architecture-specific 'bin' are defined").
 
 ### 11. homepage protocol
 - If `homepage` uses `http://`, suggest `https://` unless the site is known not to support HTTPS.

@@ -18,6 +18,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class ManifestUtilsTest {
@@ -1742,6 +1743,67 @@ class ManifestUtilsTest {
         val input = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc"}"""
         val result = normalizeBin(input)
         assertEquals(input, result)
+    }
+
+    // ---------------------------------------------------------------
+    // resolveDualBinConflicts
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `resolveDualBinConflicts returns original when no top-level bin`() {
+        val input = """{"version":"1.0","architecture":{"64bit":{"url":"https://example.com/a.exe","hash":"abc"}}}"""
+        val obj = parseJsonObject(input)
+        val result = resolveDualBinConflicts(obj)
+        assertSame(obj, result)
+        assertEquals(obj, result)
+    }
+
+    @Test
+    fun `resolveDualBinConflicts keeps top-level bin when no architecture bin`() {
+        val input = """{"version":"1.0","bin":"app.exe","url":"https://example.com/app.exe","hash":"abc"}"""
+        val obj = parseJsonObject(input)
+        val result = resolveDualBinConflicts(obj)
+        assertSame(obj, result)
+        assertTrue(result.containsKey("bin"))
+    }
+
+    @Test
+    fun `resolveDualBinConflicts keeps architecture bin when architecture has no bin`() {
+        val input = """{"version":"1.0","architecture":{"64bit":{"url":"https://example.com/a.exe","hash":"abc","bin":"app.exe"}}}"""
+        val obj = parseJsonObject(input)
+        val result = resolveDualBinConflicts(obj)
+        assertSame(obj, result)
+        assertFalse(result.containsKey("bin"))
+    }
+
+    @Test
+    fun `resolveDualBinConflicts removes string top-level bin when architecture has bin`() {
+        val input = """{"version":"1.0","bin":"app.exe","architecture":{"64bit":{"url":"https://example.com/a.exe","hash":"abc","bin":["app-3.0-x86_64.exe","app"]}}}"""
+        val obj = parseJsonObject(input)
+        val result = resolveDualBinConflicts(obj)
+        assertFalse(result.containsKey("bin"), "top-level bin should be removed")
+        val archBin = result["architecture"]!!.jsonObject["64bit"]!!.jsonObject["bin"]!!
+        assertEquals(2, archBin.jsonArray.size)
+        assertEquals("app-3.0-x86_64.exe", archBin.jsonArray[0].jsonPrimitive.content)
+    }
+
+    @Test
+    fun `resolveDualBinConflicts removes array top-level bin when architecture has bin`() {
+        val input = """{"version":"1.0","bin":["app.exe"],"architecture":{"64bit":{"url":"https://example.com/a.exe","hash":"abc","bin":"app.exe"}}}"""
+        val obj = parseJsonObject(input)
+        val result = resolveDualBinConflicts(obj)
+        assertFalse(result.containsKey("bin"), "array top-level bin should be removed")
+        assertEquals("app.exe", result["architecture"]!!.jsonObject["64bit"]!!.jsonObject["bin"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `resolveDualBinConflicts removes top-level bin when multiple architectures have bin`() {
+        val input = """{"version":"1.0","bin":"app.exe","architecture":{"64bit":{"url":"https://example.com/a.exe","hash":"abc","bin":"app-x64.exe"},"arm64":{"url":"https://example.com/b.exe","hash":"def","bin":"app-arm64.exe"}}}"""
+        val obj = parseJsonObject(input)
+        val result = resolveDualBinConflicts(obj)
+        assertFalse(result.containsKey("bin"), "top-level bin should be removed with multi-arch bin")
+        assertEquals("app-x64.exe", result["architecture"]!!.jsonObject["64bit"]!!.jsonObject["bin"]!!.jsonPrimitive.content)
+        assertEquals("app-arm64.exe", result["architecture"]!!.jsonObject["arm64"]!!.jsonObject["bin"]!!.jsonPrimitive.content)
     }
 
     // ---------------------------------------------------------------

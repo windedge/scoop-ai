@@ -17,6 +17,7 @@ import com.scoopai.core.agent.nodes.enforceArchitectureWrap
 import com.scoopai.core.agent.nodes.normalizeHomepage
 import com.scoopai.core.agent.nodes.removeInvalidTopLevelFields
 import com.scoopai.core.agent.nodes.normalizeBin
+import com.scoopai.core.agent.nodes.resolveDualBinConflicts
 import com.scoopai.core.agent.nodes.checkAutoupdateVersionPlaceholder
 import com.scoopai.core.agent.nodes.validatePersistPaths
 import com.scoopai.core.agent.nodes.checkAppNameConflict
@@ -306,13 +307,10 @@ fun scoopManifestStrategy(
 // ---------------------------------------------------------------------------
 
 /**
- * Applies deterministic normalization rules to a manifest after LLM generation.
- *
- * Currently: autoFillBinFromShortcuts → normalizeEnvSet → enforceArchitectureWrap
- * → normalizeHomepage → removeInvalidTopLevelFields → normalizeBin.
- * Order matters: autoFillBinFromShortcuts reads `url` and `architecture` from the
- * manifest, so it must run before enforceArchitectureWrap. See each function for
- * details on individual rules.
+ * Applies deterministic normalization rules to a manifest after LLM generation:
+ * autoFillBinFromShortcuts → normalizeEnvSet → enforceArchitectureWrap →
+ * normalizeHomepage → removeInvalidTopLevelFields → normalizeBin → resolveDualBinConflicts.
+ * autoFillBinFromShortcuts must run before enforceArchitectureWrap.
  */
 internal fun normalizeManifest(manifestJson: String): String {
     var result = manifestJson
@@ -345,6 +343,15 @@ internal fun normalizeManifest(manifestJson: String): String {
     if (afterBinNorm != result) {
         logger.info { "[normalize] Manifest modified by normalizeBin" }
         result = afterBinNorm
+    }
+    val afterBinConflicts = try {
+        Json.parseToJsonElement(result) as? JsonObject
+    } catch (_: Exception) {
+        null
+    }?.let { resolveDualBinConflicts(it) }
+    if (afterBinConflicts != null && afterBinConflicts.toString() != result) {
+        logger.info { "[normalize] Manifest modified by resolveDualBinConflicts" }
+        result = afterBinConflicts.toString()
     }
     return result
 }

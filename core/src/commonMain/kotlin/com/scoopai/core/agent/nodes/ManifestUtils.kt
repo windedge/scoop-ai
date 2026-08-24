@@ -1126,3 +1126,12 @@ private fun normalizeSingleBinElement(element: JsonElement): JsonElement? {
     val first = array[0]
     return first as? JsonPrimitive
 }
+
+/** Removes top-level `bin` when architecture-specific `bin` entries exist. */
+internal fun resolveDualBinConflicts(manifest: JsonObject): JsonObject {
+    val topBin = manifest["bin"] ?: return manifest
+    val arch = manifest["architecture"] as? JsonObject ?: return manifest
+    val hasArchBin = arch.values.any { (it as? JsonObject)?.containsKey("bin") == true }
+    if (!hasArchBin) return manifest
+    return JsonObject(manifest.toMutableMap().apply { remove("bin") })
+}

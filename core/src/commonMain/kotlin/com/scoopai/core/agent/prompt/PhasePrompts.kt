@@ -519,6 +519,7 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
 
 - For dual-mode apps (editors, terminals, IDEs, note-taking apps that have both GUI and CLI modes): include the exe in BOTH `bin` and `shortcuts`.
 - For GUI apps with a main executable: include the main exe in BOTH `bin` AND `shortcuts`. Users may want to launch from CLI (e.g. `librecad file.dxf`). Only omit `bin` if the app has NO usable CLI interface (e.g. a system tray utility).
+- **`bin` placement is mutually exclusive**: if bins are placed inside architecture blocks (architecture-specific `bin`), do NOT also define a top-level `bin`. Choose exactly one location for the `bin` field per manifest: either top-level `bin` OR architecture-specific `bin`, never both. A manifest with both triggers Scoop's install-time error "Both top-level 'bin' and architecture-specific 'bin' are defined" and is rejected.
 - **`shortcuts` name**: Use the full application name as shown in the project's official title or branding (e.g. "Zed Attack Proxy" not "ZAP", "Visual Studio Code" not "VSCode").
 
 ### Fields to preserve exactly (copy verbatim):
