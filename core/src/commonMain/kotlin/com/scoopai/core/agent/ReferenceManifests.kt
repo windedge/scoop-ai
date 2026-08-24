@@ -331,6 +331,55 @@ object ReferenceManifests {
     }
 }""".trimIndent()
 
+    /**
+     * NSIS GUI-only desktop app (official extras bucket `pot.json` pattern).
+     *
+     * Pure GUI apps have no CLI use case, so they legitimately omit `bin` and
+     * define only `shortcuts`. The installer URLs carry `#/dl.7z` so Scoop
+     * extracts the NSIS payload with 7-Zip before installation.
+     */
+    val POT_DESKTOP = """{
+    "version": "3.0.7",
+    "description": "A powerful text selection translation and OCR software",
+    "homepage": "https://pot-app.com",
+    "license": "GPL-3.0-only",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/pot-app/pot-desktop/releases/download/3.0.7/pot_3.0.7_x64-setup.exe#/dl.7z",
+            "hash": "0a6ac5309bfc41234d58cf6615a779c66d167d3a0da5542a0de2ea118fc6bc56"
+        },
+        "32bit": {
+            "url": "https://github.com/pot-app/pot-desktop/releases/download/3.0.7/pot_3.0.7_x86-setup.exe#/dl.7z",
+            "hash": "ff9b69bea285ca60b9f0075a740dc022f9baf873221b14e2c20a960502f09761"
+        },
+        "arm64": {
+            "url": "https://github.com/pot-app/pot-desktop/releases/download/3.0.7/pot_3.0.7_arm64-setup.exe#/dl.7z",
+            "hash": "fd478816fa62c137bc0c187a09b82aa37c52b8ccbd441ef715e87c02a45dbc0e"
+        }
+    },
+    "post_install": "Remove-Item \"${'$'}dir\\`${'$'}*\", \"${'$'}dir\\Uninstall*\" -Force -Recurse -ErrorAction Ignore",
+    "shortcuts": [
+        [
+            "pot.exe",
+            "Pot"
+        ]
+    ],
+    "checkver": { "github": "https://github.com/pot-app/pot-desktop" },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/pot-app/pot-desktop/releases/download/${'$'}version/pot_${'$'}version_x64-setup.exe#/dl.7z"
+            },
+            "32bit": {
+                "url": "https://github.com/pot-app/pot-desktop/releases/download/${'$'}version/pot_${'$'}version_x86-setup.exe#/dl.7z"
+            },
+            "arm64": {
+                "url": "https://github.com/pot-app/pot-desktop/releases/download/${'$'}version/pot_${'$'}version_arm64-setup.exe#/dl.7z"
+            }
+        }
+    }
+}""".trimIndent()
+
     val ALL = listOf(
         "### Simple GitHub autoupdate (no checksum)\n$RIPGREP",
         "### GitHub autoupdate + checksums.txt (bundle hash)\n$LAZYGIT",
@@ -341,6 +390,7 @@ object ReferenceManifests {
         "### env_add_path instead of bin (version manager with shims)\n$PYENV_WIN",
         "### NuGet nupkg with RELEASES hash (Squirrel AutoUpdater)\n$CARNAC_NUPKG",
         "### InnoSetup installer (innosetup:true triggers innounp auto-extraction)\n$BLOBSAVER",
-        "### Tauri NSIS installer (#/dl.7z + Remove-Item \$PLUGINSDIR, no double extraction)\n$TAURI_NSIS_MANIFEST"
+        "### Tauri NSIS installer (#/dl.7z + Remove-Item \$PLUGINSDIR, no double extraction)\n$TAURI_NSIS_MANIFEST",
+        "### NSIS GUI-only app (shortcuts only, no bin, #/dl.7z extraction)\n$POT_DESKTOP"
     ).joinToString("\n\n---\n\n")
 }

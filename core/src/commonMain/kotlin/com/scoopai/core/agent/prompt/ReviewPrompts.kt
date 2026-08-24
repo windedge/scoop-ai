@@ -53,6 +53,11 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
 - Flag if `bin` is missing (for tools that provide CLI commands).
 - For GUI applications, both `bin` and `shortcuts` should be present. The main exe should be in both fields so users can launch from CLI too. Only omit `bin` if the app has NO usable CLI interface (e.g. a system tray utility).
 
+### 4b. NSIS/InnoSetup installers extracted via `#/dl.7z`
+- If an asset URL contains the `#/dl.7z` fragment, Scoop extracts the NSIS/InnoSetup installer contents with 7-Zip before installation, so any executable referenced by `bin` or `shortcuts` WILL exist after extraction. Do NOT report "will not exist after extracting" (or similar) issues for such manifests.
+- Only report a bin-path issue if the asset URL lacks `#/dl.7z` AND the asset is genuinely a zip archive containing an installer.
+- GUI-only apps may legitimately define `shortcuts` without a top-level `bin`; a missing `bin` alone is not an error.
+
 ### 5. autoupdate.hash completeness
 - Check if `autoupdate` exists and has a `hash` block.
 - If `autoupdate` exists but is missing `hash`, flag it as a warning.

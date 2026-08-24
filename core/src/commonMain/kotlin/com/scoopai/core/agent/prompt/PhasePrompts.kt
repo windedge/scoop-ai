@@ -240,6 +240,7 @@ $researchJson
 1. **First choose the preferred installation strategy before doing deep analysis**:
    - **Always prefer the LATEST version.** Do NOT downgrade to an older version just because it has a ZIP asset.
    - Within the same version, prefer portable ZIP over installer.
+   - **GUI-only apps (no CLI use case at all, e.g. system tray utilities)**: you MAY omit `bin` and define only `shortcuts`.
    - If the latest version has no ZIP, use the installer (InnoSetup, NSIS, MSI, etc.).
    - Low-priority candidates should be ignored once a good manifest path is found.
 
@@ -639,6 +640,11 @@ If the issue mentions an app name conflict with an existing Scoop bucket manifes
 1. Choose a new, unique name (e.g. prefix with the repo name or GitHub owner).
 2. Update `suggested_app_name` in the manifest path accordingly.
 3. Avoid common single-word names like `micro`, `app`, `tool`, etc.
+
+## NSIS `#/dl.7z` Extraction Context
+- If an asset URL already contains the `#/dl.7z` fragment, Scoop extracts the installer's inner payload with 7-Zip before installation, so any executable referenced by `bin` or `shortcuts` DOES exist after extraction. A review issue claiming a bin/shortcut target "will not exist after extracting" for such an URL is a **false positive** — keep the manifest unchanged and explain this in your reply.
+- If the asset is genuinely an installer-bearing zip WITHOUT `#/dl.7z`, fix it by either appending `#/dl.7z` to the url or switching to a portable (non-installer) asset.
+- GUI-only apps may legitimately omit `bin` and keep only `shortcuts`; do not add a `bin` field just because a review issue mentions a missing bin.
 
 ## Attempt
 ${ctx.retryCount} / 3
