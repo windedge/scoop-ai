@@ -82,6 +82,11 @@ class ScoopManifestGenerator(
      * and reports a conflict error if the name is already used.
      */
     private val usedAppNamesProvider: (suspend () -> Set<String>)? = null,
+    /**
+     * Callback invoked on tool call events (Started, Completed, Failed).
+     * Used by hosts (e.g. Scooper) for transparent tool call progress reporting.
+     */
+    private val onToolActivity: ((ToolActivity) -> Unit)? = null,
 ) {
     /**
      * Model with [LLMCapability.ToolChoice] stripped so that Koog uses its
@@ -221,10 +226,17 @@ class ScoopManifestGenerator(
                     observer.recordToolCall()
                     val args = sanitizeForLog(ctx.toolArgs.toString())
                     logger.info { "[tool] ${ctx.toolName}($args)" }
+                    onToolActivity?.invoke(ToolActivity.Started(ctx.toolName, args))
                 }
                 onToolCallCompleted { ctx ->
                     val result = sanitizeForLog(ctx.toolResult?.toString() ?: "null", maxLen = 200)
                     logger.info { "[tool] ${ctx.toolName} -> $result" }
+                    onToolActivity?.invoke(ToolActivity.Completed(ctx.toolName, result))
+                }
+                onToolCallFailed { ctx ->
+                    val errorMsg = sanitizeForLog(ctx.message.ifBlank { ctx.error?.message ?: "unknown tool error" }, maxLen = 200)
+                    logger.warn { "[tool] ${ctx.toolName} failed: $errorMsg" }
+                    onToolActivity?.invoke(ToolActivity.Failed(ctx.toolName, errorMsg))
                 }
                 onLLMCallCompleted { ctx ->
                     val inputTokens = ctx.response?.metaInfo?.inputTokensCount?.toLong() ?: 0L

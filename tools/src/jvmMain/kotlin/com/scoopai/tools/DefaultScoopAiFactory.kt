@@ -29,6 +29,11 @@ object DefaultScoopAiFactory {
          * [ScoopManifestGenerator]; intended for in-memory checkpoints only.
          */
         onPhaseOutput: ((String, String) -> Unit)? = null,
+        /**
+         * Real-time listener for agent tool activity (started / completed / failed).
+         * Forwarded to [ScoopManifestGenerator].
+         */
+        onToolActivity: ((com.scoopai.core.ToolActivity) -> Unit)? = null,
     ): ScoopManifestGenerator {
         val resolved = ProviderConfigResolver.resolve(
             cliProvider = config.provider,
@@ -68,6 +73,7 @@ object DefaultScoopAiFactory {
             gitHubApi = gitHubApi,
             archiveInspector = archiveInspector,
             onPhase = onPhase,
+            onToolActivity = onToolActivity,
             phaseOutputListener = onPhaseOutput,
             artifacts = artifacts,
             usedAppNamesProvider = usedAppNamesProvider,

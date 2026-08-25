@@ -75,6 +75,21 @@ class DefaultScoopAiFactoryTest {
         assertTrue(!outputSeen) // only invoked during generate()
     }
 
+    @Test
+    fun `createGenerator with onToolActivity callback constructs successfully`() {
+        var activitySeen = false
+        val generator = DefaultScoopAiFactory.createGenerator(
+            config = ScoopAiConfig(
+                provider = "deepseek",
+                apiKey = "sk-fake",
+                nonInteractive = true,
+            ),
+            onToolActivity = { activitySeen = true },
+        )
+        assertNotNull(generator)
+        assertTrue(!activitySeen)
+    }
+
     // ---------------------------------------------------------------
     // nonInteractive wiring
     // ---------------------------------------------------------------

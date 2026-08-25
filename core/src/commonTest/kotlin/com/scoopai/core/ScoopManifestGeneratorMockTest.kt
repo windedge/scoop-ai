@@ -14,6 +14,7 @@ import com.scoopai.core.observer.GenerationObserver
 import com.scoopai.core.tools.api.ManifestIo
 import ai.koog.serialization.typeToken
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -917,6 +918,89 @@ class ScoopManifestGeneratorMockTest {
             .decodeFromString<ResearchOutput>(researchJson)
         assertEquals("sharkdp/fd", decoded.project)
         assertEquals("fd", decoded.suggested_app_name)
+    }
+
+    // =========================================================================
+    // onToolActivity: real-time tool event callback (0.1.5)
+    // =========================================================================
+
+    private object DummyFetchRepoTool : ai.koog.agents.core.tools.SimpleTool<DummyFetchRepoTool.Args>(
+        argsType = typeToken<DummyFetchRepoTool.Args>(),
+        name = com.scoopai.core.agent.PhaseTools.FETCH_REPO_INFO,
+        description = "Fetch repository info",
+    ) {
+        @Serializable
+        data class Args(val repo: String)
+
+        override suspend fun execute(args: Args): String = """{"name":"fd"}"""
+    }
+
+    @Test
+    fun `onToolActivity callback captures Started and Completed events for tool calls`() = runBlocking {
+        val researchResult = ResearchOutput(
+            status = ResearchStatus.OK,
+            project = "sharkdp/fd",
+            version = "10.2.0",
+            suggested_app_name = "fd",
+            windows_assets = listOf(
+                WindowsAsset(
+                    url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                    architecture = "64bit",
+                    asset_type = "zip",
+                    source = "release_api"
+                )
+            )
+        )
+        val analyzeResult = AnalyzeOutput(
+            status = AnalyzeStatus.OK,
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                    hash = "abc123",
+                    extract_dir = "fd-v10.2.0-x86_64-pc-windows-msvc"
+                )
+            ),
+            bin = emptyList()
+        )
+        val manifestJson = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip","hash":"abc123","extract_dir":"fd-v10.2.0-x86_64-pc-windows-msvc"}},"bin":["fd.exe"]}"""
+
+        val activities = mutableListOf<ToolActivity>()
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(DummyFetchRepoTool, DummyFetchRepoTool.Args("sharkdp/fd")) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains """{"name":"fd"}"""
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"No issues found. Manifest looks good."}""") onCondition { text ->
+                !text.contains("GENERATE phase") && text.contains("extract_dir")
+            }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = model,
+            toolRegistry = ToolRegistry {
+                tool(DummyFetchRepoTool)
+            },
+            maxIterations = 50,
+            onToolActivity = { activities.add(it) },
+        )
+
+        generator.generate("https://github.com/sharkdp/fd")
+
+        assertTrue(activities.isNotEmpty(), "Tool activities should be recorded")
+        val startedNames = activities.filterIsInstance<ToolActivity.Started>().map { it.toolName }
+        val completedNames = activities.filterIsInstance<ToolActivity.Completed>().map { it.toolName }
+
+        assertTrue(startedNames.contains(com.scoopai.core.agent.PhaseTools.FETCH_REPO_INFO), "Should record fetchRepoInfo Started, got $startedNames")
+        assertTrue(completedNames.contains(com.scoopai.core.agent.PhaseTools.FETCH_REPO_INFO), "Should record fetchRepoInfo Completed, got $completedNames")
+
+        val startedEvent = activities.filterIsInstance<ToolActivity.Started>().first { it.toolName == com.scoopai.core.agent.PhaseTools.FETCH_REPO_INFO }
+        assertTrue(startedEvent.toolArgs.contains("sharkdp/fd"), "Started event should contain args")
     }
 
     // =========================================================================
