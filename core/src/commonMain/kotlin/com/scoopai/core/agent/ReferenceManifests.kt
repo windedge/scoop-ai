@@ -1,6 +1,32 @@
 package com.scoopai.core.agent
 
 object ReferenceManifests {
+    val AFFINE = """{
+    "version": "0.27.4",
+    "description": "A privacy-focussed, local-first, open-source, and ready-to-use alternative for Notion & Miro.",
+    "homepage": "https://affine.pro/",
+    "license": "MPL-2.0",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/toeverything/AFFiNE/releases/download/v0.27.4/affine-0.27.4-stable-windows-x64.exe#/dl.7z",
+            "hash": "sha512:46b6edea81cbb15a23e9925cda80bed31475dedc69df0405abccbb8d6593d2886f3426ec9225a315739abde8ae463a3063b2b9dfce215eb4a2928646b8f6090f"
+        }
+    },
+    "pre_install": [
+        "Expand-7zipArchive \"${'$'}dir\\AFFiNE-*-full.nupkg\" -ExtractDir 'lib\\net45' -Removal",
+        "Remove-Item \"${'$'}dir\\RELEASES\", \"${'$'}dir\\Update.exe\", \"${'$'}dir\\background.gif\", \"${'$'}dir\\setupIcon.ico\" -Force -ErrorAction SilentlyContinue"
+    ],
+    "shortcuts": [["AFFiNE.exe", "AFFiNE"]],
+    "checkver": { "github": "https://github.com/toeverything/AFFiNE" },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/toeverything/AFFiNE/releases/download/v${'$'}version/affine-${'$'}version-stable-windows-x64.exe#/dl.7z"
+            }
+        }
+    }
+}"""
+
     val RIPGREP = """{
     "version": "15.1.0",
     "description": "Recursively searches directories for a regex pattern.",

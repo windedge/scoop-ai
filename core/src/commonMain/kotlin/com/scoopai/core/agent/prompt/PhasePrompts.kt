@@ -266,7 +266,15 @@ $researchJson
    - **InnoSetup handling**: If `detectInstallerType` returns `innosetup`, set `"installer_type": "innosetup"` regardless. If `listArchiveContents` returns files, use them to set `bin`. If `listArchiveContents` returns empty (innounp cannot list this version), still report `innosetup` — Scoop may still be able to extract. In this case, set `bin` based on common InnoSetup conventions (main exe usually named after the app), or omit `bin` if uncertain.
    - **NSIS unsupported handling**: If `detectInstallerType` returns `nsis_unsupported` (the NSIS installer cannot be extracted by 7z), set `"installer_type": "nsis"` AND `"nsis_unsupported": true` in your output. This tells the generate phase that `#/dl.7z` will NOT work. In this case, look for alternative ZIP or MSI assets for the same version. If no alternative exists, you may need to use a silent install script strategy.
 
-   ⚠️ **CRITICAL: Re-inspect after adding `#/dl.7z` suffix**: When you decide to use a `#/dl.7z` (or any `#/` fragment) URL suffix to extract an installer, you MUST call `listArchiveContents` on that SUFFIXED URL afterward to verify what files the archive contains. A bare installer URL (e.g. `.exe`, `.cpl`, `.msi`) often fails to extract, but the same URL with a `#/dl.7z` suffix typically succeeds because it targets the inner 7z payload. Do NOT conclude "cannot extract" after only trying the bare URL — if you add a fragment suffix, re-run the archive inspection on the suffixed URL to discover internal files like config files, persist targets, and the real executable layout.
+    - **Squirrel installer handling (.nupkg inside Setup.exe / .exe#/dl.7z)**:
+      When an installer exe extracted with `#/dl.7z` contains a `*-full.nupkg` archive and `RELEASES` (typical for Squirrel/Electron/Tauri desktop apps):
+      * Do NOT set `extract_dir` to `lib\\net45` (first-level 7z extraction does not have `lib\\net45`, which causes "Could not find net45 (error 16)").
+      * Add `pre_install` to extract the inner nupkg and clean up installer artifacts:
+        `"Expand-7zipArchive \"${'$'}dir\\*-full.nupkg\" -ExtractDir 'lib\\net45' -Removal"`
+        `"Remove-Item \"${'$'}dir\\RELEASES\", \"${'$'}dir\\Update.exe\", \"${'$'}dir\\background.gif\", \"${'$'}dir\\setupIcon.ico\" -Force -ErrorAction SilentlyContinue"`
+      * Point `bin` and `shortcuts` directly to the main executable in `${'$'}dir` (e.g. `App.exe`).
+
+    ⚠️ **CRITICAL: Re-inspect after adding `#/dl.7z` suffix**: When you decide to use a `#/dl.7z` (or any `#/` fragment) URL suffix to extract an installer, you MUST call `listArchiveContents` on that SUFFIXED URL afterward to verify what files the archive contains. A bare installer URL (e.g. `.exe`, `.cpl`, `.msi`) often fails to extract, but the same URL with a `#/dl.7z` suffix typically succeeds because it targets the inner 7z payload. Do NOT conclude "cannot extract" after only trying the bare URL — if you add a fragment suffix, re-run the archive inspection on the suffixed URL to discover internal files like config files, persist targets, and the real executable layout.
 
 4. **Filter executables aggressively**:
    - Prefer the main end-user executable for the app.
