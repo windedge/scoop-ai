@@ -68,6 +68,11 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
 - If `autoupdate.url` is hard-coded to a concrete version/tag (e.g. contains a `preview-<date>-<hash>` or a `1.2.3` literal but no `${'$'}version`), flag as **error** - autoupdate will silently never update.
 - This almost always means `version` does not match the release the Windows asset came from: the manifest's `version` string should appear literally inside each `autoupdate.url`. If `version` is absent from the URL, flag as **error**. Example of an ERROR: `version` is `0.7.0` but `autoupdate.url` contains `preview-2026-06-15-517ca8163f7c` with no `${'$'}version`.
 
+### 6. description quality
+- Flag as **warning** if `description` is excessively long (> 120 characters) or dumps a long comma/and-separated list of feature items (e.g. "tool with A and B and C and D..."). It should be a concise, single-sentence definition of what the application is/does.
+- Flag as **warning** if `description` contains marketing fluff ("fastest", "powerful", "best", "ultimate") or author/framework boilerplate ("Built with Electron by team X").
+- Flag as **error** if `description` describes the mirror/Scoop repository rather than the software itself (e.g. "Unofficial Scoop bucket for...").
+
 ### 6. extract_dir depth
 - If `extract_dir` contains two or more path separators (backslashes), it is likely too deep.
   The `extract_dir` should typically only strip the top-level version directory (e.g. `project-1.2.3`).

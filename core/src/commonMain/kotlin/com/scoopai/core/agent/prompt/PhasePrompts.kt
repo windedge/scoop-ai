@@ -95,11 +95,16 @@ $task
    - `fetchWebPage` is for **non-GitHub projects only** (where there is no API), or for finding the `checkver` pattern on the official site when GitHub releases are absent.
    - fetchWebPage has a hard budget of 5 calls per session. Repeated calls to the same URL are auto-rejected.
 
-### description quality rules (IMPORTANT):
-- **App-centric**: describe what the app DOES, not what the repo does. For mirror/repack/portable repos (names like *-archive, *-portable, *-installer, *-windows-versions), describe the actual application being distributed, NOT the repo's automation/update mechanism.
-- **Concise**: single short sentence, ideally under 100 characters. Do NOT copy long README introductions verbatim — summarize.
-- **No marketing fluff**: avoid subjective words like "fast", "secure", "powerful", "high-performance", "incredible". Prefer concrete facts.
-- **Technically precise**: for developer tools, mention the key technology (e.g., "using Cranelift", "built on Redis and S3") rather than generic praise.
+### description quality rules (IMPORTANT — follow Scoop manifest standards):
+- **Source Priority**:
+  1. **Primary (Preferred)**: Use the GitHub repository's official About description (`repoInfo.description` / `fetchRepoInfo.description`). Strip leading/trailing emoji (e.g. `🐳 `) and extraneous markdown tags, and ensure it forms a clean sentence.
+  2. **Secondary (Fallback)**: If the About description is blank, generic (e.g. "A tool for Windows"), or describes the repository rather than the app, extract the first tagline/sentence from `README.md`.
+- **App-centric & Concise**: Describe what the application IS or DOES in a single, crisp sentence (ideally 40–90 characters, max 120).
+- **Strictly Prohibited**:
+  - ❌ **No Feature Dumping**: NEVER concatenate long feature lists with `with ... and ... and ...` (e.g. do NOT write "AI browser with remote control and multi-platform messaging and shared human control"). Focus on the core identity (e.g. "Personal AI agent desktop client").
+  - ❌ **No Marketing Fluff**: Avoid buzzwords like "fast", "modern", "powerful", "ultimate", "revolutionary".
+  - ❌ **No Repo/Mirror Meta-description**: For repack/archive/bucket repos, describe the packaged tool itself, NOT the repository/automation.
+  - ❌ **No Author/Framework Boilerplate**: Do NOT include "Built by team X", "Written in Rust/Electron", or installation instructions.
 
 5. **Prefer the shortest path to Windows download URLs**:
    - **First** check GitHub release assets from `fetchLatestRelease`. If the returned assets already contain `.zip`, `.exe`, or `.msi` files for Windows, STOP immediately — you have everything needed. Only visit the homepage or official download page when GitHub releases have NO usable assets.
@@ -138,17 +143,7 @@ $task
    a. **Get the full repo tree** (ONE fetchJson call): Use `fetchJson` with `https://api.github.com/repos/{owner}/{repo}/git/trees/{default_branch}?recursive=1` (use `default_branch` from `fetchRepoInfo`; default `master`). This single call returns EVERY file path in the repo — you can scan the listing for manifest/project files (`package.json`, `Cargo.toml`, `go.mod`, `README.md`), config files (`*.ini`, `*.conf`), and source files referencing config paths (`APPDATA`, `XDG_CONFIG_HOME`, etc.). Do NOT chain multiple `/contents/{subdir}` calls — the recursive tree gives you everything in one request. If you need to read a specific file, use ONE `fetchFileContent` call afterward.
 
    b. **Search the source code archive** (ONE searchTextInArchive call):
-      - Source zip URL pattern: `https://github.com/{owner}/{repo}/archive/refs/tags/{tag}.zip`
-      - If the tag starts with `v`, include the `v` prefix in the URL (e.g. `v1.2.3`).
-      - Search patterns: `XDG_CONFIG_HOME,electron-store,app.getPath,APPDATA,LOCALAPPDATA,config_dir,getConfigDir,www,htdocs,logs,tmp,temp,data,storage,media,uploads`
-      - Additional patterns for non-Electron/Tauri apps:
-        - Settings, Configuration, AppData, LocalApplicationData
-        - .ini, .config, preferences
-        - Common config directory names: settings, config, conf
-      - This single call replaces reading 5-10 individual files via fetchFileContent.
-      - **Extra persist targets for server/dev environment apps**: If the project is a web server, database, or development environment (WAMP, LAMP, etc.), additionally check if directories like `www`, `tmp`, `logs`, `data` exist in the archive. These are user-data directories that should typically be persisted.
-
-   c. **Stop after step (a) and (b)**. Do NOT make additional fetchFileContent calls for source files unless you have zero matches and need to check one specific config file.
+      Search the source zip for persistence patterns (e.g. `AppData`, `XDG_DATA_HOME`, `config.json`, `settings.ini`, `sqlite3`, `Database`, `LocalStorage`).
 
    **Config & env var discovery** (use searchTextInArchive on the source archive):
    Search for these patterns to discover config directories and environment variables:
@@ -197,13 +192,14 @@ $prefetchJson
 
 ## YOUR TASKS (simplified)
 
-1. **License**: If `repoInfo.license` is "NOASSERTION" or null, use `fetchFileContent` to read the LICENSE file.
-2. **Asset selection**: Review `windowsAssets`. If multiple candidates exist, pick the most appropriate one.
-3. **App name**: Determine `suggested_app_name` based on the project name.
-4. **Homepage**: Verify `homepageCleaned` is appropriate. If it points to GitHub but the project has a real website, correct it.
-5. **Version**: Use `version` from the pre-collected data (already stripped of 'v' prefix).
-6. **Missing data**: If any critical information is missing from the pre-collected data, use available tools to fill gaps.
-7. **Output**: Call `finalize_task_result` with a valid ResearchOutput JSON.
+1. **Description**: Use `repoInfo.description` directly (strip leading emoji/symbols, e.g. "🐳 "). If empty or generic, use the main tagline from README. Keep it a concise, single-sentence summary of what the tool is (never dump feature lists).
+2. **License**: If `repoInfo.license` is "NOASSERTION" or null, use `fetchFileContent` to read the LICENSE file.
+3. **Asset selection**: Review `windowsAssets`. If multiple candidates exist, pick the most appropriate one.
+4. **App name**: Determine `suggested_app_name` based on the project name.
+5. **Homepage**: Verify `homepageCleaned` is appropriate. If it points to GitHub but the project has a real website, correct it.
+6. **Version**: Use `version` from the pre-collected data (already stripped of 'v' prefix).
+7. **Missing data**: If any critical information is missing from the pre-collected data, use available tools to fill gaps.
+8. **Output**: Call `finalize_task_result` with a valid ResearchOutput JSON.
 
 ## AVAILABLE TOOLS (for gap-filling only)
 
