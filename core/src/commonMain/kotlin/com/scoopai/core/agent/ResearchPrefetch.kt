@@ -4,6 +4,7 @@ import com.scoopai.core.tools.api.ArchiveInspector
 import com.scoopai.core.tools.api.GitHubApi
 import com.scoopai.core.tools.api.WebFetcher
 import com.scoopai.core.agent.nodes.RawAssetInfo
+import com.scoopai.core.agent.nodes.cleanDescription
 import com.scoopai.core.agent.nodes.filterWindowsAssets
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -330,6 +331,7 @@ suspend fun prefetchResearchData(
     val detectedChecksumsFile = detectChecksumsFile(effectiveRelease?.assets ?: emptyList())
     val detectedReleasesFile = detectReleasesFile(effectiveRelease?.assets ?: emptyList())
     val version = extractVersion(tagName)
+    val recommendedDescription = cleanDescription(repoInfo?.description)
 
     PrefetchResult(
         isGitHub = true,
@@ -345,6 +347,7 @@ suspend fun prefetchResearchData(
         detectedReleasesFile = detectedReleasesFile,
         homepageCleaned = homepageCleaned,
         version = version,
+        recommendedDescription = recommendedDescription,
         errors = errors,
     )
 }

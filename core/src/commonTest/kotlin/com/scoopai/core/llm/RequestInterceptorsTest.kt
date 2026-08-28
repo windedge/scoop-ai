@@ -136,4 +136,146 @@ class RequestInterceptorsTest {
         val result2 = addSuffix(result1)
         assertEquals("PREFIX|hello|SUFFIX", result2)
     }
+
+    // ---------------------------------------------------------------
+    // HTTP Retry logic (429 / 5xx / backoff)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `InterceptingHttpClient recovers from 429 on second attempt`() = kotlinx.coroutines.runBlocking {
+        var attempts = 0
+        val mockClient = object : ai.koog.http.client.KoogHttpClient {
+            override val clientName = "test"
+            override fun close() {}
+            override suspend fun <R : Any> get(path: String, responseType: kotlin.reflect.KClass<R>, parameters: Map<String, String>, headers: Map<String, String>): R = throw UnsupportedOperationException()
+            override suspend fun <T : Any, R : Any> post(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, responseType: kotlin.reflect.KClass<R>, parameters: Map<String, String>, headers: Map<String, String>): R {
+                attempts++
+                if (attempts == 1) {
+                    throw IllegalStateException("Status code: 429. Error: Rate limit exceeded")
+                }
+                @Suppress("UNCHECKED_CAST")
+                return """{"choices":[{"message":{"content":"ok"}}]}""" as R
+            }
+            override fun <T : Any, R : Any, O : Any> sse(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, dataFilter: (String?) -> Boolean, decodeStreamingResponse: (String) -> R, processStreamingChunk: (R) -> O?, parameters: Map<String, String>, headers: Map<String, String>): kotlinx.coroutines.flow.Flow<O> = throw UnsupportedOperationException()
+            override fun <T : Any> lines(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, parameters: Map<String, String>, headers: Map<String, String>): kotlinx.coroutines.flow.Flow<String> = throw UnsupportedOperationException()
+        }
+
+        val client = InterceptingHttpClient(
+            delegate = mockClient,
+            retryConfig = HttpRetryConfig(maxRetries = 2, initialDelayMs = 5L, maxDelayMs = 20L),
+        )
+
+        val result = client.post("test", "{}", String::class, String::class, emptyMap(), emptyMap())
+        assertEquals("""{"choices":[{"message":{"content":"ok"}}]}""", result)
+        assertEquals(2, attempts)
+    }
+
+    @Test
+    fun `InterceptingHttpClient recovers from 502 server error on third attempt`() = kotlinx.coroutines.runBlocking {
+        var attempts = 0
+        val mockClient = object : ai.koog.http.client.KoogHttpClient {
+            override val clientName = "test"
+            override fun close() {}
+            override suspend fun <R : Any> get(path: String, responseType: kotlin.reflect.KClass<R>, parameters: Map<String, String>, headers: Map<String, String>): R = throw UnsupportedOperationException()
+            override suspend fun <T : Any, R : Any> post(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, responseType: kotlin.reflect.KClass<R>, parameters: Map<String, String>, headers: Map<String, String>): R {
+                attempts++
+                if (attempts < 3) {
+                    throw IllegalStateException("Status code: 502. Bad Gateway")
+                }
+                @Suppress("UNCHECKED_CAST")
+                return "success" as R
+            }
+            override fun <T : Any, R : Any, O : Any> sse(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, dataFilter: (String?) -> Boolean, decodeStreamingResponse: (String) -> R, processStreamingChunk: (R) -> O?, parameters: Map<String, String>, headers: Map<String, String>): kotlinx.coroutines.flow.Flow<O> = throw UnsupportedOperationException()
+            override fun <T : Any> lines(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, parameters: Map<String, String>, headers: Map<String, String>): kotlinx.coroutines.flow.Flow<String> = throw UnsupportedOperationException()
+        }
+
+        val client = InterceptingHttpClient(
+            delegate = mockClient,
+            retryConfig = HttpRetryConfig(maxRetries = 3, initialDelayMs = 5L, maxDelayMs = 20L),
+        )
+
+        val result = client.post("test", "{}", String::class, String::class, emptyMap(), emptyMap())
+        assertEquals("success", result)
+        assertEquals(3, attempts)
+    }
+
+    @Test
+    fun `InterceptingHttpClient fails when 429 attempts exceed maxRetries`() = kotlinx.coroutines.runBlocking {
+        var attempts = 0
+        val mockClient = object : ai.koog.http.client.KoogHttpClient {
+            override val clientName = "test"
+            override fun close() {}
+            override suspend fun <R : Any> get(path: String, responseType: kotlin.reflect.KClass<R>, parameters: Map<String, String>, headers: Map<String, String>): R = throw UnsupportedOperationException()
+            override suspend fun <T : Any, R : Any> post(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, responseType: kotlin.reflect.KClass<R>, parameters: Map<String, String>, headers: Map<String, String>): R {
+                attempts++
+                throw IllegalStateException("Status code: 429. Error: Rate limit exceeded")
+            }
+            override fun <T : Any, R : Any, O : Any> sse(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, dataFilter: (String?) -> Boolean, decodeStreamingResponse: (String) -> R, processStreamingChunk: (R) -> O?, parameters: Map<String, String>, headers: Map<String, String>): kotlinx.coroutines.flow.Flow<O> = throw UnsupportedOperationException()
+            override fun <T : Any> lines(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, parameters: Map<String, String>, headers: Map<String, String>): kotlinx.coroutines.flow.Flow<String> = throw UnsupportedOperationException()
+        }
+
+        val client = InterceptingHttpClient(
+            delegate = mockClient,
+            retryConfig = HttpRetryConfig(maxRetries = 2, initialDelayMs = 5L, maxDelayMs = 20L),
+        )
+
+        val ex = kotlin.test.assertFailsWith<IllegalStateException> {
+            client.post("test", "{}", String::class, String::class, emptyMap(), emptyMap())
+        }
+        assertTrue(ex.message!!.contains("429"))
+        assertEquals(3, attempts) // 1 initial + 2 retries
+    }
+
+    @Test
+    fun `InterceptingHttpClient does not retry on 401 authentication error`() = kotlinx.coroutines.runBlocking {
+        var attempts = 0
+        val mockClient = object : ai.koog.http.client.KoogHttpClient {
+            override val clientName = "test"
+            override fun close() {}
+            override suspend fun <R : Any> get(path: String, responseType: kotlin.reflect.KClass<R>, parameters: Map<String, String>, headers: Map<String, String>): R = throw UnsupportedOperationException()
+            override suspend fun <T : Any, R : Any> post(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, responseType: kotlin.reflect.KClass<R>, parameters: Map<String, String>, headers: Map<String, String>): R {
+                attempts++
+                throw IllegalStateException("Status code: 401. Unauthorized")
+            }
+            override fun <T : Any, R : Any, O : Any> sse(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, dataFilter: (String?) -> Boolean, decodeStreamingResponse: (String) -> R, processStreamingChunk: (R) -> O?, parameters: Map<String, String>, headers: Map<String, String>): kotlinx.coroutines.flow.Flow<O> = throw UnsupportedOperationException()
+            override fun <T : Any> lines(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, parameters: Map<String, String>, headers: Map<String, String>): kotlinx.coroutines.flow.Flow<String> = throw UnsupportedOperationException()
+        }
+
+        val client = InterceptingHttpClient(
+            delegate = mockClient,
+            retryConfig = HttpRetryConfig(maxRetries = 3, initialDelayMs = 5L, maxDelayMs = 20L),
+        )
+
+        val ex = kotlin.test.assertFailsWith<IllegalStateException> {
+            client.post("test", "{}", String::class, String::class, emptyMap(), emptyMap())
+        }
+        assertTrue(ex.message!!.contains("401"))
+        assertEquals(1, attempts) // No retry
+    }
+
+    @Test
+    fun `InterceptingHttpClient rethrows CancellationException immediately without retry`() = kotlinx.coroutines.runBlocking {
+        var attempts = 0
+        val mockClient = object : ai.koog.http.client.KoogHttpClient {
+            override val clientName = "test"
+            override fun close() {}
+            override suspend fun <R : Any> get(path: String, responseType: kotlin.reflect.KClass<R>, parameters: Map<String, String>, headers: Map<String, String>): R = throw UnsupportedOperationException()
+            override suspend fun <T : Any, R : Any> post(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, responseType: kotlin.reflect.KClass<R>, parameters: Map<String, String>, headers: Map<String, String>): R {
+                attempts++
+                throw kotlinx.coroutines.CancellationException("Job cancelled")
+            }
+            override fun <T : Any, R : Any, O : Any> sse(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, dataFilter: (String?) -> Boolean, decodeStreamingResponse: (String) -> R, processStreamingChunk: (R) -> O?, parameters: Map<String, String>, headers: Map<String, String>): kotlinx.coroutines.flow.Flow<O> = throw UnsupportedOperationException()
+            override fun <T : Any> lines(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, parameters: Map<String, String>, headers: Map<String, String>): kotlinx.coroutines.flow.Flow<String> = throw UnsupportedOperationException()
+        }
+
+        val client = InterceptingHttpClient(
+            delegate = mockClient,
+            retryConfig = HttpRetryConfig(maxRetries = 3, initialDelayMs = 5L, maxDelayMs = 20L),
+        )
+
+        kotlin.test.assertFailsWith<kotlinx.coroutines.CancellationException> {
+            client.post("test", "{}", String::class, String::class, emptyMap(), emptyMap())
+        }
+        assertEquals(1, attempts)
+    }
 }

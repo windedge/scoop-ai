@@ -1,54 +1,74 @@
 package com.scoopai.core.llm
 
 import ai.koog.http.client.KoogHttpClient
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlin.math.pow
 import kotlin.reflect.KClass
 
 /**
+ * Configuration for HTTP request retries on transient errors (429, 5xx, timeouts).
+ */
+public data class HttpRetryConfig(
+    val maxRetries: Int = 3,
+    val initialDelayMs: Long = 1000L,
+    val maxDelayMs: Long = 8000L,
+    val backoffFactor: Double = 2.0,
+) {
+    public companion object {
+        public val DEFAULT: HttpRetryConfig = HttpRetryConfig()
+        public val DISABLED: HttpRetryConfig = HttpRetryConfig(maxRetries = 0)
+    }
+}
+
+private val SERVER_ERROR_REGEX = Regex("""\b5\d{2}\b""")
+
+internal fun isRetryableHttpException(e: Throwable): Boolean {
+    if (e is CancellationException) return false
+    val message = e.message ?: return false
+    val lower = message.lowercase()
+    if ("429" in lower || "rate limit" in lower) return true
+    if ("401" in lower || "403" in lower || "404" in lower || "400" in lower) return false
+    return SERVER_ERROR_REGEX.containsMatchIn(message) ||
+        "timeout" in lower ||
+        "timed out" in lower ||
+        "connection reset" in lower ||
+        "connect timeout" in lower
+}
+
+/**
  * A [KoogHttpClient] decorator that applies a chain of [interceptors] to
- * the request body of every POST/SSE call before forwarding to the [delegate].
- *
- * Each interceptor is a pure function `(String) -> String` that receives the
- * raw JSON request body and returns the (possibly modified) body.
- * Interceptors are applied in list order.
- *
- * [responseRewriter] is an optional pure function applied to every String
- * response body (POST when [responseType] is String, and each raw SSE chunk)
- * before Koog decodes it. Used for response-side fixes such as filling in
- * required fields that an OpenAI-compatible gateway omitted.
- *
- * [onResponse] is an optional callback invoked with the (possibly rewritten)
- * response body of every POST call (when [responseType] is String) and with
- * every raw SSE chunk (after rewriting, before decoding). Used for debug
- * logging of the response direction. Rewriting happens first, so the logged
- * body reflects the final JSON that Koog will decode.
- *
- * This replaces the separate decorator classes (LoggingKoogHttpClient,
- * ToolChoiceDowngradeHttpClient) with a single reusable decorator plus
- * composable interceptor functions.
- *
- * Usage:
- * ```kotlin
- * val httpClient = InterceptingHttpClient(
- *     delegate = baseClient,
- *     interceptors = buildList {
- *         // Koog's setToolChoiceRequired() has no capability gating; some
- *         // gateways reject the field, so strip it unconditionally.
- *         add(::stripToolChoice)
- *     },
- *     responseRewriter = { json -> normalizeMissingCreated(json, 0L) },
- *     onResponse = { body -> println(body) },
- * )
- * ```
+ * the request body of every POST/SSE call before forwarding to the [delegate],
+ * with automatic exponential backoff retry on transient HTTP errors (429, 5xx).
  */
 public class InterceptingHttpClient(
     private val delegate: KoogHttpClient,
     private val interceptors: List<(String) -> String> = emptyList(),
     private val responseRewriter: ((String) -> String)? = null,
     private val onResponse: ((String) -> Unit)? = null,
+    private val retryConfig: HttpRetryConfig = HttpRetryConfig.DEFAULT,
 ) : KoogHttpClient by delegate {
 
     override val clientName: String = delegate.clientName
+
+    private suspend fun <R> executeWithRetry(block: suspend () -> R): R {
+        var attempt = 0
+        while (true) {
+            attempt++
+            try {
+                return block()
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                if (attempt > retryConfig.maxRetries || !isRetryableHttpException(e)) {
+                    throw e
+                }
+                val factor = retryConfig.backoffFactor.pow((attempt - 1).toDouble())
+                val delayMs = (retryConfig.initialDelayMs * factor).toLong().coerceIn(0L, retryConfig.maxDelayMs)
+                delay(delayMs)
+            }
+        }
+    }
 
     override suspend fun <T : Any, R : Any> post(
         path: String,
@@ -57,7 +77,7 @@ public class InterceptingHttpClient(
         responseType: KClass<R>,
         parameters: Map<String, String>,
         headers: Map<String, String>,
-    ): R {
+    ): R = executeWithRetry {
         val fixedBody = applyInterceptors(requestBody, requestBodyType)
         val result = delegate.post(path, fixedBody, requestBodyType, responseType, parameters, headers)
         if (responseType == String::class) {
@@ -66,9 +86,10 @@ public class InterceptingHttpClient(
             val rewritten = responseRewriter?.invoke(raw) ?: raw
             onResponse?.invoke(rewritten)
             @Suppress("UNCHECKED_CAST")
-            return rewritten as R
+            rewritten as R
+        } else {
+            result
         }
-        return result
     }
 
     override fun <T : Any, R : Any, O : Any> sse(

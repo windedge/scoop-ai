@@ -20,6 +20,7 @@ data class PrefetchResult(
     val detectedReleasesFile: String = "",
     val homepageCleaned: String = "",
     val version: String = "",
+    val recommendedDescription: String? = null,
 
     val errors: List<String> = emptyList(),
 )

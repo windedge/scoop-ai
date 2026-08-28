@@ -37,22 +37,25 @@ object LlmProviderFactory {
     fun create(provider: String, apiKey: String, baseUrl: String? = null, modelName: String? = null): PromptExecutor = when (provider) {
         "deepseek" -> {
             val settings = DeepSeekClientSettings()
+            val baseClient = javaHttpClient(apiKey, settings, "DeepSeekLLMClient")
             MultiLLMPromptExecutor(
-                DeepSeekLLMClient(settings = settings, httpClient = javaHttpClient(apiKey, settings, "DeepSeekLLMClient"))
+                DeepSeekLLMClient(settings = settings, httpClient = InterceptingHttpClient(delegate = baseClient))
             )
         }
         "openai" -> {
             val settings = OpenAIClientSettings()
+            val baseClient = javaHttpClient(apiKey, settings, "OpenAILLMClient")
             MultiLLMPromptExecutor(
-                OpenAILLMClient(settings = settings, httpClient = javaHttpClient(apiKey, settings, "OpenAILLMClient"))
+                OpenAILLMClient(settings = settings, httpClient = InterceptingHttpClient(delegate = baseClient))
             )
         }
         "anthropic" -> MultiLLMPromptExecutor(AnthropicLLMClient(apiKey = apiKey))
         "ollama" -> MultiLLMPromptExecutor(OllamaClient())
         "openrouter" -> {
             val settings = OpenRouterClientSettings()
+            val baseClient = javaHttpClient(apiKey, settings, "OpenRouterLLMClient")
             MultiLLMPromptExecutor(
-                OpenRouterLLMClient(settings = settings, httpClient = javaHttpClient(apiKey, settings, "OpenRouterLLMClient"))
+                OpenRouterLLMClient(settings = settings, httpClient = InterceptingHttpClient(delegate = baseClient))
             )
         }
         "openai-compatible" -> {

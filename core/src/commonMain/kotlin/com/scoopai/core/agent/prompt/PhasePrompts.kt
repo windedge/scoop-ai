@@ -95,16 +95,16 @@ $task
    - `fetchWebPage` is for **non-GitHub projects only** (where there is no API), or for finding the `checkver` pattern on the official site when GitHub releases are absent.
    - fetchWebPage has a hard budget of 5 calls per session. Repeated calls to the same URL are auto-rejected.
 
-### description quality rules (IMPORTANT — follow Scoop manifest standards):
-- **Source Priority**:
-  1. **Primary (Preferred)**: Use the GitHub repository's official About description (`repoInfo.description` / `fetchRepoInfo.description`). Strip leading/trailing emoji (e.g. `🐳 `) and extraneous markdown tags, and ensure it forms a clean sentence.
-  2. **Secondary (Fallback)**: If the About description is blank, generic (e.g. "A tool for Windows"), or describes the repository rather than the app, extract the first tagline/sentence from `README.md`.
-- **App-centric & Concise**: Describe what the application IS or DOES in a single, crisp sentence (ideally 40–90 characters, max 120).
-- **Strictly Prohibited**:
-  - ❌ **No Feature Dumping**: NEVER concatenate long feature lists with `with ... and ... and ...` (e.g. do NOT write "AI browser with remote control and multi-platform messaging and shared human control"). Focus on the core identity (e.g. "Personal AI agent desktop client").
-  - ❌ **No Marketing Fluff**: Avoid buzzwords like "fast", "modern", "powerful", "ultimate", "revolutionary".
-  - ❌ **No Repo/Mirror Meta-description**: For repack/archive/bucket repos, describe the packaged tool itself, NOT the repository/automation.
-  - ❌ **No Author/Framework Boilerplate**: Do NOT include "Built by team X", "Written in Rust/Electron", or installation instructions.
+### description quality rules (CRITICAL MANDATE — follow Scoop manifest standards):
+- **Rule 1: Always prioritize GitHub About description**: If `repoInfo.description` (or `fetchRepoInfo.description`) is present, you MUST use it directly as the primary base (simply strip leading/trailing emoji like `🐳 `). Do NOT discard the official title/definition in favor of concatenating random feature sentences from README.
+  - *Example*: `repoInfo.description = "🐳 DeepSeek Harness Desktop"` → `description = "DeepSeek Harness Desktop"` (or `"DeepSeek Harness Desktop client"`).
+  - *WRONG*: `"Agent Browser with shared human control and remote control through WeChat, Telegram, and Discord"` (Feature dumping is strictly forbidden).
+- **Rule 2: Secondary Fallback only**: ONLY if `repoInfo.description` is totally empty or generic (e.g. "A Windows tool"), extract the first concise tagline from `README.md`.
+- **Rule 3: Strictly Prohibited**:
+  - ❌ **NO Feature / Channel Dumping**: NEVER concatenate feature lists or integration platforms (`with ...`, `through WeChat, Telegram, and Discord`, `supporting A, B, and C`). Focus purely on the tool's core identity (e.g. "Personal AI agent desktop client").
+  - ❌ **NO Marketing Fluff**: Avoid buzzwords like "fast", "modern", "powerful", "ultimate", "revolutionary".
+  - ❌ **NO Repo/Mirror Meta-description**: For repack/archive/bucket repos, describe the packaged tool itself, NOT the repository/automation.
+  - ❌ **NO Author/Framework Boilerplate**: Do NOT include "Built by team X", "Written in Rust/Electron", or installation instructions.
 
 5. **Prefer the shortest path to Windows download URLs**:
    - **First** check GitHub release assets from `fetchLatestRelease`. If the returned assets already contain `.zip`, `.exe`, or `.msi` files for Windows, STOP immediately — you have everything needed. Only visit the homepage or official download page when GitHub releases have NO usable assets.
@@ -192,7 +192,10 @@ $prefetchJson
 
 ## YOUR TASKS (simplified)
 
-1. **Description**: Use `repoInfo.description` directly (strip leading emoji/symbols, e.g. "🐳 "). If empty or generic, use the main tagline from README. Keep it a concise, single-sentence summary of what the tool is (never dump feature lists).
+1. **Description (CRITICAL MANDATE - HIGH FIDELITY)**:
+   - If `recommendedDescription` (or `repoInfo.description`) is present, you MUST use it directly as `description` (e.g. "DeepSeek Harness Desktop" or "DeepSeek Harness Desktop client").
+   - **DO NOT REPLACE OR DISCARD** vital product keywords (like "DeepSeek Harness") with generic phrases (e.g. do NOT invent "Minke Agent Desktop Client" or dump README subheadings).
+   - ONLY if `repoInfo.description` is totally empty or generic, use the core tagline from README.
 2. **License**: If `repoInfo.license` is "NOASSERTION" or null, use `fetchFileContent` to read the LICENSE file.
 3. **Asset selection**: Review `windowsAssets`. If multiple candidates exist, pick the most appropriate one.
 4. **App name**: Determine `suggested_app_name` based on the project name.

@@ -4,6 +4,7 @@ import com.scoopai.core.agent.AssetEntry
 import com.scoopai.core.agent.AnalyzeOutput
 import com.scoopai.core.agent.LicenseInfo
 import com.scoopai.core.agent.ResearchOutput
+import com.scoopai.core.agent.ResearchStatus
 import com.scoopai.core.agent.WindowsAsset
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.Json
@@ -2008,6 +2009,101 @@ class ManifestUtilsTest {
     @Test
     fun `checkAppNameConflict returns null when name is blank`() {
         assertNull(checkAppNameConflict("", setOf("micro", "fd")))
+    }
+
+    // ---------------------------------------------------------------
+    // Squirrel / nupkg pre_install normalization
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `normalizePreInstallScripts converts versioned nupkg to wildcard and removes redundant move and lib removal`() {
+        val rawScripts = listOf(
+            "Expand-7zipArchive \"${'$'}dir\\Minke-0.3.0-full.nupkg\" -ExtractDir 'lib\\net45' -Removal",
+            "Remove-Item \"${'$'}dir\\RELEASES\", \"${'$'}dir\\Update.exe\", \"${'$'}dir\\background.gif\", \"${'$'}dir\\setupIcon.ico\" -Force",
+            "Move-Item \"${'$'}dir\\lib\\net45\\*\" \"${'$'}dir\" -Force",
+            "Remove-Item \"${'$'}dir\\lib\" -Recurse -Force",
+        )
+        val normalized = normalizePreInstallScripts(rawScripts)
+        assertEquals(2, normalized.size)
+        assertTrue(normalized[0].contains("*-full.nupkg") || normalized[0].contains("Minke-*-full.nupkg"))
+        assertFalse(normalized[0].contains("0.3.0"))
+        assertTrue(normalized[1].contains("-ErrorAction SilentlyContinue"))
+    }
+
+    @Test
+    fun `normalizePreInstallScripts ensures Remove-Item has ErrorAction SilentlyContinue even without RELEASES keyword`() {
+        val rawScripts = listOf(
+            "Remove-Item \"${'$'}dir\\Update.exe\" -Force",
+            "Remove-Item \"${'$'}dir\\temp.txt\" -ErrorAction SilentlyContinue",
+        )
+        val normalized = normalizePreInstallScripts(rawScripts)
+        assertEquals(2, normalized.size)
+        assertEquals("Remove-Item \"${'$'}dir\\Update.exe\" -Force -ErrorAction SilentlyContinue", normalized[0])
+        assertEquals("Remove-Item \"${'$'}dir\\temp.txt\" -ErrorAction SilentlyContinue", normalized[1])
+    }
+
+    @Test
+    fun `assembleManifestSkeleton lifts Squirrel nupkg installer_scripts to top-level pre_install`() {
+        val research = ResearchOutput(
+            status = ResearchStatus.OK,
+            project = "lencx/Minke",
+            description = "DeepSeek Harness Desktop client",
+            homepage = "https://github.com/lencx/Minke",
+            version = "0.3.0",
+        )
+        val analyze = AnalyzeOutput(
+            strategy = "installer",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://github.com/lencx/Minke/releases/download/v0.3.0/Minke-windows-x64.exe#/dl.7z",
+                    hash = "81003d28b1bfe35ea4a5bf13c3f86aa283c75122eace78efdc4c0d587b4f547b",
+                    filename = "Minke-windows-x64.exe",
+                ),
+            ),
+            bin = listOf("Minke.exe"),
+            shortcuts = listOf(listOf("Minke.exe", "Minke")),
+            installer_scripts = mapOf(
+                "64bit" to listOf(
+                    "Expand-7zipArchive \"\$dir\\Minke-0.3.0-full.nupkg\" -ExtractDir 'lib\\net45' -Removal",
+                    "Remove-Item \"\$dir\\RELEASES\", \"\$dir\\Update.exe\", \"\$dir\\background.gif\", \"\$dir\\setupIcon.ico\" -Force",
+                ),
+            ),
+        )
+        val skeleton = assembleManifestSkeleton(research, analyze)
+        val jsonElement = Json.parseToJsonElement(skeleton) as JsonObject
+        val preInstallArray = jsonElement["pre_install"]?.jsonArray
+        assertNotNull(preInstallArray)
+        assertTrue(preInstallArray.any { it.jsonPrimitive.content.contains("*-full.nupkg") })
+    }
+
+    // ---------------------------------------------------------------
+    // cleanDescription
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `cleanDescription strips leading emojis and cleans spacing`() {
+        assertEquals("DeepSeek Harness Desktop", cleanDescription("🐳 DeepSeek Harness Desktop"))
+        assertEquals("Fast terminal client", cleanDescription("🚀  Fast terminal client  "))
+        assertEquals("A privacy-first tool", cleanDescription("🔥 A privacy-first tool"))
+    }
+
+    @Test
+    fun `cleanDescription strips markdown badges and links`() {
+        assertEquals("AI assistant for developers", cleanDescription("[![build](url)](url) AI assistant for developers"))
+        assertEquals("Terminal tool for developers", cleanDescription("Terminal tool for [developers](https://example.com)"))
+    }
+
+    @Test
+    fun `cleanDescription capitalizes first letter`() {
+        assertEquals("Terminal tool", cleanDescription("terminal tool"))
+    }
+
+    @Test
+    fun `cleanDescription returns null for blank or empty input`() {
+        assertNull(cleanDescription(null))
+        assertNull(cleanDescription("   "))
+        assertNull(cleanDescription("🐳 🚀"))
     }
 }
 

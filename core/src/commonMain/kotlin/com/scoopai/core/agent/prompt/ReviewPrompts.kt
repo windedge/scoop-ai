@@ -62,6 +62,7 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
 - Check if `autoupdate` exists and has a `hash` block.
 - If `autoupdate` exists but is missing `hash`, flag it as a warning.
 - If `autoupdate` has `hash`, verify the URL pattern looks reasonable.
+- **`#/dl.7z` fragment in URLs**: Scoop strips the `#/dl.7z` fragment when evaluating `${'$'}basename` in `autoupdate.hash` (e.g. for `.../App-windows-x64.exe#/dl.7z`, `${'$'}basename` evaluates to `App-windows-x64.exe`). This matches checksum files like `SHA256SUMS`. Do NOT flag `${'$'}basename` matching with `#/dl.7z` as an error or mismatch.
 
 ### 5b. autoupdate.url version placeholder & version alignment
 - Every `autoupdate` download URL MUST contain a `${'$'}version` (or `${'$'}matchHead` / `${'$'}cleanVersion` / `${'$'}match1`) placeholder, OR be a rolling URL (`/latest`, `/stable/`, `/nightly`) that never embeds the version.
@@ -69,7 +70,8 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
 - This almost always means `version` does not match the release the Windows asset came from: the manifest's `version` string should appear literally inside each `autoupdate.url`. If `version` is absent from the URL, flag as **error**. Example of an ERROR: `version` is `0.7.0` but `autoupdate.url` contains `preview-2026-06-15-517ca8163f7c` with no `${'$'}version`.
 
 ### 6. description quality
-- Flag as **warning** if `description` is excessively long (> 120 characters) or dumps a long comma/and-separated list of feature items (e.g. "tool with A and B and C and D..."). It should be a concise, single-sentence definition of what the application is/does.
+- Flag as **error** if `description` dumps a comma/and-separated list of features, platforms, or communication tools (e.g. "through WeChat, Telegram, and Discord", "with A, B, and C"), or exceeds 100 characters. It MUST be a concise, single-sentence definition of what the application is/does.
+- Flag as **error** if `description` discarded a clear, concise official GitHub About description (e.g. "DeepSeek Harness Desktop") in favor of dumping feature subheadings.
 - Flag as **warning** if `description` contains marketing fluff ("fastest", "powerful", "best", "ultimate") or author/framework boilerplate ("Built with Electron by team X").
 - Flag as **error** if `description` describes the mirror/Scoop repository rather than the software itself (e.g. "Unofficial Scoop bucket for...").
 
@@ -81,6 +83,11 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
 - If the exe is inside a nested subdirectory, the correct approach is to keep `extract_dir` shallow
   and use `env_add_path` with the nested `bin` path instead.
 - Flag as error if extract_dir goes more than one level deep.
+
+### 6b. extract_dir vs pre_install inner extraction conflict
+- Flag as **error** if `pre_install` extracts an inner archive via `Expand-7zipArchive` (e.g. `*-full.nupkg` with `-ExtractDir 'lib\net45'`) AND `extract_dir` is also defined in the manifest (either top-level or inside architecture blocks).
+- Reason: Scoop checks `extract_dir` during the initial outer archive extraction before `pre_install` executes. Because the inner archive has not yet been extracted, the `extract_dir` path does not exist yet in the outer archive and Scoop aborts with `Could not find ... (error 16)`.
+- Fix: The manifest MUST NOT contain `extract_dir`. Inner directory extraction is already handled by `Expand-7zipArchive -ExtractDir`.
 
 ### 7. env_add_path vs bin
 - If `env_add_path` and `bin` are both present for the same tool, flag it — only one should be used.
@@ -98,6 +105,15 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
 
 ### 10. Per-architecture bin pattern
 - Some CLIs have different executables per architecture (e.g. `app-3.1.0-x86_64.exe` for 64bit, `app-3.1.0-i686.exe` for 32bit). In this case, `bin` is placed **inside** each architecture block, NOT at the top level.
+
+### 11. pre_install scripts validity
+- Flag as **error** only if `pre_install` contains concrete version-pinned `.nupkg` filenames (e.g. `App-1.0.0-full.nupkg` instead of wildcard `App-*-full.nupkg` or `*-full.nupkg`).
+- Wildcards (`*-full.nupkg` or `App-*-full.nupkg`) in `Expand-7zipArchive` are the standard, correct pattern. Do NOT flag wildcard `.nupkg` filenames as errors.
+- For Squirrel.Windows installers (where outer installer contains inner `*-full.nupkg` and metadata like `RELEASES`, `Update.exe`):
+  `"pre_install": ["Expand-7zipArchive \"${'$'}dir\\*-full.nupkg\" -ExtractDir 'lib\\net45' -Removal", "Remove-Item \"${'$'}dir\\RELEASES\", \"${'$'}dir\\Update.exe\", \"${'$'}dir\\background.gif\", \"${'$'}dir\\setupIcon.ico\" -Force -ErrorAction SilentlyContinue"]`
+  is the standard, recommended Scoop pattern. Do NOT flag the cleanup `Remove-Item` command as redundant or error.
+- Double-quoted strings with backslashes (e.g. `"${'$'}dir\\*-full.nupkg"`, `"${'$'}dir\\RELEASES"`) are standard valid PowerShell path syntax. Do NOT flag them.
+- Flag as **error** if `pre_install` contains redundant `Move-Item ...\\lib\\net45` or `Remove-Item \"${'$'}dir\\lib\"`, because `Expand-7zipArchive ... -ExtractDir 'lib\\net45'` already extracts files directly to `${'$'}dir` root without creating an extra `lib` directory.
 - This is **CORRECT** — do NOT flag it. Example:
   ```json
   "64bit": { "url": "...", "bin": [["app-3.1.0-x86_64.exe", "app"]] }
@@ -118,6 +134,11 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
 - If `license` is `"Proprietary"`, flag as a **warning**. Some apps are genuinely proprietary.
 - If `license` is missing or empty, flag as an **error**.
 - If `license` is not a valid SPDX identifier, flag as an **error**.
+
+### Review Strictness Rules
+- Only genuine defects that will break `scoop install`, `scoop uninstall`, or `scoop update` should be assigned `severity: "error"`.
+- If an issue is acceptable, a potential consideration, a styling suggestion, or not a critical breaking bug, assign `severity: "warning"`.
+- Never assign `severity: "error"` if the message describes the behavior as acceptable, harmless, or a warning.
 
 ## Output Format
 

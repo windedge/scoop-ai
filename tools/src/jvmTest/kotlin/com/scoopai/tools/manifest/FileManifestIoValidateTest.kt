@@ -100,6 +100,64 @@ class FileManifestIoValidateTest {
     }
 
     // ---------------------------------------------------------------
+    // validateExtractDirPreInstallConflict
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `validate flags conflict when pre_install uses Expand-7zipArchive and extract_dir is defined`() {
+        val manifest = """
+        {
+            "version": "0.3.0",
+            "description": "DeepSeek Harness Desktop client",
+            "homepage": "https://github.com/lencx/Minke",
+            "license": "Apache-2.0",
+            "architecture": {
+                "64bit": {
+                    "url": "https://github.com/lencx/Minke/releases/download/v0.3.0/Minke-windows-x64.exe#/dl.7z",
+                    "hash": "81003d28b1bfe35ea4a5bf13c3f86aa283c75122eace78efdc4c0d587b4f547b"
+                }
+            },
+            "extract_dir": "lib\\net45",
+            "bin": "Minke.exe",
+            "shortcuts": [["Minke.exe", "Minke"]],
+            "pre_install": [
+                "Expand-7zipArchive \"${D}dir\\*-full.nupkg\" -ExtractDir 'lib\\net45' -Removal",
+                "Remove-Item \"${D}dir\\RELEASES\" -Force -ErrorAction SilentlyContinue"
+            ],
+            "checkver": "github"
+        }
+        """.trimIndent()
+        val result = io.validate(manifest)
+        assertTrue(
+            result.contains("Conflict") && result.contains("extract_dir") && result.contains("Expand-7zipArchive"),
+            "Should flag extract_dir conflict with Expand-7zipArchive pre_install: $result"
+        )
+    }
+
+    @Test
+    fun `validate allows normal manifest with extract_dir and non-extract pre_install`() {
+        val manifest = """
+        {
+            "version": "1.0.0",
+            "description": "Test tool",
+            "homepage": "https://example.com",
+            "license": "MIT",
+            "url": "https://example.com/app-1.0.0.zip",
+            "hash": "81003d28b1bfe35ea4a5bf13c3f86aa283c75122eace78efdc4c0d587b4f547b",
+            "extract_dir": "app-1.0.0",
+            "bin": "app.exe",
+            "pre_install": "if (!(Test-Path \"${D}dir\\config.ini\")) { Set-Content \"${D}dir\\config.ini\" '' }",
+            "checkver": "github"
+        }
+        """.trimIndent()
+        val result = io.validate(manifest)
+        assertFalse(
+            result.contains("Conflict") && result.contains("extract_dir"),
+            "Should NOT flag extract_dir when pre_install is just config creation: $result"
+        )
+    }
+
+    // ---------------------------------------------------------------
     // validateGuiBin: bin references same exe as shortcuts
     // ---------------------------------------------------------------
 

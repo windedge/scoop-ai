@@ -121,6 +121,7 @@ class FileManifestIo(
             safeValidate("pre_install rename", warnings) { validatePreInstallRename(obj, errors) }
             safeValidate("GUI bin", warnings) { validateGuiBin(obj, errors, warnings) }
             safeValidate("extract_dir", warnings) { validateExtractDir(obj, warnings) }
+            safeValidate("extract_dir pre_install conflict", warnings) { validateExtractDirPreInstallConflict(obj, errors) }
             safeValidate("autoupdate v-prefix", warnings) { validateAutoupdateVPrefix(obj, warnings) }
             safeValidate("version", warnings) { validateVersion(obj, errors) }
             safeValidate("unknown fields", warnings) { validateUnknownFields(obj, errors) }
@@ -553,6 +554,34 @@ class FileManifestIo(
                     "If extract_dir is the same for all, remove per-arch extract_dir."
                 )
             }
+        }
+    }
+
+    /**
+     * Flags an error when `pre_install` extracts an inner archive via `Expand-7zipArchive`
+     * (e.g. Squirrel `*.nupkg` with `-ExtractDir 'lib\net45'`) but `extract_dir` is also defined.
+     * In Scoop, outer extraction checks `extract_dir` first before `pre_install` runs;
+     * if `extract_dir` points to a path inside the unextracted inner archive, Scoop crashes with error 16.
+     */
+    private fun validateExtractDirPreInstallConflict(obj: JsonObject, errors: MutableList<String>) {
+        val preInstallLines = stringListOrNull(obj["pre_install"]) ?: emptyList()
+        val hasInnerExtraction = preInstallLines.any { line ->
+            line.contains("Expand-7zipArchive", ignoreCase = true) &&
+                (line.contains("-ExtractDir", ignoreCase = true) || line.contains(".nupkg", ignoreCase = true))
+        }
+        if (!hasInnerExtraction) return
+
+        val topExtractDir = obj["extract_dir"]?.jsonPrimitive?.contentOrNull
+        val archExtractDirs = obj["architecture"]?.jsonObject?.values?.mapNotNull {
+            (it as? JsonObject)?.get("extract_dir")?.jsonPrimitive?.contentOrNull
+        } ?: emptyList()
+        val allExtractDirs = listOfNotNull(topExtractDir) + archExtractDirs
+
+        if (allExtractDirs.isNotEmpty()) {
+            errors.add(
+                "Conflict: Manifest defines 'extract_dir' (${allExtractDirs.joinToString()}) while 'pre_install' already extracts an inner archive via Expand-7zipArchive. " +
+                "Scoop will fail during initial outer archive extraction with 'Could not find ... (error 16)' because the inner archive has not yet been extracted. Remove 'extract_dir'."
+            )
         }
     }
 

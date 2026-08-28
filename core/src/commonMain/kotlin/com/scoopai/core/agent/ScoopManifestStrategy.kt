@@ -108,6 +108,7 @@ fun scoopManifestStrategy(
     val researchDataKey = createStorageKey<ResearchOutput>("research_data")
     val analyzeDataKey = createStorageKey<AnalyzeOutput>("analyze_data")
     val suggestedAppNameKey = createStorageKey<String>("suggested_app_name")
+    val appNameConflictKey = createStorageKey<String>("app_name_conflict")
     val finalManifestKey = createStorageKey<String>("final_manifest")
 
     // ── Phase timing (for progress logging) ────────────────────
@@ -210,28 +211,32 @@ fun scoopManifestStrategy(
 
     // ── Verify node (deterministic: validate + review + app name conflict) ──
     val verify by node<String, RefineContext?>("verify") { manifest ->
-        validateManifest(manifest, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries, usedAppNamesProvider, suggestedAppNameKey) { storage.set(finalManifestKey, it) }
+        validateManifest(manifest, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries, usedAppNamesProvider, suggestedAppNameKey, appNameConflictKey) { storage.set(finalManifestKey, it) }
     }
 
     // ── Build final result node (reads from storage, replaces edge transform that used captured vars) ──
     val buildFinalResult by node<RefineContext?, ManifestResult>("buildFinalResult") { _ ->
         val manifest = storage.get(finalManifestKey) ?: ""
+        val conflict = storage.get(appNameConflictKey)
         ManifestResult(
             manifest = extractJsonBlock(manifest)?.let { formatManifestJson(it) } ?: manifest,
             suggestedAppName = storage.get(suggestedAppNameKey),
+            issues = listOfNotNull(conflict),
         )
     }
 
     // ── Build exhausted result node ──
     val buildExhaustedResult by node<RefineContext?, ManifestResult>("buildExhaustedResult") { ctx ->
         val issueList = ctx?.let { splitFeedback(it.feedback) } ?: emptyList()
-        logger.warn { "[strategy] Refine exhausted after $maxRetries attempts. Returning last manifest with ${issueList.size} issue(s)." }
+        val conflict = storage.get(appNameConflictKey)
+        val allIssues = if (conflict != null && conflict !in issueList) issueList + conflict else issueList
+        logger.warn { "[strategy] Refine exhausted after $maxRetries attempts. Returning last manifest with ${allIssues.size} issue(s)." }
         val manifest = storage.get(finalManifestKey) ?: ""
         ManifestResult(
             manifest = extractJsonBlock(manifest)?.let { formatManifestJson(it) } ?: manifest,
             suggestedAppName = storage.get(suggestedAppNameKey),
             exhausted = true,
-            issues = issueList,
+            issues = allIssues,
         )
     }
 
@@ -369,6 +374,7 @@ internal suspend fun validateManifest(
     maxRetries: Int,
     usedAppNamesProvider: (suspend () -> Set<String>)? = null,
     suggestedAppNameKey: AIAgentStorageKey<String>? = null,
+    appNameConflictKey: AIAgentStorageKey<String>? = null,
     finalManifestSetter: suspend (String) -> Unit,
 ): RefineContext? {
     finalManifestSetter(manifest)
@@ -409,14 +415,19 @@ internal suspend fun validateManifest(
 
     // Step 1.7: App name conflict check
     // (reads suggestedAppName from storage, checks against local bucket names)
+    // NOTE: Name conflict is a non-blocking Notice; it must NOT trigger a Refine loop because
+    // the LLM cannot change local bucket contents. It is recorded to be surfaced in ManifestResult.issues.
     if (usedAppNamesProvider != null && suggestedAppNameKey != null) {
         try {
             val suggestedName = storage.get(suggestedAppNameKey)
             val usedNames = usedAppNamesProvider()
             if (usedNames.isNotEmpty()) {
-                checkAppNameConflict(suggestedName, usedNames)?.let { msg ->
-                    errors.add(msg)
-                    logger.info { "[verify] App name conflict detected: $suggestedName" }
+                val conflictMsg = checkAppNameConflict(suggestedName, usedNames)
+                if (conflictMsg != null) {
+                    if (appNameConflictKey != null) {
+                        storage.set(appNameConflictKey, conflictMsg)
+                    }
+                    logger.info { "[verify] App name conflict detected (non-blocking notice): $suggestedName" }
                 }
             }
         } catch (e: Exception) {

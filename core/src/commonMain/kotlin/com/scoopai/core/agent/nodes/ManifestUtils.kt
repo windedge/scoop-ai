@@ -35,8 +35,25 @@ import kotlinx.serialization.json.put
 fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): String {
     val effectiveBin = filterExecutables(analyze.bin)
 
+    // ---- Normalize pre_install and lift Squirrel/nupkg scripts from installer_scripts ----
+    val allInstallerScripts = analyze.installer_scripts.values.flatten()
+    val isSquirrelNupkg = allInstallerScripts.any { it.contains(".nupkg", ignoreCase = true) || it.contains("lib\\net45", ignoreCase = true) }
+    val liftedPreInstall = if (isSquirrelNupkg) {
+        (analyze.pre_install + allInstallerScripts).distinct()
+    } else {
+        analyze.pre_install
+    }
+    val effectivePreInstall = normalizePreInstallScripts(liftedPreInstall)
+
+    // Check if inner archive extraction via Expand-7zipArchive is present.
+    // If so, extract_dir must be suppressed because Scoop checks extract_dir before pre_install runs.
+    val hasInnerExtraction = isSquirrelNupkg || effectivePreInstall.any {
+        it.contains("Expand-7zipArchive", ignoreCase = true) &&
+            (it.contains("-ExtractDir", ignoreCase = true) || it.contains(".nupkg", ignoreCase = true))
+    }
+
     // Check if all entries share the same extract_dir (trivially true for single entry)
-    val sharedExtractDir = if (analyze.entries.all { it.extract_dir.isNotBlank() } && analyze.entries.map { it.extract_dir }.distinct().size == 1) {
+    val sharedExtractDir = if (!hasInnerExtraction && analyze.entries.all { it.extract_dir.isNotBlank() } && analyze.entries.map { it.extract_dir }.distinct().size == 1) {
         analyze.entries.first().extract_dir
     } else {
         null
@@ -88,9 +105,11 @@ fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): 
         } else value
     }
 
+    val effectiveDescription = cleanDescription(research.description) ?: research.description
+
     return buildJsonObject {
         put("version", research.version)
-        if (research.description.isNotBlank()) put("description", research.description)
+        if (effectiveDescription.isNotBlank()) put("description", effectiveDescription)
         if (research.homepage.isNotBlank()) put("homepage", research.homepage)
         research.license?.value?.let { put("license", it) }
 
@@ -109,8 +128,8 @@ fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): 
                     putJsonObject(entry.architecture) {
                         put("url", entry.url)
                         put("hash", entry.hash)
-                        // Only put extract_dir inside arch block if not shared
-                        if (sharedExtractDir == null && entry.extract_dir.isNotBlank()) {
+                        // Only put extract_dir inside arch block if not shared and not inner extraction
+                        if (!hasInnerExtraction && sharedExtractDir == null && entry.extract_dir.isNotBlank()) {
                             put("extract_dir", entry.extract_dir)
                         }
                         // Per-arch bin for versioned executables
@@ -127,12 +146,14 @@ fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): 
                                 }
                             }
                         }
-                        // Per-arch installer scripts (NSIS Electron)
-                        val scripts = analyze.installer_scripts[entry.architecture]
-                        if (!scripts.isNullOrEmpty()) {
-                            putJsonObject("installer") {
-                                putJsonArray("script") {
-                                    scripts.forEach { add(JsonPrimitive(fixPowerShellEscaping(it))) }
+                        // Per-arch installer scripts (only when not lifted to pre_install)
+                        if (!isSquirrelNupkg) {
+                            val scripts = analyze.installer_scripts[entry.architecture]
+                            if (!scripts.isNullOrEmpty()) {
+                                putJsonObject("installer") {
+                                    putJsonArray("script") {
+                                        scripts.forEach { add(JsonPrimitive(fixPowerShellEscaping(it))) }
+                                    }
                                 }
                             }
                         }
@@ -170,9 +191,9 @@ fun assembleManifestSkeleton(research: ResearchOutput, analyze: AnalyzeOutput): 
                 }
             }
         }
-        if (analyze.pre_install.isNotEmpty()) {
+        if (effectivePreInstall.isNotEmpty()) {
             putJsonArray("pre_install") {
-                analyze.pre_install.forEach { add(JsonPrimitive(it)) }
+                effectivePreInstall.forEach { add(JsonPrimitive(it)) }
             }
         }
         if (normalizedEnvSet.isNotEmpty()) {
@@ -1134,4 +1155,67 @@ internal fun resolveDualBinConflicts(manifest: JsonObject): JsonObject {
     val hasArchBin = arch.values.any { (it as? JsonObject)?.containsKey("bin") == true }
     if (!hasArchBin) return manifest
     return JsonObject(manifest.toMutableMap().apply { remove("bin") })
+}
+
+private val VERSIONED_NUPKG_REGEX = Regex("""([a-zA-Z0-9_\-\.]+?)-[\d\.]+-full\.nupkg""", RegexOption.IGNORE_CASE)
+
+/**
+ * Normalizes pre_install PowerShell script lines:
+ * 1. Strips redundant Move-Item and Remove-Item lines for `lib\net45` that trigger runtime errors.
+ * 2. Replaces version-pinned `.nupkg` filenames with `*-full.nupkg` to ensure autoupdate resilience.
+ * 3. Ensures artifact removal has `-ErrorAction SilentlyContinue`.
+ */
+internal fun normalizePreInstallScripts(scripts: List<String>): List<String> {
+    if (scripts.isEmpty()) return emptyList()
+    val result = mutableListOf<String>()
+    for (line in scripts) {
+        val trimmed = line.trim()
+        // Filter out redundant Move-Item and Remove-Item for lib/net45
+        if (trimmed.startsWith("Move-Item", ignoreCase = true) && trimmed.contains("lib\\net45", ignoreCase = true)) {
+            continue
+        }
+        if (trimmed.startsWith("Remove-Item", ignoreCase = true) && trimmed.contains("\"\$dir\\lib\"", ignoreCase = true) && !trimmed.contains("RELEASES", ignoreCase = true)) {
+            continue
+        }
+
+        var normalized = trimmed
+        // Replace hardcoded versioned nupkg like Minke-0.3.0-full.nupkg with Minke-*-full.nupkg
+        if (normalized.contains("-full.nupkg", ignoreCase = true)) {
+            normalized = normalized.replace(VERSIONED_NUPKG_REGEX) { mr ->
+                "${mr.groupValues[1]}-*-full.nupkg"
+            }
+        }
+        // Ensure Remove-Item for installer artifacts contains -ErrorAction SilentlyContinue
+        if (normalized.startsWith("Remove-Item", ignoreCase = true) && !normalized.contains("-ErrorAction", ignoreCase = true)) {
+            normalized = "$normalized -ErrorAction SilentlyContinue"
+        }
+        result.add(normalized)
+    }
+    return result
+}
+
+private val EMOJI_REGEX = Regex("""[\uD83C-\uDBFF][\uDC00-\uDFFF]|[\u2600-\u27BF\uFE00-\uFE0F\u2300-\u23FF\u2B50\u2B55\u200D]|\p{So}""")
+private val MARKDOWN_LINK_REGEX = Regex("""\[([^\]]+)\]\([^\)]+\)""")
+private val MARKDOWN_BADGE_REGEX = Regex("""\[!\[[^\]]*\]\([^\)]+\)\]\([^\)]+\)""")
+private val LEADING_PUNCTUATION_REGEX = Regex("""^[\s\-:：·•|]+""")
+private val WHITESPACE_REGEX = Regex("""\s+""")
+
+/**
+ * Cleans a description string:
+ * - Strips emojis (e.g. `🐳 `)
+ * - Strips markdown badges and link wrappers
+ * - Strips leading punctuation and excess spaces
+ * - Capitalizes the first letter
+ */
+internal fun cleanDescription(raw: String?): String? {
+    if (raw.isNullOrBlank()) return null
+    val text = raw.trim()
+        .replace(MARKDOWN_BADGE_REGEX, "")
+        .replace(MARKDOWN_LINK_REGEX, "$1")
+        .replace(EMOJI_REGEX, " ")
+        .replace(LEADING_PUNCTUATION_REGEX, "")
+        .replace(WHITESPACE_REGEX, " ")
+        .trim()
+    if (text.isBlank()) return null
+    return text.replaceFirstChar { it.uppercase() }
 }

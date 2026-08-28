@@ -80,11 +80,10 @@ When you have finished analyzing, call the `finalize_task_result` tool with your
   "bin": ["app.exe", ["app2.exe", "alias"]],
   "persist": ["config", "data"],
   "shortcuts": [["app.exe", "App Name"]],
-  "pre_install": ["script line 1", "script line 2"],
-  "installer_scripts": {
-    "64bit": ["Expand-7zipArchive ... app-64.7z ...", "Remove-Item ..."],
-    "32bit": ["Expand-7zipArchive ... app-32.7z ...", "Remove-Item ..."]
-  },
+  "pre_install": [
+    "Expand-7zipArchive \"${'$'}dir\\*-full.nupkg\" -ExtractDir 'lib\\net45' -Removal",
+    "Remove-Item \"${'$'}dir\\RELEASES\", \"${'$'}dir\\Update.exe\", \"${'$'}dir\\background.gif\", \"${'$'}dir\\setupIcon.ico\" -Force -ErrorAction SilentlyContinue"
+  ],
   "env_set": { "ENV_VAR_NAME": "${'$'}dir" },
   "env_add_path": ["subdir\\bin", "subdir\\shims"],
   "versioned_bin": true or false (default false),
