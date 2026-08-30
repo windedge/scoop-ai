@@ -43,7 +43,8 @@ data class ManifestResult(
 data class RefineContext(
     val manifest: String,
     val feedback: String,
-    val retryCount: Int,
+    val retryCount: Int = 1,
+    val history: List<String> = emptyList(),
 )
 
 /**

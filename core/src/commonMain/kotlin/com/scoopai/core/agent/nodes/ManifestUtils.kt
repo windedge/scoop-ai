@@ -506,25 +506,35 @@ fun detectArchitecture(filename: String): String {
 // Windows asset filtering
 // ---------------------------------------------------------------------------
 
-private val WINDOWS_EXTENSIONS = setOf(".zip", ".exe", ".msi", ".nupkg")
-private val EXCLUDED_EXTENSIONS = setOf(".sha256", ".sig", ".asc", ".pem")
-private val EXCLUDED_PLATFORM_KEYWORDS = listOf("darwin", "linux", "macos")
+private val WINDOWS_EXTENSIONS = setOf(".zip", ".exe", ".msi", ".nupkg", ".7z")
+private val EXCLUDED_EXTENSIONS = setOf(
+    ".sha256", ".sha512", ".sha1", ".md5", ".sig", ".asc", ".pem",
+    ".dmg", ".pkg", ".deb", ".rpm", ".apk", ".appimage",
+    ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tar.zst",
+)
+private val EXCLUDED_PLATFORM_KEYWORDS = listOf(
+    "darwin", "linux", "macos", "osx", "apple", "android",
+    "freebsd", "openbsd", "netbsd", "dragonfly", "solaris", "sunos",
+    "appimage", "ubuntu", "debian", "alpine", "fedora", "centos",
+    "-mac.", "-mac-", "_mac.", "_mac_", ".mac.", "-mac_", "_mac-",
+)
 
 /**
  * Filters raw release assets to only include Windows-compatible ones.
  *
  * Excludes:
- * - Non-Windows platforms (darwin, linux, macos)
- * - Signature/checksum files (.sha256, .sig, .asc, .pem)
+ * - Non-Windows platforms (darwin, linux, macos, mac, osx, bsd, etc.)
+ * - Signature/checksum files (.sha256, .sig, .asc, .pem, etc.)
+ * - Non-Windows extensions (.dmg, .pkg, .deb, .rpm, etc.)
  * - Source archives (source/src + .tar.gz)
  */
 fun filterWindowsAssets(assets: List<RawAssetInfo>): List<WindowsAsset> {
     return assets.mapNotNull { asset ->
         val lower = asset.filename.lowercase()
         val extension = when {
-            EXCLUDED_PLATFORM_KEYWORDS.any(lower::contains) -> null
             EXCLUDED_EXTENSIONS.any(lower::endsWith) -> null
-            (lower.contains("source") || lower.contains(".src")) && lower.contains(".tar.gz") -> null
+            EXCLUDED_PLATFORM_KEYWORDS.any(lower::contains) -> null
+            (lower.contains("source") || lower.contains(".src")) && (lower.contains(".tar") || lower.contains(".zip")) -> null
             else -> WINDOWS_EXTENSIONS.find(lower::endsWith)
         } ?: return@mapNotNull null
 

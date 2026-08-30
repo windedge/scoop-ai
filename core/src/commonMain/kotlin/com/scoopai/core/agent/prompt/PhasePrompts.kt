@@ -134,7 +134,7 @@ $task
    - Exclude assets containing: `darwin`, `linux`, `macos`
    - Exclude extensions: `.sha256`, `.sig`, `.asc`, `.pem`
    - Exclude source archives containing `source` or `src` with `.tar.gz`
-   - If there are ambiguous candidates, use the `__ask_user__` tool to ask which to include.
+   - If there are ambiguous candidates or multiple asset variants, use the `__ask_user__` questionnaire tool: provide a clear `question` and structured candidate choices in `options` (e.g. `["app-x64.zip (Recommended)", "app-arm64.zip", "app-setup.exe"]`) so the user can interactively select. Set `isMultiSelect: true` if multiple choices can be selected simultaneously.
 
 7. **Discover persist targets — prefer source archive search over file-by-file reading** — Unless the user requirements explicitly say to skip persist discovery:
 
@@ -623,36 +623,47 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
  * a list of issues to fix. It has NO tools available, only finalize_task_result.
  * The prompt focuses the LLM on fixing ONLY the listed issues.
  */
-fun buildRefinePrompt(ctx: RefineContext): String = """⚠️ **CRITICAL: Do NOT change `version` or `url` to a different release.** The version was fixed during the analyze phase. If a listed issue cannot be fixed without changing version, LEAVE it unfixed — better to ship with a warning than to downgrade the version.
-
-You are a Scoop manifest refiner. The manifest below has validation/review issues.
-Fix ONLY the listed issues. Do NOT change anything else.
-
-## Issues to Fix
-${ctx.feedback}
-
-## Current Manifest
-```json
-${ctx.manifest}
-```
-
-## Rules
-- Fix each listed issue exactly as described.
-- Do NOT reorganize or rewrite the manifest.
-- Do NOT add, remove, or rename fields not mentioned in the issues.
-- After fixing, call `finalize_task_result` with the corrected manifest.
-
-## Name Conflict Resolution
-If the issue mentions an app name conflict with an existing Scoop bucket manifest, you MUST:
-1. Choose a new, unique name (e.g. prefix with the repo name or GitHub owner).
-2. Update `suggested_app_name` in the manifest path accordingly.
-3. Avoid common single-word names like `micro`, `app`, `tool`, etc.
-
-## NSIS `#/dl.7z` Extraction Context
-- If an asset URL already contains the `#/dl.7z` fragment, Scoop extracts the installer's inner payload with 7-Zip before installation, so any executable referenced by `bin` or `shortcuts` DOES exist after extraction. A review issue claiming a bin/shortcut target "will not exist after extracting" for such an URL is a **false positive** — keep the manifest unchanged and explain this in your reply.
-- If the asset is genuinely an installer-bearing zip WITHOUT `#/dl.7z`, fix it by either appending `#/dl.7z` to the url or switching to a portable (non-installer) asset.
-- GUI-only apps may legitimately omit `bin` and keep only `shortcuts`; do not add a `bin` field just because a review issue mentions a missing bin.
-
-## Attempt
-${ctx.retryCount} / 3
-""".trimIndent()
+fun buildRefinePrompt(ctx: RefineContext): String = buildString {
+    appendLine("⚠️ **CRITICAL: Do NOT change `version` or `url` to a different release.** The version was fixed during the analyze phase. If a listed issue cannot be fixed without changing version, LEAVE it unfixed — better to ship with a warning than to downgrade the version.")
+    appendLine()
+    appendLine("You are a Scoop manifest refiner. Modify the manifest according to the instructions and feedback below.")
+    appendLine()
+    if (ctx.history.isNotEmpty()) {
+        appendLine("## Conversation / Refine History")
+        ctx.history.forEachIndexed { idx, item ->
+            appendLine("${idx + 1}. $item")
+        }
+        appendLine()
+        appendLine("## Current Request / Issues to Fix")
+        appendLine(ctx.feedback)
+    } else {
+        appendLine("## Issues to Fix")
+        appendLine(ctx.feedback)
+    }
+    appendLine()
+    appendLine("## Current Manifest")
+    appendLine("```json")
+    appendLine(ctx.manifest)
+    appendLine("```")
+    appendLine()
+    appendLine("## Rules")
+    appendLine("- Fix each listed issue or apply the user's requested modifications accurately.")
+    appendLine("- If the instruction explicitly requests adding, modifying, or removing specific fields (such as shortcuts, bin, suggest, notes, persist, description), apply those modifications faithfully.")
+    appendLine("- Preserve all other unrelated fields and the existing structure verbatim.")
+    appendLine("- Do NOT reorganize or rewrite unrelated parts of the manifest.")
+    appendLine("- After fixing/refining, call `finalize_task_result` with the corrected manifest.")
+    appendLine()
+    appendLine("## Name Conflict Resolution")
+    appendLine("If the issue mentions an app name conflict with an existing Scoop bucket manifest, you MUST:")
+    appendLine("1. Choose a new, unique name (e.g. prefix with the repo name or GitHub owner).")
+    appendLine("2. Update `suggested_app_name` in the manifest path accordingly.")
+    appendLine("3. Avoid common single-word names like `micro`, `app`, `tool`, etc.")
+    appendLine()
+    appendLine("## NSIS `#/dl.7z` Extraction Context")
+    appendLine("- If an asset URL already contains the `#/dl.7z` fragment, Scoop extracts the installer's inner payload with 7-Zip before installation, so any executable referenced by `bin` or `shortcuts` DOES exist after extraction. A review issue claiming a bin/shortcut target \"will not exist after extracting\" for such an URL is a **false positive** — keep the manifest unchanged and explain this in your reply.")
+    appendLine("- If the asset is genuinely an installer-bearing zip WITHOUT `#/dl.7z`, fix it by either appending `#/dl.7z` to the url or switching to a portable (non-installer) asset.")
+    appendLine("- GUI-only apps may legitimately omit `bin` and keep only `shortcuts`; do not add a `bin` field just because a review issue mentions a missing bin.")
+    appendLine()
+    appendLine("## Attempt")
+    append("${ctx.retryCount} / 3")
+}

@@ -278,7 +278,7 @@ class ZipArchiveInspector(
     // searchTextInArchive internals
     // -----------------------------------------------------------------------
 
-    private fun searchZipForPatterns(
+    private suspend fun searchZipForPatterns(
         url: String,
         patterns: List<Pair<Regex, String>>,
         extensionFilter: Set<String>,
@@ -480,7 +480,7 @@ class ZipArchiveInspector(
     // InnoSetup listing (via innounp)
     // -----------------------------------------------------------------------
 
-    private fun listInnosetup(url: String): String {
+    private suspend fun listInnosetup(url: String): String {
         val files = listInnosetupPaths(url)
         return buildJsonObject {
             put("url", url)
@@ -488,7 +488,7 @@ class ZipArchiveInspector(
         }.toString()
     }
 
-    private fun listInnosetupPaths(url: String): List<String> {
+    private suspend fun listInnosetupPaths(url: String): List<String> {
         val file = cache.getOrDownload(url)
         return try {
             val proc = ProcessBuilder("innounp", "-s", file.toAbsolutePath().toString())
@@ -723,7 +723,7 @@ class ZipArchiveInspector(
     // 7z listing (uses system 7z command)
     // -----------------------------------------------------------------------
 
-    private fun list7z(url: String): String {
+    private suspend fun list7z(url: String): String {
         val file = cache.getOrDownload(url)
         val files = run7zList(file)
         val nestedResult = probeNestedArchive(file, files)
@@ -739,7 +739,7 @@ class ZipArchiveInspector(
         }.toString()
     }
 
-    private fun list7zPaths(url: String): List<String> {
+    private suspend fun list7zPaths(url: String): List<String> {
         val file = cache.getOrDownload(url)
         return run7zList(file)
     }
@@ -748,7 +748,7 @@ class ZipArchiveInspector(
     // ZIP listing
     // -----------------------------------------------------------------------
 
-    private fun listZip(url: String): String {
+    private suspend fun listZip(url: String): String {
         val file = cache.getOrDownload(url)
         val entries = mutableListOf<String>()
         Files.newInputStream(file).use { fis ->
@@ -775,7 +775,7 @@ class ZipArchiveInspector(
         }.toString()
     }
 
-    private fun listZipPaths(url: String): List<String> {
+    private suspend fun listZipPaths(url: String): List<String> {
         val file = cache.getOrDownload(url)
         val entries = mutableListOf<String>()
         Files.newInputStream(file).use { fis ->
@@ -886,7 +886,7 @@ class ZipArchiveInspector(
     // tar.gz listing (uses system tar command)
     // -----------------------------------------------------------------------
 
-    private fun listTar(url: String): String {
+    private suspend fun listTar(url: String): String {
         val files = listTarPaths(url)
         return buildJsonObject {
             put("url", url)
@@ -894,7 +894,7 @@ class ZipArchiveInspector(
         }.toString()
     }
 
-    private fun listTarPaths(url: String): List<String> {
+    private suspend fun listTarPaths(url: String): List<String> {
         val file = cache.getOrDownload(url)
         return try {
             val process = ProcessBuilder("tar", "tzf", file.toAbsolutePath().toString())
@@ -915,7 +915,7 @@ class ZipArchiveInspector(
     // MSI listing
     // -----------------------------------------------------------------------
 
-    private fun listMsi(url: String): String {
+    private suspend fun listMsi(url: String): String {
         val file = cache.getOrDownload(url)
         val files = listMsiPathsFromFile(file)
         return buildJsonObject {
@@ -924,7 +924,7 @@ class ZipArchiveInspector(
         }.toString()
     }
 
-    private fun listMsiPaths(url: String): List<String> = listMsiPathsFromFile(cache.getOrDownload(url))
+    private suspend fun listMsiPaths(url: String): List<String> = listMsiPathsFromFile(cache.getOrDownload(url))
 
     private fun listMsiPathsFromFile(msiFile: Path): List<String> {
         return if (isLessmsiAvailable()) {

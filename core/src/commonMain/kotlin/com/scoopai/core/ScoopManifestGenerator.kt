@@ -21,6 +21,10 @@ import com.scoopai.core.agent.prompt.buildAnalyzePrompt
 import com.scoopai.core.agent.prompt.buildGeneratePrompt
 import com.scoopai.core.agent.prompt.buildRefinePrompt
 import com.scoopai.core.agent.prompt.buildResearchPrompt
+import com.scoopai.core.agent.normalizeManifest
+import com.scoopai.core.agent.parseValidateErrors
+import com.scoopai.core.agent.nodes.checkAutoupdateVersionPlaceholder
+import com.scoopai.core.agent.nodes.validatePersistPaths
 import com.scoopai.core.agent.scoopManifestStrategy
 import com.scoopai.core.utils.logLlmResponse
 import com.scoopai.core.utils.sanitizeForLog
@@ -28,7 +32,10 @@ import com.scoopai.core.llm.LlmParamsBuilder
 import com.scoopai.core.tools.api.ArchiveInspector
 import com.scoopai.core.tools.api.GitHubApi
 import com.scoopai.core.tools.api.ManifestIo
-import com.scoopai.core.utils.sanitizeForLog
+import ai.koog.agents.core.tools.ToolBase
+import ai.koog.agents.core.dsl.builder.strategy
+import ai.koog.agents.ext.agent.subgraphWithTask
+import com.scoopai.core.agent.LenientStringFinishTool
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
@@ -291,6 +298,122 @@ class ScoopManifestGenerator(
 
         return result.copy(
             manifest = result.manifest,
+            tokenUsage = TokenUsage(tokenAccumulator.input, tokenAccumulator.output),
+            durationMs = elapsed,
+            stages = observer.snapshot(),
+        )
+    }
+
+    /**
+     * Refines an existing Scoop manifest based on user instruction or feedback.
+     * Runs a lightweight single-phase refine LLM step without re-executing research/analyze.
+     *
+     * @param manifestJson The current Scoop manifest JSON string.
+     * @param instruction The user's prompt or review feedback requesting modifications.
+     * @param suggestedAppName Optional application name.
+     */
+    suspend fun refine(
+        manifestJson: String,
+        instruction: String,
+        history: List<String> = emptyList(),
+        suggestedAppName: String? = null,
+    ): ManifestResult {
+        val startTime = TimeSource.Monotonic.markNow()
+        observer.reset()
+        onPhase?.invoke("refine")
+        observer.enterPhase("refine")
+        val tokenAccumulator = TokenAccumulator()
+
+        val finishTool = LenientStringFinishTool()
+        val registry = ToolRegistry {
+            tool(finishTool)
+        }
+
+        val refineStrategy = strategy<String, String>("refine_manifest") {
+            val refineSubgraph by subgraphWithTask<String, String, String>(
+                tools = emptyList<ToolBase<*, *>>(),
+                finishTool = finishTool,
+                llmParams = LlmParamsBuilder.build(modelWithoutToolChoice, thinkingLevel),
+            ) { input ->
+                buildRefinePrompt(
+                    RefineContext(
+                        manifest = manifestJson,
+                        feedback = instruction,
+                        history = history,
+                        retryCount = 1,
+                    )
+                )
+            }
+            nodeStart then refineSubgraph then nodeFinish
+        }
+
+        val agentConfig = AIAgentConfig(
+            prompt = prompt("chat") {
+                system("You are a Scoop manifest refiner. You modify existing Scoop bucket manifests based on instructions.")
+            },
+            model = modelWithoutToolChoice,
+            maxAgentIterations = maxIterations,
+        )
+
+        val agent: GraphAIAgent<String, String> = AIAgent(
+            promptExecutor = promptExecutor,
+            agentConfig = agentConfig,
+            strategy = refineStrategy,
+            toolRegistry = registry,
+        ) {
+            handleEvents {
+                onLLMCallCompleted { ctx ->
+                    val inputTokens = ctx.response?.metaInfo?.inputTokensCount?.toLong() ?: 0L
+                    val outputTokens = ctx.response?.metaInfo?.outputTokensCount?.toLong() ?: 0L
+                    observer.recordLlmCall(inputTokens, outputTokens)
+                    tokenAccumulator.input += inputTokens
+                    tokenAccumulator.output += outputTokens
+                    logLlmResponse(ctx.response, tokenAccumulator)
+                }
+            }
+        }
+
+        val refinedManifest: String = try {
+            agent.run(manifestJson)
+        } catch (e: Exception) {
+            val toThrow: Exception = if (isSubgraphTaskToolCallExhaustion(e)) {
+                ScoopAiGenerationException(
+                    message = buildToolCallExhaustionMessage(
+                        modelId = model.id,
+                        phase = "refine",
+                        originalMessage = e.message ?: e::class.simpleName ?: "unknown",
+                    ),
+                    cause = e,
+                )
+            } else {
+                e
+            }
+            throw toThrow
+        }
+
+        val normalized = normalizeManifest(refinedManifest)
+        val elapsed = startTime.elapsedNow().inWholeMilliseconds
+        observer.exitPhase("refine", elapsed)
+        phaseOutputListener?.invoke("refine", normalized)
+
+        val errors = mutableListOf<String>()
+        if (manifestIo != null) {
+            try {
+                val validateJson = manifestIo.validate(normalized)
+                val validationErrors = parseValidateErrors(validateJson)
+                errors.addAll(validationErrors)
+            } catch (e: Exception) {
+                errors.add("Validate error: ${e.message}")
+            }
+        }
+        checkAutoupdateVersionPlaceholder(normalized)?.let { errors.add(it) }
+        validatePersistPaths(normalized)?.let { errors.add(it) }
+
+        return ManifestResult(
+            manifest = normalized,
+            suggestedAppName = suggestedAppName,
+            exhausted = errors.isNotEmpty(),
+            issues = errors,
             tokenUsage = TokenUsage(tokenAccumulator.input, tokenAccumulator.output),
             durationMs = elapsed,
             stages = observer.snapshot(),

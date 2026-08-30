@@ -7,6 +7,7 @@ import com.scoopai.tools.cache.ScoopCacheManager
 import com.scoopai.tools.config.ProviderConfigResolver
 import com.scoopai.tools.config.UsedAppNameScanner
 import com.scoopai.tools.github.JdkHttpGitHubApi
+import com.scoopai.tools.interaction.Question
 import com.scoopai.tools.manifest.FileManifestIo
 import com.scoopai.tools.verify.ProcessScoopVerifier
 
@@ -34,6 +35,14 @@ object DefaultScoopAiFactory {
          * Forwarded to [ScoopManifestGenerator].
          */
         onToolActivity: ((com.scoopai.core.ToolActivity) -> Unit)? = null,
+        /**
+         * Optional suspend callback for AskUser tool interaction.
+         */
+        askUserHandler: (suspend (String) -> String)? = null,
+        /**
+         * Optional questionnaire callback for AskUser tool interaction.
+         */
+        questionnaireHandler: (suspend (List<Question>) -> String)? = null,
     ): ScoopManifestGenerator {
         val resolved = ProviderConfigResolver.resolve(
             cliProvider = config.provider,
@@ -62,6 +71,8 @@ object DefaultScoopAiFactory {
             manifestIo = manifestIo,
             scoopVerifier = scoopVerifier,
             nonInteractive = config.nonInteractive,
+            askUserHandler = askUserHandler,
+            questionnaireHandler = questionnaireHandler,
         )
 
         return ScoopManifestGenerator(

@@ -14,9 +14,12 @@ import com.scoopai.core.tools.api.ScoopVerifier
 import com.scoopai.core.tools.api.WebFetcher
 import com.scoopai.tools.archive.ZipArchiveInspector
 import com.scoopai.tools.cache.ScoopCacheManager
+import com.scoopai.tools.cache.formatFileSize
 import com.scoopai.tools.github.JdkHttpGitHubApi
 import com.scoopai.tools.hash.StreamingHashComputer
 import com.scoopai.tools.manifest.FileManifestIo
+import com.scoopai.tools.interaction.Question
+import com.scoopai.tools.interaction.QuestionOption
 import com.scoopai.tools.interaction.SafeAskUser
 import com.scoopai.tools.verify.ProcessScoopVerifier
 import com.scoopai.tools.web.JdkHttpWebFetcher
@@ -43,9 +46,67 @@ object DefaultToolRegistryFactory {
         scoopVerifier: ScoopVerifier? = null,
         extraTools: List<Tool<*, *>> = emptyList(),
         nonInteractive: Boolean? = null,
+        askUserHandler: (suspend (String) -> String)? = null,
+        questionnaireHandler: (suspend (List<Question>) -> String)? = null,
     ): ToolRegistry {
         if (nonInteractive != null) {
             SafeAskUser.nonInteractiveOverride = nonInteractive
+        }
+        SafeAskUser.customHandler = askUserHandler
+        SafeAskUser.questionnaireHandler = questionnaireHandler
+
+        val isNonInteractive = nonInteractive ?: SafeAskUser.isNonInteractive()
+        if (questionnaireHandler != null) {
+            cache.downloadConfirmer = { url, sizeBytes ->
+                val fileName = url.substringBefore("?").substringAfterLast("/")
+                val sizeInfo = if (sizeBytes > 0) " (${formatFileSize(sizeBytes)})" else ""
+                val prompt = "Ready to download installer/archive '$fileName'$sizeInfo for analysis from:\n$url"
+                val q = Question(
+                    id = "download_confirm",
+                    label = "Download",
+                    prompt = prompt,
+                    options = listOf(
+                        QuestionOption(label = "Download and proceed", description = "Download $fileName into cache for SHA-256 and archive inspection"),
+                        QuestionOption(label = "Skip downloading", description = "Skip downloading; agent will proceed with alternative information"),
+                    ),
+                    allowOther = true,
+                )
+                val response = questionnaireHandler.invoke(listOf(q))
+                val trimmed = response.trim().lowercase()
+                !(trimmed == "n" || trimmed == "no" || trimmed == "cancel" || trimmed == "skip" || trimmed == "abort" || trimmed == "false" || trimmed.contains("skip downloading"))
+            }
+        } else if (askUserHandler != null) {
+            cache.downloadConfirmer = { url, sizeBytes ->
+                val fileName = url.substringBefore("?").substringAfterLast("/")
+                val sizeInfo = if (sizeBytes > 0) " (${formatFileSize(sizeBytes)})" else ""
+                val prompt = "Ready to download installer/archive '$fileName'$sizeInfo for analysis from:\n$url\nProceed with download?"
+                val response = askUserHandler.invoke(prompt)
+                val trimmed = response.trim().lowercase()
+                !(trimmed == "n" || trimmed == "no" || trimmed == "cancel" || trimmed == "skip" || trimmed == "abort" || trimmed == "false")
+            }
+        } else if (isNonInteractive) {
+            // Non-interactive mode (e.g. CLI -n): skip confirmation, download directly
+            cache.downloadConfirmer = null
+        } else {
+            // Interactive CLI mode: confirm with user via console/stdin
+            cache.downloadConfirmer = { url, sizeBytes ->
+                val fileName = url.substringBefore("?").substringAfterLast("/")
+                val sizeInfo = if (sizeBytes > 0) " (${formatFileSize(sizeBytes)})" else ""
+                val prompt = "Ready to download installer/archive '$fileName'$sizeInfo for analysis from:\n$url"
+                val q = Question(
+                    id = "download_confirm",
+                    label = "Download",
+                    prompt = prompt,
+                    options = listOf(
+                        QuestionOption(label = "Download and proceed", description = "Download $fileName into cache for inspection"),
+                        QuestionOption(label = "Skip downloading", description = "Skip downloading this archive"),
+                    ),
+                    allowOther = true,
+                )
+                val response = SafeAskUser.execute(SafeAskUser.Args(questions = listOf(q)))
+                val trimmed = response.trim().lowercase()
+                !(trimmed == "n" || trimmed == "no" || trimmed == "cancel" || trimmed == "skip" || trimmed == "abort" || trimmed == "false" || trimmed.contains("skip downloading"))
+            }
         }
         cacheManager = cache
         toolBudget = ToolCallBudget()
@@ -66,14 +127,14 @@ object DefaultToolRegistryFactory {
             registerIfToolSet(manifestIo)
             registerIfToolSet(scoopVerifier)
             tool(SafeAskUser)
-            extraTools.forEach { tool(it) }
+            tools(extraTools)
         }
     }
 
-    /** Get the cache manager used in the current run (for finalizing cache entries). */
+    /** Returns current cache manager instance, if configured. */
     fun getCacheManager(): ScoopCacheManager? = cacheManager
 
-    /** Get the tool call budget used in the current run (for resetting between runs). */
+    /** Returns current tool budget instance, if configured. */
     fun getToolBudget(): ToolCallBudget? = toolBudget
 
     /**
@@ -91,6 +152,9 @@ object DefaultToolRegistryFactory {
 
     /** Clean up resources. Call after agent run finishes. */
     fun cleanup() {
+        SafeAskUser.customHandler = null
+        SafeAskUser.questionnaireHandler = null
+        cacheManager?.downloadConfirmer = null
         cacheManager?.cleanup()
         cacheManager = null
         toolBudget = null

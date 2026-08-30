@@ -10,6 +10,7 @@ import com.scoopai.core.agent.ResearchStatus
 import com.scoopai.core.agent.AssetEntry
 import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.agent.WindowsAsset
+import com.scoopai.core.agent.normalizeManifest
 import com.scoopai.core.observer.GenerationObserver
 import com.scoopai.core.tools.api.ManifestIo
 import ai.koog.serialization.typeToken
@@ -19,6 +20,7 @@ import kotlinx.serialization.decodeFromString
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.assertContentEquals
 
@@ -1001,6 +1003,105 @@ class ScoopManifestGeneratorMockTest {
 
         val startedEvent = activities.filterIsInstance<ToolActivity.Started>().first { it.toolName == com.scoopai.core.agent.PhaseTools.FETCH_REPO_INFO }
         assertTrue(startedEvent.toolArgs.contains("sharkdp/fd"), "Started event should contain args")
+    }
+
+    @Test
+    fun `refine modifies existing manifest and returns updated ManifestResult`() = runBlocking {
+        val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
+
+        val phases = mutableListOf<String>()
+        val phaseOutputs = mutableListOf<Pair<String, String>>()
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(generateFinishTool, refinedManifest) onRequestContains "manifest refiner"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = model,
+            toolRegistry = ToolRegistry.EMPTY,
+            maxIterations = 10,
+            onPhase = { phases.add(it) },
+            phaseOutputListener = { p, out -> phaseOutputs.add(p to out) },
+        )
+
+        val result = generator.refine(
+            manifestJson = initialManifest,
+            instruction = "Add start menu shortcut for app.exe",
+            suggestedAppName = "initial-app",
+        )
+
+        assertEquals("refine", phases.singleOrNull(), "Should only run refine phase")
+        val expectedManifest = normalizeManifest(refinedManifest)
+        assertEquals(expectedManifest, result.manifest)
+        assertEquals("initial-app", result.suggestedAppName)
+        assertTrue(phaseOutputs.any { it.first == "refine" && it.second == expectedManifest })
+    }
+
+    @Test
+    fun `refine returns issues and exhausted true when refined manifest contains validation errors`() = runBlocking {
+        val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        // Refined manifest with hardcoded autoupdate version placeholder issue
+        val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"autoupdate":{"url":"https://example.com/1.0.0/app.zip"}}"""
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(generateFinishTool, refinedManifest) onRequestContains "manifest refiner"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = model,
+            toolRegistry = ToolRegistry.EMPTY,
+            maxIterations = 10,
+        )
+
+        val result = generator.refine(
+            manifestJson = initialManifest,
+            instruction = "Add autoupdate",
+            suggestedAppName = "initial-app",
+        )
+
+        assertTrue(result.exhausted, "Should flag exhausted when issues exist")
+        assertTrue(result.issues.isNotEmpty(), "Should return issues list")
+        assertTrue(result.issues.any { it.contains("autoupdate") }, "Issues should describe the autoupdate placeholder error")
+    }
+
+    @Test
+    fun `refine allows removing bin field without autoFillBin adding it back`() = runBlocking {
+        val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
+        // User requested removing bin; refined manifest has only shortcuts and no bin
+        val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","shortcuts":[["app.exe","Initial App"]]}"""
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(generateFinishTool, refinedManifest) onRequestContains "manifest refiner"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = model,
+            toolRegistry = ToolRegistry.EMPTY,
+            maxIterations = 10,
+        )
+
+        val result = generator.refine(
+            manifestJson = initialManifest,
+            instruction = "Remove bin attribute, keep only shortcuts",
+            suggestedAppName = "initial-app",
+        )
+
+        val parsed = kotlinx.serialization.json.Json.parseToJsonElement(result.manifest) as kotlinx.serialization.json.JsonObject
+        assertNull(parsed["bin"], "bin field should remain absent when user removes it")
+        assertNotNull(parsed["shortcuts"], "shortcuts field should remain present")
     }
 
     // =========================================================================

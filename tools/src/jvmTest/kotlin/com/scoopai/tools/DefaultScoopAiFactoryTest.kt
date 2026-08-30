@@ -123,7 +123,7 @@ class DefaultScoopAiFactoryTest {
     // ---------------------------------------------------------------
 
     @Test
-    fun `createGenerator registers cache manager on DefaultToolRegistryFactory`() {
+    fun `createGenerator with nonInteractive true leaves downloadConfirmer null when no askUserHandler`() {
         DefaultScoopAiFactory.createGenerator(
             ScoopAiConfig(
                 provider = "deepseek",
@@ -131,7 +131,37 @@ class DefaultScoopAiFactoryTest {
                 nonInteractive = true,
             )
         )
-        assertNotNull(DefaultToolRegistryFactory.getCacheManager())
-        assertNotNull(DefaultToolRegistryFactory.getToolBudget())
+        val cache = DefaultToolRegistryFactory.getCacheManager()
+        assertNotNull(cache)
+        assertEquals(null, cache?.downloadConfirmer)
+    }
+
+    @Test
+    fun `createGenerator with nonInteractive false sets downloadConfirmer for CLI interactive mode`() {
+        DefaultScoopAiFactory.createGenerator(
+            ScoopAiConfig(
+                provider = "deepseek",
+                apiKey = "sk-fake",
+                nonInteractive = false,
+            )
+        )
+        val cache = DefaultToolRegistryFactory.getCacheManager()
+        assertNotNull(cache)
+        assertNotNull(cache?.downloadConfirmer)
+    }
+
+    @Test
+    fun `createGenerator with questionnaireHandler sets downloadConfirmer`() {
+        DefaultScoopAiFactory.createGenerator(
+            config = ScoopAiConfig(
+                provider = "deepseek",
+                apiKey = "sk-fake",
+                nonInteractive = true,
+            ),
+            questionnaireHandler = { "yes" },
+        )
+        val cache = DefaultToolRegistryFactory.getCacheManager()
+        assertNotNull(cache)
+        assertNotNull(cache?.downloadConfirmer)
     }
 }

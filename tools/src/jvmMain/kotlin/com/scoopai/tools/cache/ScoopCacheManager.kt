@@ -102,14 +102,21 @@ class ScoopCacheManager(
 
     /** Files to delete on cleanup (only when keepCache = false). */
     private val tempFiles = mutableListOf<Path>()
-
     private val cacheDir: Path = customCacheDir ?: scoopCacheDir()
 
     /**
-     * Get a file from cache, or download it.
+     * Optional confirmation callback invoked before initiating a network download.
+     * Receives the URL and detected size (or -1 if unknown).
+     * Returning false aborts the download with an [IllegalStateException].
+     */
+    @Volatile
+    var downloadConfirmer: (suspend (url: String, sizeBytes: Long) -> Boolean)? = null
+
+    /**
+     * Get a file from cache, or download it after user confirmation if configured.
      * Returns the local file path.
      */
-    fun getOrDownload(url: String): Path {
+    suspend fun getOrDownload(url: String): Path {
         // 1. Check in-memory cache (same JVM run)
         downloadCache[url]?.let { cached ->
             if (Files.exists(cached)) {
@@ -141,6 +148,15 @@ class ScoopCacheManager(
                 downloadCache[url] = existing
                 logger.info { "[cache] Disk hit (finalized): $url -> ${existing.fileName}" }
                 return existing
+            }
+        }
+
+        // Confirmation check before network download
+        downloadConfirmer?.let { confirmer ->
+            val size = getContentLength(url)
+            val confirmed = confirmer.invoke(url, size)
+            if (!confirmed) {
+                throw IllegalStateException("Download cancelled by user: $url")
             }
         }
 
@@ -329,4 +345,15 @@ class ScoopCacheManager(
         tempFiles.clear()
         downloadCache.clear()
     }
+}
+
+/**
+ * Format bytes into human-readable size string.
+ */
+fun formatFileSize(bytes: Long): String = when {
+    bytes <= 0 -> "unknown size"
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "${"%.1f".format(bytes / 1024.0)} KB"
+    bytes < 1024 * 1024 * 1024 -> "${"%.1f".format(bytes / (1024.0 * 1024.0))} MB"
+    else -> "${"%.2f".format(bytes / (1024.0 * 1024.0 * 1024.0))} GB"
 }

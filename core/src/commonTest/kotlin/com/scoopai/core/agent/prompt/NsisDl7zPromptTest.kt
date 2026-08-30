@@ -51,6 +51,24 @@ class NsisDl7zPromptTest {
     }
 
     @Test
+    fun `refine prompt includes conversation history when present`() {
+        val ctx = RefineContext(
+            manifest = """{"version":"1.0","url":"https://example.com/app.zip"}""",
+            feedback = "Remove notes field",
+            retryCount = 1,
+            history = listOf(
+                "User requested: Prefer portable zip",
+                "User requested: Rename bin to fd",
+            ),
+        )
+        val prompt = buildRefinePrompt(ctx)
+        assertTrue(prompt.contains("Conversation / Refine History"), "Must contain history section header")
+        assertTrue(prompt.contains("Prefer portable zip"), "Must contain first history item")
+        assertTrue(prompt.contains("Rename bin to fd"), "Must contain second history item")
+        assertTrue(prompt.contains("Remove notes field"), "Must contain current feedback/instruction")
+    }
+
+    @Test
     fun `analyze prompt allows gui-only shortcuts without bin`() {
         val prompt = buildAnalyzePrompt(
             research = ResearchOutput(

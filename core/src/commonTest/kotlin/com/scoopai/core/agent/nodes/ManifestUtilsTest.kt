@@ -143,6 +143,23 @@ class ManifestUtilsTest {
     }
 
     @Test
+    fun `filterWindowsAssets excludes mac osx and non-windows zip archives`() {
+        val assets = listOf(
+            RawAssetInfo("https://example.com/CoWork-OS-0.5.52-arm64-mac.zip", "CoWork-OS-0.5.52-arm64-mac.zip"),
+            RawAssetInfo("https://example.com/app-mac.zip", "app-mac.zip"),
+            RawAssetInfo("https://example.com/app_osx_x64.zip", "app_osx_x64.zip"),
+            RawAssetInfo("https://example.com/app-linux.zip", "app-linux.zip"),
+            RawAssetInfo("https://example.com/app-win-x64.zip", "app-win-x64.zip"),
+            RawAssetInfo("https://example.com/CoWork-OS-Setup-0.5.52.exe", "CoWork-OS-Setup-0.5.52.exe"),
+        )
+        val result = filterWindowsAssets(assets)
+        assertEquals(2, result.size)
+        val names = result.map { it.filename }
+        assertTrue("app-win-x64.zip" in names)
+        assertTrue("CoWork-OS-Setup-0.5.52.exe" in names)
+    }
+
+    @Test
     fun `filterWindowsAssets excludes signatures and checksums`() {
         val assets = listOf(
             RawAssetInfo("https://example.com/app.zip", "app.zip"),

@@ -313,17 +313,11 @@ fun scoopManifestStrategy(
 
 /**
  * Applies deterministic normalization rules to a manifest after LLM generation:
- * autoFillBinFromShortcuts → normalizeEnvSet → enforceArchitectureWrap →
- * normalizeHomepage → removeInvalidTopLevelFields → normalizeBin → resolveDualBinConflicts.
- * autoFillBinFromShortcuts must run before enforceArchitectureWrap.
+ * normalizeEnvSet → enforceArchitectureWrap → normalizeHomepage →
+ * removeInvalidTopLevelFields → normalizeBin → resolveDualBinConflicts.
  */
 internal fun normalizeManifest(manifestJson: String): String {
     var result = manifestJson
-    val afterBin = autoFillBinFromShortcuts(result)
-    if (afterBin != result) {
-        logger.info { "[normalize] Manifest modified by autoFillBinFromShortcuts" }
-        result = afterBin
-    }
     val afterEnv = normalizeEnvSet(result)
     if (afterEnv != result) {
         logger.info { "[normalize] Manifest modified by normalizeEnvSet" }

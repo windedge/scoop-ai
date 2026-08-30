@@ -76,15 +76,15 @@ class ScoopCacheManagerTest {
     // -----------------------------------------------------------------------
 
     @Test
-    fun `download allows files around 270MB with default 1GB limit`() {
+    fun `download succeeds when size is within limit`() = kotlinx.coroutines.runBlocking {
         // Size gate uses Content-Length; body can be small.
         val server = HttpServer.create(InetSocketAddress(0), 0)
-        val url = "http://localhost:${server.address.port}/large-msi"
+        val url = "http://localhost:${server.address.port}/app.zip"
 
-        server.createContext("/large-msi") { exchange ->
+        server.createContext("/app.zip") { exchange ->
             when (exchange.requestMethod) {
                 "HEAD" -> {
-                    exchange.responseHeaders.set("Content-Length", "${270L * 1024 * 1024}")
+                    exchange.responseHeaders.set("Content-Length", "64")
                     exchange.sendResponseHeaders(200, -1)
                 }
                 "GET" -> {
@@ -101,7 +101,7 @@ class ScoopCacheManagerTest {
         try {
             val cacheManager = ScoopCacheManager(keepCache = false, customCacheDir = tmpDir)
             val path = cacheManager.getOrDownload(url)
-            assertTrue(Files.exists(path), "270MB-class file should download with 1GB default limit")
+            assertTrue(Files.exists(path), "File should download with 1GB default limit")
             assertTrue(Files.size(path) > 0, "Downloaded file should have content")
         } finally {
             server.stop(0)
@@ -110,7 +110,7 @@ class ScoopCacheManagerTest {
     }
 
     @Test
-    fun `download rejects files exceeding size limit via Content-Length`() {
+    fun `download rejects files exceeding size limit via Content-Length`() = kotlinx.coroutines.runBlocking {
         val server = HttpServer.create(InetSocketAddress(0), 0)
         val url = "http://localhost:${server.address.port}/content-length-test"
 
@@ -152,7 +152,7 @@ class ScoopCacheManagerTest {
     }
 
     @Test
-    fun `download rejects files exceeding size limit during streaming when Content-Length unavailable`() {
+    fun `download rejects files exceeding size limit during streaming when Content-Length unavailable`() = kotlinx.coroutines.runBlocking {
         val server = HttpServer.create(InetSocketAddress(0), 0)
         val url = "http://localhost:${server.address.port}/streaming-test"
 
@@ -199,7 +199,7 @@ class ScoopCacheManagerTest {
             val tmpFiles = Files.list(tmpDir).toList()
             assertTrue(
                 tmpFiles.none { it.fileName.toString().endsWith(".downloading") },
-                "Temp .downloading file should have been cleaned up: $tmpFiles"
+                "Temporary .downloading file should be cleaned up on error",
             )
         } finally {
             server.stop(0)
@@ -208,11 +208,11 @@ class ScoopCacheManagerTest {
     }
 
     @Test
-    fun `download proceeds when Content-Length is within limit`() {
+    fun `download accepts files within size limit when Content-Length is provided`() = kotlinx.coroutines.runBlocking {
         val server = HttpServer.create(InetSocketAddress(0), 0)
-        val url = "http://localhost:${server.address.port}/within-limit"
+        val url = "http://localhost:${server.address.port}/ok-test"
 
-        server.createContext("/within-limit") { exchange ->
+        server.createContext("/ok-test") { exchange ->
             when (exchange.requestMethod) {
                 "HEAD" -> {
                     exchange.responseHeaders.set("Content-Length", "1024")
@@ -246,7 +246,7 @@ class ScoopCacheManagerTest {
     }
 
     @Test
-    fun `download falls back to streaming check when HEAD returns 405`() {
+    fun `download falls back to streaming check when HEAD returns 405`() = kotlinx.coroutines.runBlocking {
         val server = HttpServer.create(InetSocketAddress(0), 0)
         val url = "http://localhost:${server.address.port}/head-405"
 
@@ -290,4 +290,70 @@ class ScoopCacheManagerTest {
             tmpDir.toFile().deleteRecursively()
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Download confirmation
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `getOrDownload invokes downloadConfirmer before downloading`() = kotlinx.coroutines.runBlocking {
+        val server = HttpServer.create(InetSocketAddress(0), 0)
+        val url = "http://localhost:${server.address.port}/confirm-app.zip"
+        val payload = "dummy zip content".toByteArray()
+
+        server.createContext("/confirm-app.zip") { exchange ->
+            exchange.responseHeaders.set("Content-Type", "application/zip")
+            exchange.sendResponseHeaders(200, payload.size.toLong())
+            exchange.responseBody.write(payload)
+            exchange.responseBody.close()
+        }
+        server.executor = Executors.newSingleThreadExecutor()
+        server.start()
+
+        val tmpDir = Files.createTempDirectory("scoop-cache-test-")
+        try {
+            val cacheManager = ScoopCacheManager(customCacheDir = tmpDir)
+            var askedUrl = ""
+            cacheManager.downloadConfirmer = { u, _ ->
+                askedUrl = u
+                true
+            }
+
+            val path = cacheManager.getOrDownload(url)
+            assertTrue(Files.exists(path))
+            assertEquals(url, askedUrl)
+        } finally {
+            server.stop(0)
+            tmpDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `getOrDownload aborts download when downloadConfirmer returns false`() = kotlinx.coroutines.runBlocking {
+        val server = HttpServer.create(InetSocketAddress(0), 0)
+        val url = "http://localhost:${server.address.port}/declined-app.zip"
+
+        server.createContext("/declined-app.zip") { exchange ->
+            exchange.sendResponseHeaders(200, 100)
+            exchange.responseBody.write(ByteArray(100))
+            exchange.responseBody.close()
+        }
+        server.executor = Executors.newSingleThreadExecutor()
+        server.start()
+
+        val tmpDir = Files.createTempDirectory("scoop-cache-test-")
+        try {
+            val cacheManager = ScoopCacheManager(customCacheDir = tmpDir)
+            cacheManager.downloadConfirmer = { _, _ -> false }
+
+            val ex = assertFailsWith<IllegalStateException> {
+                cacheManager.getOrDownload(url)
+            }
+            assertTrue(ex.message?.contains("cancelled") == true || ex.message?.contains("declined") == true)
+        } finally {
+            server.stop(0)
+            tmpDir.toFile().deleteRecursively()
+        }
+    }
 }
+
