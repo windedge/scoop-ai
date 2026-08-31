@@ -111,4 +111,16 @@ class SafeAskUserTest {
         }
         assertEquals(SafeAskUser.DEFAULT_RESPONSE, result)
     }
+
+    @Test
+    fun `AskUserTool instance is isolated from global SafeAskUser and other instances`() = runBlocking {
+        val toolA = AskUserTool(askUserHandler = { "Answer A" })
+        val toolB = AskUserTool(askUserHandler = { "Answer B" })
+
+        val resA = toolA.execute(SafeAskUser.Args(question = "Q"))
+        val resB = toolB.execute(SafeAskUser.Args(question = "Q"))
+
+        assertEquals("Answer A", resA)
+        assertEquals("Answer B", resB)
+    }
 }

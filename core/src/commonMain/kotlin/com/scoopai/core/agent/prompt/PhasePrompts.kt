@@ -641,6 +641,12 @@ fun buildRefinePrompt(ctx: RefineContext): String = buildString {
         appendLine(ctx.feedback)
     }
     appendLine()
+    if (!ctx.evidence.isNullOrBlank()) {
+        appendLine("## Detected Package & Extraction Facts (Evidence)")
+        appendLine("These facts were gathered directly from inspecting the release archive and installers during earlier phases:")
+        appendLine(ctx.evidence.trim())
+        appendLine()
+    }
     appendLine("## Current Manifest")
     appendLine("```json")
     appendLine(ctx.manifest)

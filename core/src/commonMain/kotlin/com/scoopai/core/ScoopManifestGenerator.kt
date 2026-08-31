@@ -316,6 +316,7 @@ class ScoopManifestGenerator(
         manifestJson: String,
         instruction: String,
         history: List<String> = emptyList(),
+        evidence: String? = null,
         suggestedAppName: String? = null,
     ): ManifestResult {
         val startTime = TimeSource.Monotonic.markNow()
@@ -340,6 +341,7 @@ class ScoopManifestGenerator(
                         manifest = manifestJson,
                         feedback = instruction,
                         history = history,
+                        evidence = evidence,
                         retryCount = 1,
                     )
                 )

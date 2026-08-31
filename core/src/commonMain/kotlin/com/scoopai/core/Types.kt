@@ -45,6 +45,7 @@ data class RefineContext(
     val feedback: String,
     val retryCount: Int = 1,
     val history: List<String> = emptyList(),
+    val evidence: String? = null,
 )
 
 /**

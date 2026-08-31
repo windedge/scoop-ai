@@ -69,6 +69,19 @@ class NsisDl7zPromptTest {
     }
 
     @Test
+    fun `refine prompt includes package extraction evidence when provided`() {
+        val ctx = RefineContext(
+            manifest = """{"version":"1.0","url":"https://example.com/app.zip"}""",
+            feedback = "Add shortcuts",
+            retryCount = 1,
+            evidence = "Archive contains: bin/fd.exe, autocomplete/_fd",
+        )
+        val prompt = buildRefinePrompt(ctx)
+        assertTrue(prompt.contains("Detected Package & Extraction Facts (Evidence)"), "Must contain evidence section header")
+        assertTrue(prompt.contains("bin/fd.exe"), "Must contain archive contents from evidence")
+    }
+
+    @Test
     fun `analyze prompt allows gui-only shortcuts without bin`() {
         val prompt = buildAnalyzePrompt(
             research = ResearchOutput(

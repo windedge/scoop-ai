@@ -18,6 +18,7 @@ import com.scoopai.tools.cache.formatFileSize
 import com.scoopai.tools.github.JdkHttpGitHubApi
 import com.scoopai.tools.hash.StreamingHashComputer
 import com.scoopai.tools.manifest.FileManifestIo
+import com.scoopai.tools.interaction.AskUserTool
 import com.scoopai.tools.interaction.Question
 import com.scoopai.tools.interaction.QuestionOption
 import com.scoopai.tools.interaction.SafeAskUser
@@ -52,10 +53,16 @@ object DefaultToolRegistryFactory {
         if (nonInteractive != null) {
             SafeAskUser.nonInteractiveOverride = nonInteractive
         }
-        SafeAskUser.customHandler = askUserHandler
+        SafeAskUser.askUserHandler = askUserHandler
         SafeAskUser.questionnaireHandler = questionnaireHandler
 
-        val isNonInteractive = nonInteractive ?: SafeAskUser.isNonInteractive()
+        val askUserTool = AskUserTool(
+            nonInteractiveOverride = nonInteractive,
+            askUserHandler = askUserHandler,
+            questionnaireHandler = questionnaireHandler,
+        )
+
+        val isNonInteractive = askUserTool.isNonInteractive()
         if (questionnaireHandler != null) {
             cache.downloadConfirmer = { url, sizeBytes ->
                 val fileName = url.substringBefore("?").substringAfterLast("/")
@@ -103,7 +110,7 @@ object DefaultToolRegistryFactory {
                     ),
                     allowOther = true,
                 )
-                val response = SafeAskUser.execute(SafeAskUser.Args(questions = listOf(q)))
+                val response = askUserTool.execute(SafeAskUser.Args(questions = listOf(q)))
                 val trimmed = response.trim().lowercase()
                 !(trimmed == "n" || trimmed == "no" || trimmed == "cancel" || trimmed == "skip" || trimmed == "abort" || trimmed == "false" || trimmed.contains("skip downloading"))
             }
@@ -126,7 +133,7 @@ object DefaultToolRegistryFactory {
             registerIfToolSet(archiveInspector)
             registerIfToolSet(manifestIo)
             registerIfToolSet(scoopVerifier)
-            tool(SafeAskUser)
+            tool(askUserTool)
             tools(extraTools)
         }
     }

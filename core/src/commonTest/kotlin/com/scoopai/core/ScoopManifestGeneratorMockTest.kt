@@ -1104,6 +1104,36 @@ class ScoopManifestGeneratorMockTest {
         assertNotNull(parsed["shortcuts"], "shortcuts field should remain present")
     }
 
+    @Test
+    fun `refine passes evidence to refine subgraph and receives updated manifest`() = runBlocking {
+        val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","App Launcher"]]}"""
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(generateFinishTool, refinedManifest) onRequestContains "Detected Package & Extraction Facts"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = model,
+            toolRegistry = ToolRegistry.EMPTY,
+            maxIterations = 10,
+        )
+
+        val result = generator.refine(
+            manifestJson = initialManifest,
+            instruction = "Add shortcut for main executable",
+            evidence = "Archive contains: app.exe, config.ini",
+            suggestedAppName = "app",
+        )
+
+        val expected = normalizeManifest(refinedManifest)
+        assertEquals(expected, result.manifest)
+    }
+
     // =========================================================================
     // helpers
     // =========================================================================

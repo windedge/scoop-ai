@@ -48,76 +48,22 @@ data class Answer(
  * the questionnaire pattern (mirroring pi-coding-agent questionnaire).
  */
 @LLMDescription("Ask the user one or more questions (questionnaire format). Single question shows option list; multiple questions show tabbed interface. Supports selectable options and write-in input.")
-object SafeAskUser : SimpleTool<SafeAskUser.Args>(
-    typeToken<Args>(),
+open class AskUserTool(
+    open val nonInteractiveOverride: Boolean? = null,
+    open val askUserHandler: (suspend (String) -> String)? = null,
+    open val questionnaireHandler: (suspend (List<Question>) -> String)? = null,
+) : SimpleTool<SafeAskUser.Args>(
+    typeToken<SafeAskUser.Args>(),
     "__ask_user__",
     "Ask the user one or more questions with options and get their answers"
 ) {
-
-    @Serializable
-    @LLMDescription("Arguments for questionnaire questions")
-    data class Args(
-        @LLMDescription("List of questions to ask the user")
-        val questions: List<Question> = emptyList(),
-        @LLMDescription("Legacy/shorthand field for single question prompt")
-        val question: String? = null,
-        @LLMDescription("Legacy field for question text")
-        val message: String? = null,
-        @LLMDescription("Legacy/shorthand list of simple option labels")
-        val options: List<String> = emptyList(),
-        @LLMDescription("Whether to allow write-in option (default: true)")
-        val allowOther: Boolean = true,
-    ) {
-        fun resolvedQuestions(): List<Question> {
-            if (questions.isNotEmpty()) {
-                return questions.mapIndexed { idx, q ->
-                    q.copy(
-                        id = q.id.ifBlank { "q_${idx + 1}" },
-                        label = q.label?.ifBlank { null } ?: "Q${idx + 1}",
-                    )
-                }
-            }
-            val promptText = question?.ifBlank { null } ?: message?.ifBlank { null } ?: ""
-            if (promptText.isBlank()) return emptyList()
-            val questionOptions = options.map { opt ->
-                QuestionOption(label = opt, value = opt)
-            }
-            return listOf(
-                Question(
-                    id = "q_1",
-                    label = "Question",
-                    prompt = promptText,
-                    options = questionOptions,
-                    allowOther = allowOther,
-                )
-            )
-        }
+    companion object {
+        const val DEFAULT_RESPONSE = "Please make your best judgment and proceed autonomously."
     }
 
-    internal const val DEFAULT_RESPONSE = "Please make your best judgment and proceed autonomously."
-
-    /**
-     * When non-null, overrides property / env for non-interactive mode.
-     * Set by [com.scoopai.tools.DefaultToolRegistryFactory] (or hosts directly).
-     */
-    @Volatile
-    var nonInteractiveOverride: Boolean? = null
-
-    /**
-     * Questionnaire suspend handler receiving the normalized list of [Question]s.
-     * Must return the formatted answer string (or JSON / answer lines).
-     */
-    @Volatile
-    var questionnaireHandler: (suspend (questions: List<Question>) -> String)? = null
-
-    /**
-     * Legacy simple string suspend handler.
-     */
-    @Volatile
-    var customHandler: (suspend (String) -> String)? = null
-
-    fun isNonInteractive(): Boolean {
+    open fun isNonInteractive(): Boolean {
         nonInteractiveOverride?.let { return it }
+        SafeAskUser.nonInteractiveOverride?.let { return it }
         val flag = System.getProperty("SCOOP_AI_NON_INTERACTIVE")
             ?: System.getenv("SCOOP_AI_NON_INTERACTIVE")
             ?: return false
@@ -130,15 +76,17 @@ object SafeAskUser : SimpleTool<SafeAskUser.Args>(
         false
     }
 
-    override suspend fun execute(args: Args): String {
+    override suspend fun execute(args: SafeAskUser.Args): String {
         val qs = args.resolvedQuestions()
         if (qs.isEmpty()) return DEFAULT_RESPONSE
 
-        questionnaireHandler?.let { handler ->
+        val qHandler = questionnaireHandler ?: SafeAskUser.questionnaireHandler
+        qHandler?.let { handler ->
             return handler.invoke(qs)
         }
 
-        customHandler?.let { handler ->
+        val aHandler = askUserHandler ?: SafeAskUser.customHandler
+        aHandler?.let { handler ->
             return handler.invoke(qs.firstOrNull()?.prompt ?: "")
         }
 
@@ -219,4 +167,63 @@ object SafeAskUser : SimpleTool<SafeAskUser.Args>(
             }
         }
     }
+}
+
+object SafeAskUser : AskUserTool() {
+    @Serializable
+    @LLMDescription("Arguments for questionnaire questions")
+    data class Args(
+        @LLMDescription("List of questions to ask the user")
+        val questions: List<Question> = emptyList(),
+        @LLMDescription("Legacy/shorthand field for single question prompt")
+        val question: String? = null,
+        @LLMDescription("Legacy field for question text")
+        val message: String? = null,
+        @LLMDescription("Legacy/shorthand list of simple option labels")
+        val options: List<String> = emptyList(),
+        @LLMDescription("Whether to allow write-in option (default: true)")
+        val allowOther: Boolean = true,
+    ) {
+        fun resolvedQuestions(): List<Question> {
+            if (questions.isNotEmpty()) {
+                return questions.mapIndexed { idx, q ->
+                    q.copy(
+                        id = q.id.ifBlank { "q_${idx + 1}" },
+                        label = q.label?.ifBlank { null } ?: "Q${idx + 1}",
+                    )
+                }
+            }
+            val promptText = question?.ifBlank { null } ?: message?.ifBlank { null } ?: ""
+            if (promptText.isBlank()) return emptyList()
+            val questionOptions = options.map { opt ->
+                QuestionOption(label = opt, value = opt)
+            }
+            return listOf(
+                Question(
+                    id = "q_1",
+                    label = "Question",
+                    prompt = promptText,
+                    options = questionOptions,
+                    allowOther = allowOther,
+                )
+            )
+        }
+    }
+
+    const val DEFAULT_RESPONSE = AskUserTool.DEFAULT_RESPONSE
+
+    @Volatile
+    override var nonInteractiveOverride: Boolean? = null
+
+    @Volatile
+    override var questionnaireHandler: (suspend (questions: List<Question>) -> String)? = null
+
+    @Volatile
+    override var askUserHandler: (suspend (String) -> String)? = null
+
+    var customHandler: (suspend (String) -> String)?
+        get() = askUserHandler
+        set(value) {
+            askUserHandler = value
+        }
 }
