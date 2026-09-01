@@ -104,43 +104,41 @@ class ScoopManifestGenerator(
         model.copy(capabilities = model.capabilities?.filter { it != LLMCapability.ToolChoice })
     }
 
-    suspend fun generate(
-        url: String,
-        outputPath: String? = null,
-        userPrompt: String? = null,
-        /**
-         * Optional checkpoint resume data. When present, skips completed phases
-         * and resumes execution from the specified stage using Koog's
-         * [Persistence.runFromCheckpoint] instead of a full [agent.run].
-         */
+    /**
+     * Executes a unified Scoop AI session (either Generate or Refine) through the
+     * single unified agent strategy, ensuring all validation, normalization, and
+     * error handling policies are enforced.
+     */
+    suspend fun runSession(
+        request: SessionRequest,
         resumeData: ResumeData? = null,
     ): ManifestResult {
         val startTime = TimeSource.Monotonic.markNow()
         observer.reset()
-        // Phase name last announced by the strategy; used to enrich typed errors
-        // when a subgraph fails mid-phase (e.g. tool-call exhaustion).
         var activePhase: String? = null
-        // -- Track token usage across all LLM calls ------------------------
         val tokenAccumulator = TokenAccumulator()
 
-        // -- Phase-specific tool subsets -----------------------------------
         val allTools = toolRegistry.tools
-        var researchTools = allTools.filter { it.name in PhaseTools.RESEARCH_TOOL_NAMES }
+        val researchTools = allTools.filter { it.name in PhaseTools.RESEARCH_TOOL_NAMES }
         val analyzeTools = allTools.filter { it.name in PhaseTools.ANALYZE_TOOL_NAMES }
 
-        logger.info { "[tools] Total: ${allTools.size}, Research: ${researchTools.map { it.name }}, Analyze: ${analyzeTools.map { it.name }}" }
-
-        // -- Build prompt constructors for each phase ----------------------
         val researchPrompt: suspend (PrefetchResult) -> String =
-            { buildResearchPrompt(it, outputPath, userPrompt) }
+            { buildResearchPrompt(it, (request as? SessionRequest.Generate)?.outputPath, (request as? SessionRequest.Generate)?.userPrompt) }
         val analyzePrompt: suspend (ResearchOutput) -> String =
-            { buildAnalyzePrompt(it, userPrompt) }
+            { buildAnalyzePrompt(it, (request as? SessionRequest.Generate)?.userPrompt) }
         val generatePrompt: suspend (String, AnalyzeOutput, ResearchOutput?) -> String =
-            { skeleton, analyze, research -> buildGeneratePrompt(skeleton, analyze, outputPath, userPrompt, research) }
+            { skeleton, analyze, research ->
+                buildGeneratePrompt(
+                    skeleton,
+                    analyze,
+                    (request as? SessionRequest.Generate)?.outputPath,
+                    (request as? SessionRequest.Generate)?.userPrompt,
+                    research,
+                )
+            }
         val refinePrompt: suspend (RefineContext) -> String =
             { buildRefinePrompt(it) }
 
-        // -- Create review executor (independent LLM agent) ----------------
         val reviewAgent = AIAgent(
             promptExecutor = promptExecutor,
             llmModel = model,
@@ -154,33 +152,26 @@ class ScoopManifestGenerator(
                     val outputTokens = ctx.response?.metaInfo?.outputTokensCount?.toLong() ?: 0L
                     tokenAccumulator.input += inputTokens
                     tokenAccumulator.output += outputTokens
-                    // Also record to observer so review tokens appear in stages
                     observer.recordLlmCall(inputTokens, outputTokens)
                 }
             }
         }
-        // Wrap the review agent as a simple suspend function, with observer tracking
+        // The review agent runs INSIDE the verify node, which already brackets its
+        // body with observer.enterPhase("verify")/exitPhase("verify"). GenerationObserver
+        // has a single current-phase slot (no nesting): pushing a separate "review"
+        // phase here would evict the verify accumulator, and the subsequent
+        // exitPhase("verify") would be silently dropped, so "verify" would never
+        // appear in the snapshot. The review's LLM calls are recorded into the
+        // enclosing verify phase instead (architecture proposal 4.6).
         val reviewExecutor: suspend (String) -> String = { manifest ->
-            observer.enterPhase("review")
-            val reviewStart = TimeSource.Monotonic.markNow()
-            try {
-                @Suppress("UNCHECKED_CAST")
-                (reviewAgent as GraphAIAgent<String, String>).run(manifest)
-            } finally {
-                val elapsed = reviewStart.elapsedNow().inWholeMilliseconds
-                observer.exitPhase("review", elapsed)
-            }
+            @Suppress("UNCHECKED_CAST")
+            (reviewAgent as GraphAIAgent<String, String>).run(manifest)
         }
 
         val llmParams = LlmParamsBuilder.build(modelWithoutToolChoice, thinkingLevel)
-        // Use the artifact writer's writePhase for phase output capture;
-        // for finalize/markFailed we delegate directly.
-        val artifactsWriter = artifacts?.delegate  // RunArtifacts for delegation
         val phaseWrite: ((String, String) -> Unit)? = artifacts?.let { writer ->
             { phase, content -> writer.writePhase(phase, content) }
         }
-        // Wire both the artifact disk writer and the in-memory listener into the
-        // strategy's onPhaseOutput so neither side is lost when both are present.
         val onPhaseOutput = if (phaseWrite != null || phaseOutputListener != null) {
             { phase: String, out: String ->
                 phaseWrite?.invoke(phase, out)
@@ -190,6 +181,7 @@ class ScoopManifestGenerator(
         } else {
             null
         }
+
         val strategy = scoopManifestStrategy(
             researchTools = researchTools,
             analyzeTools = analyzeTools,
@@ -213,16 +205,13 @@ class ScoopManifestGenerator(
 
         val agentConfig = AIAgentConfig(
             prompt = prompt("chat") {
-                system("You are a Scoop manifest generator. You generate Scoop bucket manifests for Windows software.")
+                system("You are a Scoop manifest generator. You generate and refine Scoop bucket manifests for Windows software.")
             },
             model = modelWithoutToolChoice,
             maxAgentIterations = maxIterations,
         )
 
-        // Record LLM and tool call events to the observer for per-phase tracking.
-        // The observer's current phase is set by the strategy via enterPhase/exitPhase,
-        // which matches the sequential execution of subgraphs.
-        val agent = AIAgent(
+        val agent: GraphAIAgent<SessionRequest, ManifestResult> = AIAgent(
             promptExecutor = promptExecutor,
             agentConfig = agentConfig,
             strategy = strategy,
@@ -260,22 +249,19 @@ class ScoopManifestGenerator(
         }
 
         val result: ManifestResult = try {
-            if (resumeData != null) {
+            if (resumeData != null && request is SessionRequest.Generate) {
                 logger.info { "[resume] Resuming from ${resumeData.fromStage} using runId=${resumeData.runId}" }
-                val checkpoint = resumeData.toAgentCheckpointData(url)
+                val checkpoint = resumeData.toAgentCheckpointData(request.url)
                 Persistence.runFromCheckpoint(
                     agent = agent,
-                    input = url,
+                    input = request,
                     checkpoint = checkpoint,
                     sessionId = resumeData.runId,
                 )
             } else {
-                agent.run(url)
+                agent.run(request)
             }
         } catch (e: Exception) {
-            // Koog's subgraphWithTask throws a bare IllegalStateException when the model
-            // never calls a tool after the re-prompt budget is spent. Translate it into
-            // a typed exception with an actionable hint (model may lack function calling).
             val toThrow: Exception = if (isSubgraphTaskToolCallExhaustion(e)) {
                 ScoopAiGenerationException(
                     message = buildToolCallExhaustionMessage(
@@ -293,7 +279,6 @@ class ScoopManifestGenerator(
         }
         val elapsed = startTime.elapsedNow().inWholeMilliseconds
 
-        // Mark successful run as completed
         artifacts?.let { it.finalize() }
 
         return result.copy(
@@ -304,122 +289,30 @@ class ScoopManifestGenerator(
         )
     }
 
-    /**
-     * Refines an existing Scoop manifest based on user instruction or feedback.
-     * Runs a lightweight single-phase refine LLM step without re-executing research/analyze.
-     *
-     * @param manifestJson The current Scoop manifest JSON string.
-     * @param instruction The user's prompt or review feedback requesting modifications.
-     * @param suggestedAppName Optional application name.
-     */
+    suspend fun generate(
+        url: String,
+        outputPath: String? = null,
+        userPrompt: String? = null,
+        resumeData: ResumeData? = null,
+    ): ManifestResult = runSession(
+        request = SessionRequest.Generate(url = url, outputPath = outputPath, userPrompt = userPrompt),
+        resumeData = resumeData,
+    )
+
     suspend fun refine(
         manifestJson: String,
         instruction: String,
         history: List<String> = emptyList(),
         evidence: String? = null,
         suggestedAppName: String? = null,
-    ): ManifestResult {
-        val startTime = TimeSource.Monotonic.markNow()
-        observer.reset()
-        onPhase?.invoke("refine")
-        observer.enterPhase("refine")
-        val tokenAccumulator = TokenAccumulator()
-
-        val finishTool = LenientStringFinishTool()
-        val registry = ToolRegistry {
-            tool(finishTool)
-        }
-
-        val refineStrategy = strategy<String, String>("refine_manifest") {
-            val refineSubgraph by subgraphWithTask<String, String, String>(
-                tools = emptyList<ToolBase<*, *>>(),
-                finishTool = finishTool,
-                llmParams = LlmParamsBuilder.build(modelWithoutToolChoice, thinkingLevel),
-            ) { input ->
-                buildRefinePrompt(
-                    RefineContext(
-                        manifest = manifestJson,
-                        feedback = instruction,
-                        history = history,
-                        evidence = evidence,
-                        retryCount = 1,
-                    )
-                )
-            }
-            nodeStart then refineSubgraph then nodeFinish
-        }
-
-        val agentConfig = AIAgentConfig(
-            prompt = prompt("chat") {
-                system("You are a Scoop manifest refiner. You modify existing Scoop bucket manifests based on instructions.")
-            },
-            model = modelWithoutToolChoice,
-            maxAgentIterations = maxIterations,
-        )
-
-        val agent: GraphAIAgent<String, String> = AIAgent(
-            promptExecutor = promptExecutor,
-            agentConfig = agentConfig,
-            strategy = refineStrategy,
-            toolRegistry = registry,
-        ) {
-            handleEvents {
-                onLLMCallCompleted { ctx ->
-                    val inputTokens = ctx.response?.metaInfo?.inputTokensCount?.toLong() ?: 0L
-                    val outputTokens = ctx.response?.metaInfo?.outputTokensCount?.toLong() ?: 0L
-                    observer.recordLlmCall(inputTokens, outputTokens)
-                    tokenAccumulator.input += inputTokens
-                    tokenAccumulator.output += outputTokens
-                    logLlmResponse(ctx.response, tokenAccumulator)
-                }
-            }
-        }
-
-        val refinedManifest: String = try {
-            agent.run(manifestJson)
-        } catch (e: Exception) {
-            val toThrow: Exception = if (isSubgraphTaskToolCallExhaustion(e)) {
-                ScoopAiGenerationException(
-                    message = buildToolCallExhaustionMessage(
-                        modelId = model.id,
-                        phase = "refine",
-                        originalMessage = e.message ?: e::class.simpleName ?: "unknown",
-                    ),
-                    cause = e,
-                )
-            } else {
-                e
-            }
-            throw toThrow
-        }
-
-        val normalized = normalizeManifest(refinedManifest)
-        val elapsed = startTime.elapsedNow().inWholeMilliseconds
-        observer.exitPhase("refine", elapsed)
-        phaseOutputListener?.invoke("refine", normalized)
-
-        val errors = mutableListOf<String>()
-        if (manifestIo != null) {
-            try {
-                val validateJson = manifestIo.validate(normalized)
-                val validationErrors = parseValidateErrors(validateJson)
-                errors.addAll(validationErrors)
-            } catch (e: Exception) {
-                errors.add("Validate error: ${e.message}")
-            }
-        }
-        checkAutoupdateVersionPlaceholder(normalized)?.let { errors.add(it) }
-        validatePersistPaths(normalized)?.let { errors.add(it) }
-
-        return ManifestResult(
-            manifest = normalized,
+    ): ManifestResult = runSession(
+        request = SessionRequest.Refine(
+            currentManifest = manifestJson,
+            instruction = instruction,
+            history = history,
+            evidence = evidence,
             suggestedAppName = suggestedAppName,
-            exhausted = errors.isNotEmpty(),
-            issues = errors,
-            tokenUsage = TokenUsage(tokenAccumulator.input, tokenAccumulator.output),
-            durationMs = elapsed,
-            stages = observer.snapshot(),
-        )
-    }
+        ),
+    )
 
 }

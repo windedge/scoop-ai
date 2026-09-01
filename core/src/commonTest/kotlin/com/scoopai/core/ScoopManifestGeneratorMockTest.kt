@@ -8,9 +8,11 @@ import com.scoopai.core.agent.AnalyzeOutput
 import com.scoopai.core.agent.AnalyzeStatus
 import com.scoopai.core.agent.ResearchStatus
 import com.scoopai.core.agent.AssetEntry
+import com.scoopai.core.agent.FinalizePayload
 import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.agent.WindowsAsset
 import com.scoopai.core.agent.normalizeManifest
+import com.scoopai.core.agent.formatManifestJson
 import com.scoopai.core.observer.GenerationObserver
 import com.scoopai.core.tools.api.ManifestIo
 import ai.koog.serialization.typeToken
@@ -34,6 +36,8 @@ class ScoopManifestGeneratorMockTest {
 
     @OptIn(InternalAgentToolsApi::class)
     private val generateFinishTool = FinishTool<String>(typeToken<String>())
+
+    private val lenientFinishTool = com.scoopai.core.agent.LenientStringFinishTool()
 
     @Test
     fun `suggestedAppName is populated when research provides it`() = runBlocking {
@@ -226,7 +230,7 @@ class ScoopManifestGeneratorMockTest {
 
         generator.generate("https://github.com/sharkdp/fd")
 
-        assertContentEquals(listOf("research", "analyze", "generate"), phases)
+        assertContentEquals(listOf("research", "analyze", "generate", "verify"), phases)
     }
 
     @Test
@@ -394,11 +398,11 @@ class ScoopManifestGeneratorMockTest {
 
         val result = generator.generate("https://github.com/sharkdp/fd")
 
-        assertEquals(4, result.stages.size, "Should have 4 stages (research, analyze, generate, review)")
+        assertEquals(4, result.stages.size, "Should have 4 stages (research, analyze, generate, verify)")
         assertEquals("research", result.stages[0].phaseName)
         assertEquals("analyze", result.stages[1].phaseName)
         assertEquals("generate", result.stages[2].phaseName)
-        assertEquals("review", result.stages[3].phaseName, "Review stage should be present")
+        assertEquals("verify", result.stages[3].phaseName, "Verify stage should be present")
         result.stages.forEach { stage ->
             assertTrue(stage.durationMs >= 0, "durationMs should be non-negative")
             assertTrue(stage.inputTokens >= 0, "inputTokens should be non-negative")
@@ -459,11 +463,13 @@ class ScoopManifestGeneratorMockTest {
 
         val result = generator.generate("https://github.com/sharkdp/fd")
 
-        // Verify review stage exists with non-negative token counts
-        val reviewStage = result.stages.find { it.phaseName == "review" }
-        assertNotNull(reviewStage, "Should have a review stage")
-        assertTrue(reviewStage!!.inputTokens >= 0, "review inputTokens should be non-negative")
-        assertTrue(reviewStage.outputTokens >= 0, "review outputTokens should be non-negative")
+        // Verify stage exists with non-negative token counts. The review agent's
+        // LLM calls are recorded under the verify stage (architecture proposal 4.6:
+        // the review sub-phase is folded into the verify phase statistics).
+        val verifyStage = result.stages.find { it.phaseName == "verify" }
+        assertNotNull(verifyStage, "Should have a verify stage")
+        assertTrue(verifyStage!!.inputTokens >= 0, "verify inputTokens should be non-negative")
+        assertTrue(verifyStage.outputTokens >= 0, "verify outputTokens should be non-negative")
     }
 
     @Test
@@ -613,7 +619,7 @@ class ScoopManifestGeneratorMockTest {
             observer = sharedObserver,
         )
         val result1 = generator1.generate("https://github.com/sharkdp/fd")
-        assertEquals(4, result1.stages.size, "first run should produce 4 stages (research, analyze, generate, review)")
+        assertEquals(4, result1.stages.size, "first run should produce 4 stages (research, analyze, generate, verify)")
 
         // Second run with generator 2 sharing the same observer
         val executor2 = getMockExecutor {
@@ -631,8 +637,7 @@ class ScoopManifestGeneratorMockTest {
             observer = sharedObserver,
         )
         val result2 = generator2.generate("https://github.com/sharkdp/fd")
-        assertEquals(4, result2.stages.size, "second run should also produce 4 stages, not accumulated")
-    }
+        assertEquals(4, result2.stages.size, "second run should also produce 4 stages, not accumulated")    }
 
     // =========================================================================
     // T-3.11: refine phase onPhaseOutput (missing invoke)
@@ -1014,8 +1019,8 @@ class ScoopManifestGeneratorMockTest {
         val phaseOutputs = mutableListOf<Pair<String, String>>()
 
         val promptExecutor = getMockExecutor {
-            mockLLMToolCall(generateFinishTool, refinedManifest) onRequestContains "manifest refiner"
-            mockLLMAnswer("").asDefaultResponse
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(refinedManifest)) onRequestContains "manifest refiner"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""").asDefaultResponse
         }
 
         val model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash
@@ -1024,7 +1029,7 @@ class ScoopManifestGeneratorMockTest {
             promptExecutor = promptExecutor,
             model = model,
             toolRegistry = ToolRegistry.EMPTY,
-            maxIterations = 10,
+            maxIterations = 50,
             onPhase = { phases.add(it) },
             phaseOutputListener = { p, out -> phaseOutputs.add(p to out) },
         )
@@ -1035,11 +1040,11 @@ class ScoopManifestGeneratorMockTest {
             suggestedAppName = "initial-app",
         )
 
-        assertEquals("refine", phases.singleOrNull(), "Should only run refine phase")
-        val expectedManifest = normalizeManifest(refinedManifest)
+        assertEquals(listOf("refine", "verify"), phases, "Should only run refine and verify phases")
+        val expectedManifest = formatManifestJson(normalizeManifest(refinedManifest))
         assertEquals(expectedManifest, result.manifest)
         assertEquals("initial-app", result.suggestedAppName)
-        assertTrue(phaseOutputs.any { it.first == "refine" && it.second == expectedManifest })
+        assertTrue(phaseOutputs.any { it.first == "refine" })
     }
 
     @Test
@@ -1049,8 +1054,8 @@ class ScoopManifestGeneratorMockTest {
         val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"autoupdate":{"url":"https://example.com/1.0.0/app.zip"}}"""
 
         val promptExecutor = getMockExecutor {
-            mockLLMToolCall(generateFinishTool, refinedManifest) onRequestContains "manifest refiner"
-            mockLLMAnswer("").asDefaultResponse
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(refinedManifest)) onRequestContains "manifest refiner"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""").asDefaultResponse
         }
 
         val model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash
@@ -1059,7 +1064,7 @@ class ScoopManifestGeneratorMockTest {
             promptExecutor = promptExecutor,
             model = model,
             toolRegistry = ToolRegistry.EMPTY,
-            maxIterations = 10,
+            maxIterations = 50,
         )
 
         val result = generator.refine(
@@ -1080,8 +1085,8 @@ class ScoopManifestGeneratorMockTest {
         val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","shortcuts":[["app.exe","Initial App"]]}"""
 
         val promptExecutor = getMockExecutor {
-            mockLLMToolCall(generateFinishTool, refinedManifest) onRequestContains "manifest refiner"
-            mockLLMAnswer("").asDefaultResponse
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(refinedManifest)) onRequestContains "manifest refiner"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""").asDefaultResponse
         }
 
         val model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash
@@ -1090,7 +1095,7 @@ class ScoopManifestGeneratorMockTest {
             promptExecutor = promptExecutor,
             model = model,
             toolRegistry = ToolRegistry.EMPTY,
-            maxIterations = 10,
+            maxIterations = 50,
         )
 
         val result = generator.refine(
@@ -1110,8 +1115,8 @@ class ScoopManifestGeneratorMockTest {
         val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","App Launcher"]]}"""
 
         val promptExecutor = getMockExecutor {
-            mockLLMToolCall(generateFinishTool, refinedManifest) onRequestContains "Detected Package & Extraction Facts"
-            mockLLMAnswer("").asDefaultResponse
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(refinedManifest)) onRequestContains "Detected Package & Extraction Facts"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""").asDefaultResponse
         }
 
         val model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash
@@ -1120,7 +1125,7 @@ class ScoopManifestGeneratorMockTest {
             promptExecutor = promptExecutor,
             model = model,
             toolRegistry = ToolRegistry.EMPTY,
-            maxIterations = 10,
+            maxIterations = 50,
         )
 
         val result = generator.refine(
@@ -1130,13 +1135,330 @@ class ScoopManifestGeneratorMockTest {
             suggestedAppName = "app",
         )
 
-        val expected = normalizeManifest(refinedManifest)
+        val expected = formatManifestJson(normalizeManifest(refinedManifest))
         assertEquals(expected, result.manifest)
+    }
+
+    // =========================================================================
+    // Finalize two-parameter protocol: explanation end-to-end flow (1.1 + 1.2)
+    // =========================================================================
+
+    /** Standard research/analyze/generate fixtures for the explanation tests. */
+    private fun explanationTestFixtures(): Triple<ResearchOutput, AnalyzeOutput, String> {
+        val researchResult = ResearchOutput(
+            status = ResearchStatus.OK,
+            project = "sharkdp/fd",
+            version = "10.2.0",
+            windows_assets = listOf(
+                WindowsAsset(
+                    url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                    architecture = "64bit",
+                    asset_type = "zip",
+                    source = "release_api"
+                )
+            )
+        )
+        val analyzeResult = AnalyzeOutput(
+            status = AnalyzeStatus.OK,
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                    hash = "abc123",
+                    extract_dir = "fd-v10.2.0-x86_64-pc-windows-msvc"
+                )
+            ),
+            bin = emptyList()
+        )
+        val manifestJson = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip","hash":"abc123","extract_dir":"fd-v10.2.0-x86_64-pc-windows-msvc"}},"bin":["fd.exe"]}"""
+        return Triple(researchResult, analyzeResult, manifestJson)
+    }
+
+    @Test
+    fun `ManifestResult explanation flows end-to-end from finalize explanation parameter`() = runBlocking {
+        val (researchResult, analyzeResult, manifestJson) = explanationTestFixtures()
+        val explanationText = "Generated a portable zip manifest and kept fd.exe on PATH."
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = manifestJson, explanation = explanationText)
+            ) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""") onCondition { text -> text.trim().startsWith("{") }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+        )
+
+        val result = generator.generate("https://github.com/sharkdp/fd")
+
+        assertEquals(explanationText, result.explanation, "explanation must flow from finalize_task_result to ManifestResult")
+        assertTrue(result.manifest.contains("10.2.0"), "manifest should still be produced normally")
+    }
+
+    @Test
+    fun `explanation is null when finalize omits the explanation parameter`() = runBlocking {
+        val (researchResult, analyzeResult, manifestJson) = explanationTestFixtures()
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(manifest = manifestJson)) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""") onCondition { text -> text.trim().startsWith("{") }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+        )
+
+        val result = generator.generate("https://github.com/sharkdp/fd")
+
+        assertNull(result.explanation, "old-format finalize without explanation must yield explanation=null")
+    }
+
+    @Test
+    fun `internal repair round with null explanation does not erase the generate round explanation`() = runBlocking {
+        // The generate round finalizes with an explanation, verify keeps failing
+        // (failing manifestIo) so internal repair rounds (explanatory=false) run,
+        // and those rounds finalize WITHOUT an explanation. The non-null-only
+        // storage write must keep the generate-round explanation on the exhausted result.
+        val (researchResult, analyzeResult, manifestJson) = explanationTestFixtures()
+        val explanationText = "Portable zip with 64bit block."
+
+        val mockManifestIo = object : ManifestIo {
+            override fun validate(json: String?) = """{"valid":false,"errors":["test validation error"]}"""
+            override fun write(json: String?, path: String?) = ""
+            override fun read(path: String?) = ""
+        }
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = manifestJson, explanation = explanationText)
+            ) onRequestContains "GENERATE phase"
+            // Internal repair rounds: no explanation parameter.
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(manifest = manifestJson)) onRequestContains "manifest refiner"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 200,
+            manifestIo = mockManifestIo,
+        )
+
+        val result = generator.generate("https://github.com/sharkdp/fd")
+
+        assertTrue(result.exhausted, "verify keeps failing, so the run must exhaust via the repair loop")
+        assertEquals(
+            explanationText,
+            result.explanation,
+            "repair rounds without explanation must not erase the generate-round explanation",
+        )
+    }
+
+    @Test
+    fun `repair round with empty-string explanation does not erase the generate round explanation`() = runBlocking {
+        // The generate round finalizes with an explanation, verify keeps failing
+        // (failing manifestIo) so internal repair rounds run, and one repair round
+        // finalizes with an EMPTY STRING explanation. An empty string is not a valid
+        // explanation: writing it to storage would erase the generate-round text.
+        val (researchResult, analyzeResult, manifestJson) = explanationTestFixtures()
+        val explanationText = "Portable zip with 64bit block."
+
+        val mockManifestIo = object : ManifestIo {
+            override fun validate(json: String?) = """{"valid":false,"errors":["test validation error"]}"""
+            override fun write(json: String?, path: String?) = ""
+            override fun read(path: String?) = ""
+        }
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = manifestJson, explanation = explanationText)
+            ) onRequestContains "GENERATE phase"
+            // Repair rounds: empty-string explanation must not overwrite.
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = manifestJson, explanation = "")
+            ) onRequestContains "manifest refiner"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 200,
+            manifestIo = mockManifestIo,
+        )
+
+        val result = generator.generate("https://github.com/sharkdp/fd")
+
+        assertTrue(result.exhausted, "verify keeps failing, so the run must exhaust via the repair loop")
+        assertEquals(
+            explanationText,
+            result.explanation,
+            "empty-string repair explanation must not erase the generate-round explanation",
+        )
+    }
+
+    @Test
+    fun `repair round with whitespace-only explanation does not erase the generate round explanation`() = runBlocking {
+        // Same protection for a whitespace-only explanation: blank text is not a
+        // valid explanation and must not overwrite the earlier valid one.
+        val (researchResult, analyzeResult, manifestJson) = explanationTestFixtures()
+        val explanationText = "Portable zip with 64bit block."
+
+        val mockManifestIo = object : ManifestIo {
+            override fun validate(json: String?) = """{"valid":false,"errors":["test validation error"]}"""
+            override fun write(json: String?, path: String?) = ""
+            override fun read(path: String?) = ""
+        }
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = manifestJson, explanation = explanationText)
+            ) onRequestContains "GENERATE phase"
+            // Repair rounds: whitespace-only explanation must not overwrite.
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = manifestJson, explanation = "   ")
+            ) onRequestContains "manifest refiner"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 200,
+            manifestIo = mockManifestIo,
+        )
+
+        val result = generator.generate("https://github.com/sharkdp/fd")
+
+        assertTrue(result.exhausted, "verify keeps failing, so the run must exhaust via the repair loop")
+        assertEquals(
+            explanationText,
+            result.explanation,
+            "whitespace-only repair explanation must not erase the generate-round explanation",
+        )
+    }
+
+    @Test
+    fun `refine flows the finalize explanation into ManifestResult explanation`() = runBlocking {
+        // User-driven refine (generator.refine, explanatory=true): the finalize
+        // explanation must flow end-to-end into ManifestResult.explanation.
+        val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
+        val explanationText = "Added the requested start menu shortcut."
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = refinedManifest, explanation = explanationText)
+            ) onRequestContains "manifest refiner"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry.EMPTY,
+            maxIterations = 50,
+        )
+
+        val result = generator.refine(
+            manifestJson = initialManifest,
+            instruction = "Add start menu shortcut for app.exe",
+            suggestedAppName = "initial-app",
+        )
+
+        assertEquals(
+            explanationText,
+            result.explanation,
+            "refine finalize explanation must flow into ManifestResult.explanation",
+        )
+        assertTrue(result.manifest.contains("shortcuts"), "refined manifest should still be produced")
     }
 
     // =========================================================================
     // helpers
     // =========================================================================
+
+    @Test
+    fun `runSession delegates to generate and refine correctly`() = runBlocking {
+        val researchResult = ResearchOutput(
+            status = ResearchStatus.OK,
+            project = "sharkdp/fd",
+            version = "10.2.0",
+            suggested_app_name = "fd",
+            windows_assets = listOf(
+                WindowsAsset(
+                    url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                    architecture = "64bit",
+                    asset_type = "zip",
+                    source = "release_api"
+                )
+            )
+        )
+        val analyzeResult = AnalyzeOutput(
+            status = AnalyzeStatus.OK,
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                    hash = "abc123"
+                )
+            ),
+            bin = emptyList()
+        )
+        val manifestJson = """{"version":"10.2.0","description":"Fast find","architecture":{"64bit":{"url":"https://example.com/fd.zip","hash":"abc123"}},"bin":["fd.exe"]}"""
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""") onCondition { text -> text.trim().startsWith("{") }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+        )
+
+        val request = SessionRequest.Generate("https://github.com/sharkdp/fd")
+        val result = generator.runSession(request)
+
+        assertEquals("fd", result.suggestedAppName)
+        assertTrue(result.manifest.contains("10.2.0"))
+    }
 
     private fun createTempDir(): java.io.File {
         val dir = java.io.File(

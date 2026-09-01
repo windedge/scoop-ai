@@ -49,6 +49,7 @@ object DefaultToolRegistryFactory {
         nonInteractive: Boolean? = null,
         askUserHandler: (suspend (String) -> String)? = null,
         questionnaireHandler: (suspend (List<Question>) -> String)? = null,
+        skipDownloadConfirm: Boolean = false,
     ): ToolRegistry {
         if (nonInteractive != null) {
             SafeAskUser.nonInteractiveOverride = nonInteractive
@@ -63,7 +64,12 @@ object DefaultToolRegistryFactory {
         )
 
         val isNonInteractive = askUserTool.isNonInteractive()
-        if (questionnaireHandler != null) {
+        if (skipDownloadConfirm) {
+            // Skip download confirmation entirely: download directly without asking.
+            // The __ask_user__ questionnaire channel (askUserTool/questionnaireHandler)
+            // is still wired separately, so it remains fully functional.
+            cache.downloadConfirmer = null
+        } else if (questionnaireHandler != null) {
             cache.downloadConfirmer = { url, sizeBytes ->
                 val fileName = url.substringBefore("?").substringAfterLast("/")
                 val sizeInfo = if (sizeBytes > 0) " (${formatFileSize(sizeBytes)})" else ""

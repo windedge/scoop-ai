@@ -576,19 +576,22 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
    - GitHub release HTML page with hash: `{"url": "${'$'}baseurl", "regex": "${'$'}basename.*?([a-f0-9]{32,})"}`
    - RELEASES file for nupkg/Squirrel packages: `{"url": "${'$'}baseurl/RELEASES", "find": "${'$'}basename"}` (Squirrel RELEASES format: `<sha1-hash> <filename>` per line)
    - No checksums available: omit hash block entirely
-4. **Finalize**: Call `finalize_task_result` with one parameter `result` whose value is a **STRING containing the manifest JSON text** (NOT a JSON object).
+4. **Finalize**: Call `finalize_task_result` with the required parameter result plus optional explanation. `result` must be a **STRING containing the manifest JSON text** (NOT a JSON object).
 
    The tool's `result` parameter has type `string`. Its content is the manifest serialized as JSON text. The inner quotes must be escaped as `\"`.
 
-   CORRECT (result is a string, value is JSON text with escaped inner quotes):
+   `explanation` is an independent short string parameter: at most 3 short sentences, about 60 words total, written in the same language as the user's input. Spend 1-2 sentences on the packaging strategy and at most 1 sentence on any non-obvious choice. Do NOT recap extract_dir / bin / shortcuts / persist field-by-field; the manifest is displayed in the UI, so the reader can see those fields directly. It must never be placed inside `result`.
+
+   CORRECT (result is a string with escaped inner quotes, explanation is a separate string parameter):
    ```
-   finalize_task_result(result="{\"version\":\"8.6.1\",\"description\":\"...\",\"url\":\"...\",\"hash\":\"...\",\"innosetup\":true,...}")
+   finalize_task_result(result="{\"version\":\"8.6.1\",\"description\":\"...\",\"url\":\"...\",\"hash\":\"...\",\"innosetup\":true,...}", explanation="Used a portable zip with a 64bit url, kept the exe on PATH and added a Start Menu shortcut.")
    ```
 
    WRONG (these fail because result must be a string, not an object):
    - `finalize_task_result(result={"version":"8.6.1",...})`  ← passed an object
    - `finalize_task_result(result={"status":"ok","manifest":{...}})`  ← wrapper object
    - `finalize_task_result(result={"result":{...}})`  ← nested key
+   - `finalize_task_result(result={"version":"8.6.1","explanation":"..."})`  ← explanation must be a separate parameter, never inside the result manifest JSON
    - Returning text without calling the tool
 
 ## Rules
@@ -658,6 +661,10 @@ fun buildRefinePrompt(ctx: RefineContext): String = buildString {
     appendLine("- Preserve all other unrelated fields and the existing structure verbatim.")
     appendLine("- Do NOT reorganize or rewrite unrelated parts of the manifest.")
     appendLine("- After fixing/refining, call `finalize_task_result` with the corrected manifest.")
+    if (ctx.explanatory) {
+        appendLine("- When calling `finalize_task_result`, also pass the optional `explanation` parameter: directly answer the user's specific request by stating which fields were added, removed, or modified and why, in the same language as the user's instruction.")
+        appendLine("  Keep it at most 3 short sentences, about 60 words total; the manifest is displayed in the UI, so do not recap the changed fields one by one.")
+    }
     appendLine()
     appendLine("## Name Conflict Resolution")
     appendLine("If the issue mentions an app name conflict with an existing Scoop bucket manifest, you MUST:")

@@ -164,4 +164,36 @@ class DefaultScoopAiFactoryTest {
         assertNotNull(cache)
         assertNotNull(cache?.downloadConfirmer)
     }
+
+    @Test
+    fun `createGenerator with skipDownloadConfirm true leaves downloadConfirmer null even with questionnaireHandler`() {
+        DefaultScoopAiFactory.createGenerator(
+            config = ScoopAiConfig(
+                provider = "deepseek",
+                apiKey = "sk-fake",
+                nonInteractive = true,
+                skipDownloadConfirm = true,
+            ),
+            questionnaireHandler = { "yes" },
+        )
+        val cache = DefaultToolRegistryFactory.getCacheManager()
+        assertNotNull(cache)
+        assertEquals(null, cache?.downloadConfirmer)
+    }
+
+    @Test
+    fun `createGenerator with skipDownloadConfirm true leaves downloadConfirmer null even with askUserHandler`() {
+        DefaultScoopAiFactory.createGenerator(
+            config = ScoopAiConfig(
+                provider = "deepseek",
+                apiKey = "sk-fake",
+                nonInteractive = false,
+                skipDownloadConfirm = true,
+            ),
+            askUserHandler = { "yes" },
+        )
+        val cache = DefaultToolRegistryFactory.getCacheManager()
+        assertNotNull(cache)
+        assertEquals(null, cache?.downloadConfirmer)
+    }
 }

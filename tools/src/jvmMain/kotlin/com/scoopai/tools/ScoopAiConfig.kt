@@ -18,4 +18,5 @@ data class ScoopAiConfig(
     val verify: Boolean = false,
     val nonInteractive: Boolean = true,
     val maxIterations: Int = 500,
+    val skipDownloadConfirm: Boolean = false,
 )

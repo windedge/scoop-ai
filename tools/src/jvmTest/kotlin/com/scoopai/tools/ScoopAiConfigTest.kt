@@ -23,6 +23,7 @@ class ScoopAiConfigTest {
         assertFalse(config.verify)
         assertTrue(config.nonInteractive)
         assertEquals(500, config.maxIterations)
+        assertFalse(config.skipDownloadConfirm)
     }
 
     @Test
@@ -39,6 +40,7 @@ class ScoopAiConfigTest {
             verify = true,
             nonInteractive = false,
             maxIterations = 100,
+            skipDownloadConfirm = true,
         )
         assertEquals("openai-compatible", config.provider)
         assertEquals("key-1", config.apiKey)
@@ -51,5 +53,6 @@ class ScoopAiConfigTest {
         assertTrue(config.verify)
         assertFalse(config.nonInteractive)
         assertEquals(100, config.maxIterations)
+        assertTrue(config.skipDownloadConfirm)
     }
 }

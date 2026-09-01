@@ -12,6 +12,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -45,7 +46,7 @@ class FinalizeToolStringArgsTest {
     private fun decodeWithKoog(arguments: String): String =
         koogFinishTool.decodeArgs(toolCallFrom(arguments).argsJson.toKoogJSONObject(), serializer)
 
-    private fun decodeWithLenient(arguments: String): String =
+    private fun decodeWithLenient(arguments: String): FinalizePayload =
         lenientFinishTool.decodeArgs(toolCallFrom(arguments).argsJson.toKoogJSONObject(), serializer)
 
     private val manifestJson =
@@ -66,12 +67,12 @@ class FinalizeToolStringArgsTest {
 
     @Test
     fun `lenient finish tool string result with escaped quotes and braces succeeds`() {
-        assertEquals(manifestJson, decodeWithLenient(stringFormArguments))
+        assertEquals(manifestJson, decodeWithLenient(stringFormArguments).manifest)
     }
 
     @Test
     fun `lenient finish tool plain text result still succeeds`() {
-        assertEquals("test", decodeWithLenient("""{"result":"test"}"""))
+        assertEquals("test", decodeWithLenient("""{"result":"test"}""").manifest)
     }
 
     // ---------------------------------------------------------------
@@ -100,18 +101,18 @@ class FinalizeToolStringArgsTest {
         val arguments = """{"result":{"version":"0.2.0","url":"https://example.com/x.exe"}}"""
         assertEquals(
             """{"version":"0.2.0","url":"https://example.com/x.exe"}""",
-            decodeWithLenient(arguments),
+            decodeWithLenient(arguments).manifest,
         )
     }
 
     @Test
     fun `lenient finish tool empty object result returns empty json`() {
-        assertEquals("{}", decodeWithLenient("""{"result":{}}"""))
+        assertEquals("{}", decodeWithLenient("""{"result":{}}""").manifest)
     }
 
     @Test
     fun `lenient finish tool null result returns empty string`() {
-        assertEquals("", decodeWithLenient("""{"result":null}"""))
+        assertEquals("", decodeWithLenient("""{"result":null}""").manifest)
     }
 
     // ---------------------------------------------------------------
@@ -121,9 +122,10 @@ class FinalizeToolStringArgsTest {
 
     @Test
     fun `lenient finish tool result round trip preserves string`() {
-        val encoded = lenientFinishTool.encodeResult(manifestJson, serializer)
+        val encoded = lenientFinishTool.encodeResult(FinalizePayload(manifest = manifestJson), serializer)
         val decoded = lenientFinishTool.decodeResult(encoded, serializer)
-        assertEquals(manifestJson, decoded)
+        assertEquals(manifestJson, decoded.manifest)
+        assertNull(decoded.explanation)
     }
 
     // ---------------------------------------------------------------
@@ -136,17 +138,21 @@ class FinalizeToolStringArgsTest {
     @Test
     fun `lenient finish tool decodeResult accepts JSONLiteral string without CCE`() {
         val literal = JSONLiteral(manifestJson, isString = true)
-        assertEquals(manifestJson, lenientFinishTool.decodeResult(literal, serializer))
+        val payload = lenientFinishTool.decodeResult(literal, serializer)
+        assertEquals(manifestJson, payload.manifest)
+        assertNull(payload.explanation)
     }
 
     @Test
     fun `lenient finish tool decodeResult accepts JSONLiteral plain text without CCE`() {
         val literal = JSONLiteral("manifest text", isString = true)
-        assertEquals("manifest text", lenientFinishTool.decodeResult(literal, serializer))
+        assertEquals("manifest text", lenientFinishTool.decodeResult(literal, serializer).manifest)
     }
 
     @Test
     fun `lenient finish tool decodeResult accepts JSONNull without CCE`() {
-        assertEquals("", lenientFinishTool.decodeResult(JSONNull, serializer))
+        val payload = lenientFinishTool.decodeResult(JSONNull, serializer)
+        assertEquals("", payload.manifest)
+        assertNull(payload.explanation)
     }
 }

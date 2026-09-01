@@ -23,6 +23,8 @@ import ai.koog.serialization.JSONObject
 import ai.koog.serialization.kotlinx.toKoogJSONObject
 import ai.koog.serialization.typeToken
 import com.scoopai.core.ManifestResult
+import com.scoopai.core.SessionRequest
+import com.scoopai.core.observer.GenerationObserver
 import com.scoopai.core.agent.prompt.buildAnalyzePrompt
 import com.scoopai.core.agent.prompt.buildGeneratePrompt
 import com.scoopai.core.agent.prompt.buildRefinePrompt
@@ -76,13 +78,17 @@ class ScoopManifestStrategyTest {
         maxIterations: Int = 50,
         model: LLModel = DeepSeekModels.DeepSeekV4Flash,
         manifestIo: com.scoopai.core.tools.api.ManifestIo? = null,
-    ): AIAgent<String, ManifestResult> {
+        onPhase: ((String) -> Unit)? = null,
+        observer: GenerationObserver = GenerationObserver(),
+    ): AIAgent<SessionRequest, ManifestResult> {
         val strategy = scoopManifestStrategy(
             researchPromptBuilder = { buildResearchPrompt(it, null) },
             analyzePromptBuilder = { buildAnalyzePrompt(it) },
             generatePromptBuilder = { skeleton, analyze, _ -> buildGeneratePrompt(skeleton, analyze, null) },
             refinePromptBuilder = { buildRefinePrompt(it) },
             manifestIo = manifestIo,
+            onPhase = onPhase,
+            observer = observer,
         )
         return AIAgent(
             promptExecutor = promptExecutor,
@@ -98,6 +104,9 @@ class ScoopManifestStrategyTest {
         }
     }
 
+    private suspend fun AIAgent<SessionRequest, ManifestResult>.runUrl(url: String): ManifestResult =
+        run(SessionRequest.Generate(url))
+
     @Test
     fun `no_windows_assets early-finishes without analyze or generate`() = runBlocking {
         val researchResult = ResearchOutput(
@@ -112,7 +121,7 @@ class ScoopManifestStrategyTest {
         }
 
         val result = createTestAgent(promptExecutor, maxIterations = 30)
-            .run("https://github.com/linux-only/tool")
+            .runUrl("https://github.com/linux-only/tool")
         assertTrue(result.noAssets, "Should have noAssets=true")
         assertTrue(result.manifest.isBlank(), "Should return empty manifest, got: ${result.manifest}")
     }
@@ -155,11 +164,78 @@ class ScoopManifestStrategyTest {
         }
 
         val result = createTestAgent(promptExecutor)
-            .run("https://github.com/sharkdp/fd")
+            .runUrl("https://github.com/sharkdp/fd")
         assertTrue(result.manifest.contains("10.2.0"), "Result should contain version, got: $result")
         // Normal pass (verify succeeds) must NOT be flagged as exhausted.
         assertTrue(!result.exhausted, "Normal pass should have exhausted=false")
         assertTrue(result.issues.isEmpty(), "Normal pass should have empty issues")
+    }
+
+    @Test
+    fun `verify phase fires onPhase event and records observer statistics`() = runBlocking {
+        // The verify node must emit onPhase("verify") and pair enterPhase/exitPhase
+        // exactly once per execution, so the observer snapshot gains one "verify"
+        // StageInfo per verify pass (architecture proposal 4.6).
+        val researchResult = ResearchOutput(
+            status = ResearchStatus.OK,
+            project = "sharkdp/fd",
+            version = "10.2.0",
+            windows_assets = listOf(
+                WindowsAsset(
+                    url = "https://example.com/fd.zip",
+                    architecture = "64bit",
+                    asset_type = "zip",
+                    source = "release_api"
+                )
+            )
+        )
+        val analyzeResult = AnalyzeOutput(
+            status = AnalyzeStatus.OK,
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://example.com/fd.zip",
+                    hash = "abc123",
+                    extract_dir = "fd-10.2.0"
+                )
+            ),
+            bin = emptyList()
+        )
+        val generateResult = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://example.com/fd.zip","hash":"abc123"}},"bin":["fd.exe"]}"""
+
+        val phases = mutableListOf<String>()
+        val observer = GenerationObserver()
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(generateFinishTool, generateResult) onRequestContains "GENERATE phase"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val result = createTestAgent(promptExecutor, onPhase = { phases.add(it) }, observer = observer)
+            .runUrl("https://github.com/sharkdp/fd")
+
+        assertTrue(
+            "verify" in phases,
+            "onPhase must fire for the verify phase, got: $phases",
+        )
+        // Phases must be reported in execution order; verify comes after generate.
+        assertEquals(
+            listOf("research", "analyze", "generate", "verify"),
+            phases,
+            "onPhase sequence for a successful generate flow",
+        )
+        val verifyStages = observer.snapshot().filter { it.phaseName == "verify" }
+        assertEquals(
+            1,
+            verifyStages.size,
+            "one successful pass must yield exactly one completed verify StageInfo, got: ${observer.snapshot()}",
+        )
+        assertTrue(
+            verifyStages[0].durationMs >= 0,
+            "verify StageInfo duration must be non-negative",
+        )
     }
 
     @Test
@@ -206,7 +282,7 @@ class ScoopManifestStrategyTest {
 
         // When: agent runs through all phases with a validator that always rejects.
         val result = createTestAgent(promptExecutor, maxIterations = 200, manifestIo = failingManifestIo)
-            .run("https://github.com/sharkdp/fd")
+            .runUrl("https://github.com/sharkdp/fd")
 
         // Then: the result must be flagged as exhausted with the unresolved issues attached.
         assertTrue(result.exhausted, "exhausted should be true after refine loop gives up")
@@ -258,7 +334,7 @@ class ScoopManifestStrategyTest {
         }
 
         val result = createTestAgent(promptExecutor)
-            .run("https://github.com/ggml-org/llama.cpp")
+            .runUrl("https://github.com/ggml-org/llama.cpp")
         assertEquals("llama-cpp-sycl", result.suggestedAppName)
         assertTrue(result.manifest.contains("b9264"), "Result should contain version, got: ${result.manifest}")
     }
@@ -301,7 +377,7 @@ class ScoopManifestStrategyTest {
         }
 
         val result = createTestAgent(promptExecutor)
-            .run("https://github.com/sharkdp/fd")
+            .runUrl("https://github.com/sharkdp/fd")
         assertEquals(null, result.suggestedAppName)
     }
 
@@ -357,7 +433,7 @@ class ScoopManifestStrategyTest {
 
         // When: agent runs through all three phases (with modelWithoutToolChoice)
         val result = createTestAgent(promptExecutor, model = modelWithoutToolChoice)
-            .run("https://github.com/test/app")
+            .runUrl("https://github.com/test/app")
 
         // Then: manifest must have been transformed by enforceArchitectureWrap
         val parsed = Json.parseToJsonElement(result.manifest).jsonObject
@@ -417,7 +493,7 @@ class ScoopManifestStrategyTest {
 
         // When: agent runs through all three phases (with modelWithoutToolChoice)
         val result = createTestAgent(promptExecutor, model = modelWithoutToolChoice)
-            .run("https://github.com/test/app")
+            .runUrl("https://github.com/test/app")
 
         // Then: manifest must have architecture block (proves normalize executed)
         val parsed = Json.parseToJsonElement(result.manifest).jsonObject
@@ -505,7 +581,7 @@ class ScoopManifestStrategyTest {
         }
 
         val result = createTestAgent(promptExecutor, model = modelWithoutToolChoice)
-            .run("https://github.com/test/app")
+            .runUrl("https://github.com/test/app")
 
         assertTrue(
             result.manifest.contains("1.0"),
@@ -515,6 +591,27 @@ class ScoopManifestStrategyTest {
             result.manifest.contains("architecture"),
             "normalize must still run after object-form finalize. Got: " + result.manifest,
         )
+    }
+
+    @Test
+    fun `refine request branch in unified session graph runs successfully`() = runBlocking {
+        val refinedManifest = """{"version":"1.0.1","architecture":{"64bit":{"url":"https://example.com/app.zip","hash":"abc123"}},"bin":["app.exe"]}"""
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(refineFinishTool, refinedManifest) onRequestContains "manifest refiner"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val agent = createTestAgent(promptExecutor)
+        val request = SessionRequest.Refine(
+            currentManifest = """{"version":"1.0.0"}""",
+            instruction = "Update to 1.0.1",
+            suggestedAppName = "test-app",
+        )
+        val result = agent.run(request)
+
+        assertEquals("test-app", result.suggestedAppName)
+        assertTrue(result.manifest.contains("1.0.1"), "Should contain refined version 1.0.1, got: ${result.manifest}")
+        assertTrue(!result.exhausted, "Refine should succeed without being marked exhausted")
     }
 
     @Test
@@ -618,5 +715,152 @@ class ScoopManifestStrategyTest {
         val feedback = listOf("real issue", "", "  ").joinToString("\n- ", "- ")
 
         assertEquals(listOf("real issue"), splitFeedback(feedback))
+    }
+
+    // =========================================================================
+    // buildNoAssetsExplanation: deterministic engine-side synthesis for the
+    // noAssets early-finish branch. Target style is one or two short user-facing
+    // sentences: a fixed lead-in plus the FIRST sentence of alternatives/notes
+    // (no labels, no listing of the remaining field content, total capped).
+    // =========================================================================
+
+    @Test
+    fun `buildNoAssetsExplanation keeps only the first sentence of alternatives`() {
+        val research = ResearchOutput(
+            status = ResearchStatus.NO_WINDOWS_ASSETS,
+            project = "linux-only/tool",
+            alternatives = "Consider using WSL or a Linux VM. Cygwin may also work but is unsupported.",
+        )
+
+        val explanation = buildNoAssetsExplanation(research)
+
+        assertEquals(
+            "No Windows assets found for this project (linux-only/tool). Consider using WSL or a Linux VM.",
+            explanation,
+            "explanation must keep only the first alternatives sentence",
+        )
+    }
+
+    @Test
+    fun `buildNoAssetsExplanation falls back to the first sentence of notes when alternatives is blank`() {
+        val research = ResearchOutput(
+            status = ResearchStatus.NO_WINDOWS_ASSETS,
+            project = "linux-only/tool",
+            notes = "Only Makefile build targets are provided. Windows support is planned for later.",
+        )
+
+        val explanation = buildNoAssetsExplanation(research)
+
+        assertEquals(
+            "No Windows assets found for this project (linux-only/tool). Only Makefile build targets are provided.",
+            explanation,
+            "explanation must fall back to the first notes sentence when alternatives is blank",
+        )
+    }
+
+    @Test
+    fun `buildNoAssetsExplanation returns only the lead-in when alternatives and notes are blank`() {
+        val research = ResearchOutput(
+            status = ResearchStatus.NO_WINDOWS_ASSETS,
+            project = "linux-only/tool",
+        )
+
+        val explanation = buildNoAssetsExplanation(research)
+
+        assertEquals(
+            "No Windows assets found for this project (linux-only/tool).",
+            explanation,
+        )
+    }
+
+    @Test
+    fun `buildNoAssetsExplanation truncates overlong sentences and caps the total length`() {
+        // A single alternatives sentence well past the 140-char detail budget,
+        // with no sentence boundary inside it.
+        val longSentence = "The upstream project only publishes source archives and building a Windows binary requires a self-hosted toolchain that is not available to end users."
+
+        val plain = buildNoAssetsExplanation(
+            ResearchOutput(
+                status = ResearchStatus.NO_WINDOWS_ASSETS,
+                project = "owner/repo",
+                alternatives = longSentence,
+            ),
+        )!!
+
+        // Detail is cut at a word boundary near 140 chars; the total stays
+        // under the cap, so no ellipsis yet and the tail is dropped.
+        assertTrue(plain.length <= 220, "plain explanation must stay under the total cap, got ${plain.length}: $plain")
+        assertTrue(!plain.endsWith("..."), "plain explanation must not be ellipsized, got: $plain")
+        assertTrue(
+            plain.startsWith("No Windows assets found for this project (owner/repo). The upstream project"),
+            "truncated detail must keep the sentence head, got: $plain",
+        )
+        assertTrue(!plain.contains("end users"), "truncated detail must drop the sentence tail, got: $plain")
+        assertTrue(
+            !plain.contains("Alternatives:") && !plain.contains("Notes:"),
+            "explanation must not use field labels, got: $plain",
+        )
+
+        // A very long project name pushes the assembled text past the 220-char
+        // total cap, so the whole explanation is truncated with an ellipsis.
+        val capped = buildNoAssetsExplanation(
+            ResearchOutput(
+                status = ResearchStatus.NO_WINDOWS_ASSETS,
+                project = "o/" + "p".repeat(60),
+                alternatives = longSentence,
+            ),
+        )!!
+
+        assertTrue(capped.length <= 220, "capped explanation must be at most 220 chars, got ${capped.length}")
+        assertTrue(capped.endsWith("..."), "capped explanation must end with an ellipsis, got: $capped")
+    }
+
+    @Test
+    fun `buildNoAssetsExplanation puts the project name in parentheses`() {
+        val withProject = buildNoAssetsExplanation(
+            ResearchOutput(status = ResearchStatus.NO_WINDOWS_ASSETS, project = "linux-only/tool"),
+        )!!
+        assertTrue(
+            withProject.contains("No Windows assets found for this project (linux-only/tool)."),
+            "project must be parenthesized after the lead-in, got: $withProject",
+        )
+
+        val withoutProject = buildNoAssetsExplanation(
+            ResearchOutput(status = ResearchStatus.NO_WINDOWS_ASSETS),
+        )!!
+        assertTrue(
+            !withoutProject.contains("("),
+            "blank project must not produce empty parentheses, got: $withoutProject",
+        )
+    }
+
+    @Test
+    fun `buildNoAssetsExplanation returns non-null for bare research output`() {
+        val research = ResearchOutput(status = ResearchStatus.NO_WINDOWS_ASSETS)
+
+        val explanation = buildNoAssetsExplanation(research)
+
+        assertEquals(
+            "No Windows assets found for this project.",
+            explanation,
+            "deterministic synthesis must always produce a fallback text, got: $explanation",
+        )
+    }
+
+    @Test
+    fun `buildNoAssetsExplanation does not cut the sentence at an abbreviation like e g`() {
+        val research = ResearchOutput(
+            status = ResearchStatus.NO_WINDOWS_ASSETS,
+            project = "linux-only/tool",
+            alternatives = "Check tools that support POSIX, e.g. WSL or a Linux VM. Cross-compiling is out of scope.",
+        )
+
+        val explanation = buildNoAssetsExplanation(research)
+
+        assertEquals(
+            "No Windows assets found for this project (linux-only/tool). Check tools that support POSIX, e.g. WSL or a Linux VM.",
+            explanation,
+            "the period in e.g. must not be treated as a sentence boundary",
+        )
     }
 }

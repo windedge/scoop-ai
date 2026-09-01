@@ -3,6 +3,30 @@ package com.scoopai.core
 import kotlinx.serialization.Serializable
 
 /**
+ * Request to the unified Scoop AI execution session.
+ */
+@Serializable
+sealed interface SessionRequest {
+    /** Fresh manifest generation from a GitHub repository or release URL. */
+    @Serializable
+    data class Generate(
+        val url: String,
+        val outputPath: String? = null,
+        val userPrompt: String? = null,
+    ) : SessionRequest
+
+    /** Interactive manifest refinement based on feedback/instructions. */
+    @Serializable
+    data class Refine(
+        val currentManifest: String,
+        val instruction: String,
+        val history: List<String> = emptyList(),
+        val evidence: String? = null,
+        val suggestedAppName: String? = null,
+    ) : SessionRequest
+}
+
+/**
  * Result of a full manifest generation run.
  *
  * @property manifest The final manifest JSON string (after fix loop if applicable).
@@ -17,6 +41,12 @@ import kotlinx.serialization.Serializable
  *   is true. Empty for a successful run.
  * @property tokenUsage Token usage statistics, or null if not tracked.
  * @property stages Per-phase execution statistics.
+ * @property explanation AI's natural-language reply for the user's instruction/generation
+ *   intent. Source: the optional `explanation` parameter of `finalize_task_result` in
+ *   the generate/refine subgraphs, taken from the round that produced the final
+ *   manifest; intermediate repair rounds do not produce one. When null the application
+ *   layer synthesizes a deterministic reply. The noAssets branch is synthesized by the
+ *   engine from [com.scoopai.core.agent.ResearchOutput].
  */
 @Serializable
 data class ManifestResult(
@@ -28,8 +58,16 @@ data class ManifestResult(
     val tokenUsage: TokenUsage? = null,
     /** Total elapsed time in milliseconds */
     val durationMs: Long = 0L,
-    /** Per-phase execution statistics (4 stages: research/analyze/generate/refine). */
+    /** Per-phase execution statistics (5 phases: research/analyze/generate/refine/verify). */
     val stages: List<StageInfo> = emptyList(),
+    /**
+     * AI 针对用户指令/生成意图所作出的自然语言说明与会话回复。
+     * 来源: generate/refine 子图 finalize_task_result 的可选 explanation 参数,
+     * 取"产出最终 manifest 的那一轮"; 中间修复轮次不产生。
+     * 为 null 时由应用层确定性合成。
+     * noAssets 分支由引擎从 ResearchOutput 确定性合成。
+     */
+    val explanation: String? = null,
 )
 
 /**
@@ -38,6 +76,9 @@ data class ManifestResult(
  * @property manifest The current manifest JSON (may contain issues).
  * @property feedback Description of issues to fix.
  * @property retryCount Current refinement attempt (1-based).
+ * @property explanatory True when the refine was started by a user instruction
+ *   (the finalize call is asked to produce an `explanation`); false for the
+ *   internal repair loop (no explanation required, saving tokens).
  */
 @kotlinx.serialization.Serializable
 data class RefineContext(
@@ -46,6 +87,8 @@ data class RefineContext(
     val retryCount: Int = 1,
     val history: List<String> = emptyList(),
     val evidence: String? = null,
+    /** true = 用户指令发起的 refine (要求 explanation); false = 内部修复循环 (不要求)。 */
+    val explanatory: Boolean = false,
 )
 
 /**

@@ -14,10 +14,17 @@ import com.scoopai.core.StageInfo
  *   recordToolCall()
  * exitPhase("research", durationMs)
  *
- * enterPhase("analyze")
- *   ...
- * exitPhase("analyze", durationMs)
+ * enterPhase("verify")
+ *   ... (semantic review LLM calls are recorded into the verify phase)
+ * exitPhase("verify", durationMs)
  * ```
+ *
+ * There is a single current-phase slot: nested [enterPhase] calls are NOT
+ * supported and would evict the enclosing phase's accumulator. The semantic
+ * review agent therefore records its statistics under the enclosing "verify"
+ * phase instead of pushing its own phase. The same phase name MAY be entered
+ * and exited repeatedly (e.g. once per verify pass in the refine loop); each
+ * completed pair appends one [StageInfo] to [snapshot].
  *
  * [snapshot] returns all completed phases. [exitPhase] is tolerant of
  * skipped or mismatched phases (e.g. during checkpoint resume) and

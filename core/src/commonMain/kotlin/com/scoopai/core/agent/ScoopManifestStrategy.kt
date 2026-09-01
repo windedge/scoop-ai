@@ -8,6 +8,7 @@ import ai.koog.agents.ext.agent.subgraphWithTask
 import ai.koog.prompt.params.LLMParams
 import com.scoopai.core.ManifestResult
 import com.scoopai.core.RefineContext
+import com.scoopai.core.SessionRequest
 import com.scoopai.core.observer.GenerationObserver
 import com.scoopai.core.agent.nodes.assembleManifestSkeleton
 import com.scoopai.core.agent.nodes.finalizeManifestSkeleton
@@ -100,7 +101,7 @@ fun scoopManifestStrategy(
      * and reports a conflict error if the name is already used.
      */
     usedAppNamesProvider: (suspend () -> Set<String>)? = null,
-) = strategy<String, ManifestResult>("scoop_manifest_v3") {
+) = strategy<SessionRequest, ManifestResult>("unified_scoop_manifest") {
 
     // ── Storage keys ───────────────────────────────────────────
     val retryCountKey = createStorageKey<Int>("refine_retry_count")
@@ -110,16 +111,49 @@ fun scoopManifestStrategy(
     val suggestedAppNameKey = createStorageKey<String>("suggested_app_name")
     val appNameConflictKey = createStorageKey<String>("app_name_conflict")
     val finalManifestKey = createStorageKey<String>("final_manifest")
+    val explanationKey = createStorageKey<String>("final_explanation")
 
     // ── Phase timing (for progress logging) ────────────────────
     var researchStart: TimeMark? = null
     var analyzeStart: TimeMark? = null
     var generateStart: TimeMark? = null
     var refineStart: TimeMark? = null
+    var verifyStart: TimeMark? = null
+
+    // ── Request routing and context initialization ──
+    val routeRequest by node<SessionRequest, SessionRequest>("routeRequest") { request ->
+        when (request) {
+            is SessionRequest.Generate -> {
+                storage.set(retryCountKey, 0)
+                request
+            }
+            is SessionRequest.Refine -> {
+                storage.set(retryCountKey, 1)
+                request.suggestedAppName?.let { storage.set(suggestedAppNameKey, it) }
+                storage.set(finalManifestKey, request.currentManifest)
+                request
+            }
+        }
+    }
 
     // ── Prefetch node (deterministic: pre-collect project data before LLM phases) ──
-    val prefetch by node<String, PrefetchResult>("prefetch") { url ->
-        executePrefetch(url, gitHubApi, archiveInspector)
+    val prefetch by node<SessionRequest, PrefetchResult>("prefetch") { request ->
+        val gen = request as SessionRequest.Generate
+        executePrefetch(gen.url, gitHubApi, archiveInspector)
+    }
+
+    // ── Prepare Refine context directly from request ──
+    // User-initiated refine: the finalize call is asked to produce an explanation.
+    val prepareRefineFromRequest by node<SessionRequest, RefineContext>("prepareRefineFromRequest") { request ->
+        val ref = request as SessionRequest.Refine
+        RefineContext(
+            manifest = ref.currentManifest,
+            feedback = ref.instruction,
+            history = ref.history,
+            evidence = ref.evidence,
+            retryCount = 1,
+            explanatory = true,
+        )
     }
 
     // ── Research phase (LLM) ──
@@ -144,8 +178,15 @@ fun scoopManifestStrategy(
     }
 
     // ── Finish when no Windows assets exist ──
+    // The explanation of a noAssets run can never come from an LLM finalize call,
+    // so the engine deterministically synthesizes it from the research output.
     val finishNoAssets by node<ResearchOutput, ManifestResult>("finishNoAssets") { research ->
-        ManifestResult(manifest = "", suggestedAppName = research.suggested_app_name, noAssets = true)
+        ManifestResult(
+            manifest = "",
+            suggestedAppName = research.suggested_app_name,
+            noAssets = true,
+            explanation = buildNoAssetsExplanation(research),
+        )
     }
 
     // ── Analyze phase (LLM) ──
@@ -173,7 +214,10 @@ fun scoopManifestStrategy(
     // Uses LenientStringFinishTool instead of Koog's default FinishTool<String>:
     // when the model passes the manifest as a JSON object instead of a string,
     // Koog 1.0.0 fails with "Index -1 out of bounds" (see LenientStringFinishTool kdoc).
-    val generate by subgraphWithTask<String, String, String>(
+    // The subgraph output is a FinalizePayload: manifest plus an optional explanation.
+    // Note: subgraphWithTask's Output type parameter is the finish tool's args type
+    // (FinalizePayload), not the raw String the model passes in `result`.
+    val generate by subgraphWithTask<String, FinalizePayload, FinalizePayload>(
         tools = emptyList<ToolBase<*, *>>(),
         finishTool = LenientStringFinishTool(),
         llmParams = llmParams,
@@ -187,8 +231,10 @@ fun scoopManifestStrategy(
     }
 
     // ── Refine phase (LLM, no tools, lightweight fix loop) ──
-    // Same lenient finish tool as generate: refine also finalizes a String manifest.
-    val refine by subgraphWithTask<RefineContext, String, String>(
+    // Same lenient finish tool as generate: refine also finalizes a FinalizePayload.
+    // Internal repair rounds (explanatory=false) do not require an explanation;
+    // user-initiated refines (explanatory=true) do (see RefineContext kdoc).
+    val refine by subgraphWithTask<RefineContext, FinalizePayload, FinalizePayload>(
         tools = emptyList<ToolBase<*, *>>(),
         finishTool = LenientStringFinishTool(),
         llmParams = llmParams,
@@ -198,7 +244,6 @@ fun scoopManifestStrategy(
         logger.info { PhaseProgressLogger.starting("refine") }
         refineStart = TimeSource.Monotonic.markNow()
         refinePromptBuilder?.invoke(input) ?: ""
-
     }
 
     // ── Normalize node (deterministic: post-process + normalize) ──
@@ -210,8 +255,22 @@ fun scoopManifestStrategy(
     }
 
     // ── Verify node (deterministic: validate + review + app name conflict) ──
+    // Executed once per pass: the initial check plus every refine-loop round.
+    // enterPhase/exitPhase must stay strictly paired per execution (try/finally);
+    // the semantic review inside validateManifest folds into this phase's
+    // statistics (architecture proposal 4.6).
     val verify by node<String, RefineContext?>("verify") { manifest ->
-        validateManifest(manifest, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries, usedAppNamesProvider, suggestedAppNameKey, appNameConflictKey) { storage.set(finalManifestKey, it) }
+        onPhase?.invoke("verify")
+        observer.enterPhase("verify")
+        logger.info { PhaseProgressLogger.starting("verify") }
+        verifyStart = TimeSource.Monotonic.markNow()
+        try {
+            validateManifest(manifest, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries, usedAppNamesProvider, suggestedAppNameKey, appNameConflictKey) { storage.set(finalManifestKey, it) }
+        } finally {
+            val elapsed = verifyStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
+            observer.exitPhase("verify", elapsed)
+            logger.info { PhaseProgressLogger.completed("verify", elapsed, llmCalls = observer.lastCompletedLlmCallCount()) }
+        }
     }
 
     // ── Build final result node (reads from storage, replaces edge transform that used captured vars) ──
@@ -221,6 +280,7 @@ fun scoopManifestStrategy(
         ManifestResult(
             manifest = extractJsonBlock(manifest)?.let { formatManifestJson(it) } ?: manifest,
             suggestedAppName = storage.get(suggestedAppNameKey),
+            explanation = storage.get(explanationKey),
             issues = listOfNotNull(conflict),
         )
     }
@@ -237,13 +297,20 @@ fun scoopManifestStrategy(
             suggestedAppName = storage.get(suggestedAppNameKey),
             exhausted = true,
             issues = allIssues,
+            explanation = storage.get(explanationKey),
         )
     }
 
     // ── Edges ──
-    // Prefetch first, then research
-    edge(nodeStart forwardTo prefetch)
+    edge(nodeStart forwardTo routeRequest)
+
+    // Generate branch
+    edge(routeRequest forwardTo prefetch onCondition { it is SessionRequest.Generate })
     edge(prefetch forwardTo research)
+
+    // Refine branch
+    edge(routeRequest forwardTo prepareRefineFromRequest onCondition { it is SessionRequest.Refine })
+    edge(prepareRefineFromRequest forwardTo refine)
 
     // Research → researchDone (completion logging)
     edge(research forwardTo researchDone)
@@ -260,7 +327,7 @@ fun scoopManifestStrategy(
 
     edge(finishNoAssets forwardTo nodeFinish)
 
-    // Main path: analyze → prepareManifest → generate → verify
+    // Main path: analyze → prepareManifest → generate → normalize
     edge(analyze forwardTo prepareManifest transformed { output ->
         val elapsed = analyzeStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
         observer.exitPhase("analyze", elapsed)
@@ -269,13 +336,32 @@ fun scoopManifestStrategy(
         output
     })
     edge(prepareManifest forwardTo generate)
-    edge(generate forwardTo normalize transformed { output ->
+    edge(generate forwardTo normalize transformed { payload ->
         val elapsed = generateStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
         observer.exitPhase("generate", elapsed)
         logger.info { PhaseProgressLogger.completed("generate", elapsed, llmCalls = observer.lastCompletedLlmCallCount()) }
-        onPhaseOutput?.invoke("generate", output)
-        output
+        onPhaseOutput?.invoke("generate", payload.manifest)
+        // Only write non-blank explanations: internal repair rounds do not require
+        // an explanation, and a null/blank overwrite would lose the explanation from
+        // the round that first produced it (architecture proposal 4.3).
+        payload.explanation?.trim()?.takeIf { it.isNotEmpty() }?.let { explanation -> storage.set(explanationKey, explanation) }
+        payload.manifest          // normalize still receives a String, signature unchanged
     })
+
+    // Refine path: refine → normalize
+    edge(refine forwardTo normalize transformed { payload ->
+        val elapsed = refineStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
+        observer.exitPhase("refine", elapsed)
+        logger.info { PhaseProgressLogger.completed("refine", elapsed, llmCalls = observer.lastCompletedLlmCallCount()) }
+        onPhaseOutput?.invoke("refine", payload.manifest)
+        // Same non-blank-only rule as the generate edge: a repair round without a
+        // usable explanation must not erase the last valid one, while a user refine
+        // with a new explanation overwrites it.
+        payload.explanation?.trim()?.takeIf { it.isNotEmpty() }?.let { explanation -> storage.set(explanationKey, explanation) }
+        payload.manifest
+    })
+
+    // Unified normalize → verify Guard
     edge(normalize forwardTo verify)
 
     // Verify → pass → buildFinalResult → finish
@@ -289,15 +375,6 @@ fun scoopManifestStrategy(
         ctx != null && ctx.retryCount <= maxRetries
     } transformed { ctx ->
         ctx!!
-    })
-
-    // Refine → back to verify (via normalize)
-    edge(refine forwardTo normalize transformed { output ->
-        val elapsed = refineStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
-        observer.exitPhase("refine", elapsed)
-        logger.info { PhaseProgressLogger.completed("refine", elapsed, llmCalls = observer.lastCompletedLlmCallCount()) }
-        onPhaseOutput?.invoke("refine", output)
-        output
     })
 
     // Verify → fail + retry > 3 → buildExhaustedResult → finish
@@ -498,6 +575,82 @@ internal fun splitFeedback(feedback: String): List<String> {
         .map { it.removePrefix("- ").trim() }
         .filter { it.isNotBlank() }
         .toList()
+}
+
+/** Soft cap for the detail sentence taken from alternatives/notes. */
+private const val NO_ASSETS_DETAIL_LIMIT = 140
+
+/** Hard cap for the whole synthesized explanation, ellipsis included. */
+private const val NO_ASSETS_EXPLANATION_LIMIT = 220
+
+private const val NO_ASSETS_ELLIPSIS = "..."
+
+/**
+ * Extracts the first sentence of [text], truncated to [limit] characters.
+ *
+ * The excerpt ends at the first sentence boundary (a "." or full-width period
+ * followed by whitespace, or the end of the text) found within the first [limit]
+ * characters. Abbreviation periods such as the one in "e.g." (a single letter
+ * between two periods) do not count as a boundary. When no boundary exists
+ * within [limit], the excerpt is backed off to the last space so words are not
+ * cut in half.
+ */
+internal fun firstSentence(text: String, limit: Int = NO_ASSETS_DETAIL_LIMIT): String {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) return ""
+    val window = trimmed.take(limit)
+    window.forEachIndexed { index, c ->
+        if (c != '.' && c != '\u3002') return@forEachIndexed
+        val next = window.getOrNull(index + 1)
+        if (next != null && !next.isWhitespace()) return@forEachIndexed
+        // Skip abbreviation periods such as "e.g." / "i.e." (letter between two periods).
+        if (c == '.' && index >= 2 && window[index - 2] == '.' && window[index - 1].isLetter()) return@forEachIndexed
+        return window.take(index + 1)
+    }
+    // No sentence boundary within the limit: keep short text whole, otherwise
+    // back off to the last space to avoid splitting a word.
+    if (trimmed.length <= limit) return trimmed
+    val lastSpace = window.lastIndexOf(' ')
+    return if (lastSpace > 0) window.take(lastSpace) else window
+}
+
+/**
+ * Deterministically synthesizes the noAssets explanation from the research output
+ * (English fallback text, architecture proposal 4.7).
+ *
+ * The noAssets early-finish branch never reaches the generate/refine subgraphs, so
+ * the explanation of such a run can never come from a finalize_task_result call;
+ * the engine produces it from the fields the research phase already gathered
+ * ([ResearchOutput.alternatives], [ResearchOutput.notes], [ResearchOutput.project]).
+ *
+ * Output style is one or two short user-facing sentences: a fixed lead-in with the
+ * project name, plus at most the first sentence of alternatives (preferred) or notes
+ * (fallback). The remaining field content is not listed, and the total length is
+ * capped at [NO_ASSETS_EXPLANATION_LIMIT] characters with an ellipsis on overflow.
+ */
+internal fun buildNoAssetsExplanation(research: ResearchOutput): String? {
+    val builder = StringBuilder("No Windows assets found for this project")
+    if (research.project.isNotBlank()) {
+        builder.append(" (").append(research.project.trim()).append(")")
+    }
+    builder.append(".")
+    // One short detail sentence at most: prefer alternatives, fall back to notes.
+    val detailSource = when {
+        research.alternatives.isNotBlank() -> research.alternatives
+        research.notes.isNotBlank() -> research.notes
+        else -> null
+    }
+    if (detailSource != null) {
+        val detail = firstSentence(detailSource)
+        if (detail.isNotBlank()) {
+            builder.append(" ").append(detail)
+        }
+    }
+    var explanation = builder.toString()
+    if (explanation.length > NO_ASSETS_EXPLANATION_LIMIT) {
+        explanation = explanation.take(NO_ASSETS_EXPLANATION_LIMIT - NO_ASSETS_ELLIPSIS.length).trimEnd() + NO_ASSETS_ELLIPSIS
+    }
+    return explanation
 }
 
 @kotlinx.serialization.Serializable

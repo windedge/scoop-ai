@@ -73,6 +73,7 @@ object DefaultScoopAiFactory {
             nonInteractive = config.nonInteractive,
             askUserHandler = askUserHandler,
             questionnaireHandler = questionnaireHandler,
+            skipDownloadConfirm = config.skipDownloadConfirm,
         )
 
         return ScoopManifestGenerator(
