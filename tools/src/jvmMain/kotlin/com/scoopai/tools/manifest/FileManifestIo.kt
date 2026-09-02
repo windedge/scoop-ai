@@ -85,7 +85,7 @@ class FileManifestIo(
                 }
             }
 
-            // Missing hash is an error (blocks install / triggers refine)
+            // Missing hash is an error (blocks install / triggers repair)
             val hasHash = obj.containsKey("hash")
             val hasArchHash = obj["architecture"]?.jsonObject?.values?.any {
                 (it as? JsonObject)?.containsKey("hash") == true

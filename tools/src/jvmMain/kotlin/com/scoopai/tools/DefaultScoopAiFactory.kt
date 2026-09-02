@@ -26,7 +26,7 @@ object DefaultScoopAiFactory {
         usedAppNamesProvider: (suspend () -> Set<String>)? = UsedAppNameScanner::scanDefault,
         /**
          * In-memory listener for raw, un-masked phase output JSON (research /
-         * analyze / generate / refine). Forwarded to
+         * analyze / generate / assist / repair). Forwarded to
          * [ScoopManifestGenerator]; intended for in-memory checkpoints only.
          */
         onPhaseOutput: ((String, String) -> Unit)? = null,
