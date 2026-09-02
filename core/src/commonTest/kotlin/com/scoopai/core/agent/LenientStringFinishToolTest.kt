@@ -177,6 +177,69 @@ class LenientStringFinishToolTest {
         assertNull(payload.explanation, "empty-string explanation must decode to null, not an empty string")
     }
 
+    // ---------------------------------------------------------------
+    // answered escape-hatch flag (three-parameter protocol)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `answered true round-trips through encode and decode args`() {
+        val payload = FinalizePayload(manifest = manifestJson, explanation = null, answered = true)
+
+        val encoded = tool.encodeArgs(payload, serializer)
+        val decoded = tool.decodeArgs(encoded, serializer)
+
+        assertEquals(payload, decoded)
+        assertEquals(true, decoded.answered, "answered=true must survive encode/decode args")
+    }
+
+    @Test
+    fun `answered false round-trips through encode and decode args`() {
+        val payload = FinalizePayload(manifest = manifestJson, explanation = null, answered = false)
+
+        val encoded = tool.encodeArgs(payload, serializer)
+        val decoded = tool.decodeArgs(encoded, serializer)
+
+        assertEquals(payload, decoded)
+        assertEquals(false, decoded.answered, "answered=false must survive encode/decode args")
+    }
+
+    @Test
+    fun `answered omitted (old two-parameter encoding) decodes to null`() {
+        val arguments = """{"result":${json.encodeToString(kotlinx.serialization.serializer<String>(), manifestJson)},"explanation":"Just answering your question."}"""
+
+        val payload = decodeArgs(arguments)
+
+        assertEquals(manifestJson, payload.manifest)
+        assertEquals("Just answering your question.", payload.explanation)
+        assertNull(payload.answered, "old two-parameter encoding without answered must decode to null")
+    }
+
+    @Test
+    fun `answered true with explanation decodes into full payload`() {
+        val arguments =
+            """{"result":${json.encodeToString(kotlinx.serialization.serializer<String>(), manifestJson)},""" +
+                """"explanation":"The manifest already matches what you asked about.","answered":true}"""
+
+        val payload = decodeArgs(arguments)
+
+        assertEquals(manifestJson, payload.manifest)
+        assertEquals("The manifest already matches what you asked about.", payload.explanation)
+        assertEquals(true, payload.answered)
+    }
+
+    @Test
+    fun `non-boolean answered values decode to null`() {
+        val resultJson = json.encodeToString(kotlinx.serialization.serializer<String>(), "{}")
+        // object value
+        assertEquals(null, decodeArgs("""{"result":$resultJson,"answered":{"k":1}}""").answered)
+        // string value "true" is not a boolean literal
+        assertEquals(null, decodeArgs("""{"result":$resultJson,"answered":"true"}""").answered)
+        // number value
+        assertEquals(null, decodeArgs("""{"result":$resultJson,"answered":1}""").answered)
+        // null value
+        assertEquals(null, decodeArgs("""{"result":$resultJson,"answered":null}""").answered)
+    }
+
     @Test
     fun `null explanation value decodes to null`() {
         val arguments =

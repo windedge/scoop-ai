@@ -1,6 +1,6 @@
 package com.scoopai.core.agent.prompt
 
-import com.scoopai.core.RefineContext
+import com.scoopai.core.AssistContext
 import com.scoopai.core.agent.AnalyzeOutput
 import com.scoopai.core.agent.PrefetchResult
 import com.scoopai.core.agent.ReferenceManifests
@@ -417,7 +417,7 @@ ${PhaseSchemas.ANALYZE_SCHEMA}"""
 }
 
 /**
- * Builds the prompt for the Generate phase (replaces refine).
+ * Builds the prompt for the Generate phase.
  *
  * The skeleton already contains version, description, homepage, license,
  * url, hash, bin, extract_dir, persist, shortcuts, env_set, pre_install.
@@ -620,19 +620,42 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
 }
 
 /**
- * Builds the prompt for the REFINE phase (lightweight fix loop).
+ * Builds the prompt for the ASSIST phase (user follow-up, explanatory = true).
  *
- * The LLM receives a [RefineContext] containing the current manifest and
- * a list of issues to fix. It has NO tools available, only finalize_task_result.
- * The prompt focuses the LLM on fixing ONLY the listed issues.
+ * The LLM receives an [AssistContext] containing the current manifest and the
+ * user's instruction. It has NO tools available, only finalize_task_result.
+ * The prompt focuses the LLM on applying the user's requested modification, and
+ * additionally provides a Question Escape Hatch: if the user message is a pure
+ * question about the manifest (no change request), the LLM answers via the
+ * `explanation` parameter and returns the manifest verbatim (see
+ * [com.scoopai.core.agent.LenientStringFinishTool] `answered` flag).
  */
-fun buildRefinePrompt(ctx: RefineContext): String = buildString {
+fun buildAssistPrompt(ctx: AssistContext): String =
+    buildAssistKernel(ctx, opening = "You are a Scoop manifest assistant.", includingEscape = true)
+
+/**
+ * Builds the prompt for the REPAIR phase (internal fix loop, explanatory = false).
+ *
+ * Same shared kernel as [buildAssistPrompt] but without the Question Escape Hatch;
+ * the internal repair loop is never a pure-question follow-up, so it must not be
+ * told about the `answered` escape-hatch parameter.
+ */
+fun buildRepairPrompt(ctx: AssistContext): String =
+    buildAssistKernel(ctx, opening = "You are a Scoop manifest repairer.", includingEscape = false)
+
+/**
+ * Shared kernel for the assist and repair prompts. The two callers differ only in
+ * the opening identity line and the presence of the Question Escape Hatch; the
+ * dl-7z / NSIS / evidence / name-conflict / explanation sections are written once
+ * here so they cannot drift apart.
+ */
+private fun buildAssistKernel(ctx: AssistContext, opening: String, includingEscape: Boolean): String = buildString {
     appendLine("⚠️ **CRITICAL: Do NOT change `version` or `url` to a different release.** The version was fixed during the analyze phase. If a listed issue cannot be fixed without changing version, LEAVE it unfixed — better to ship with a warning than to downgrade the version.")
     appendLine()
-    appendLine("You are a Scoop manifest refiner. Modify the manifest according to the instructions and feedback below.")
+    appendLine("$opening Modify the manifest according to the instructions and feedback below.")
     appendLine()
     if (ctx.history.isNotEmpty()) {
-        appendLine("## Conversation / Refine History")
+        appendLine("## Conversation / Assist History")
         ctx.history.forEachIndexed { idx, item ->
             appendLine("${idx + 1}. $item")
         }
@@ -664,6 +687,11 @@ fun buildRefinePrompt(ctx: RefineContext): String = buildString {
     if (ctx.explanatory) {
         appendLine("- When calling `finalize_task_result`, also pass the optional `explanation` parameter: directly answer the user's specific request by stating which fields were added, removed, or modified and why, in the same language as the user's instruction.")
         appendLine("  Keep it at most 3 short sentences, about 60 words total; the manifest is displayed in the UI, so do not recap the changed fields one by one.")
+    }
+    if (includingEscape) {
+        appendLine()
+        appendLine("## Question Escape Hatch")
+        appendLine("If the user's message is a pure question about the manifest (no change request), do NOT modify the manifest. Answer in at most 3 short sentences (~60 words) in the user's language via the existing `explanation` parameter, set the Boolean parameter `answered` to true, and return the manifest verbatim in `result`. If the message asks for any change (add/remove/modify/rename fields, switch version or asset, fix a problem), `answered` must be false or omitted.")
     }
     appendLine()
     appendLine("## Name Conflict Resolution")

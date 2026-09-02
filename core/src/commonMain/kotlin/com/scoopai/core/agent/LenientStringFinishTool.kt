@@ -16,21 +16,28 @@ import ai.koog.serialization.typeToken
 import kotlinx.serialization.Serializable
 
 /**
- * Final artifact carrier for the generate/refine subgraphs: the manifest JSON
- * plus an optional natural-language explanation (architecture proposal 4.2).
+ * Final artifact carrier for the generate/assist/repair subgraphs: the manifest JSON
+ * plus an optional natural-language explanation and an optional escape-hatch flag
+ * (architecture proposal 4.2 + answer escape hatch).
  *
  * The explanation is the AI's conversational reply for the user instruction;
  * it is optional so old-format calls that only pass `result` keep working and
  * decode to [explanation] = null.
+ *
+ * The optional [answered] flag is true only when the user message was a pure
+ * question about the manifest (no change request); see the escape hatch in
+ * [com.scoopai.core.agent.prompt.buildAssistPrompt]. Old two-parameter encodings
+ * that omit `answered` decode to null (backward compatible).
  */
 @Serializable
 public data class FinalizePayload(
     val manifest: String,
     val explanation: String? = null,
+    val answered: Boolean? = null,
 )
 
 /**
- * Drop-in replacement for Koog's `FinishTool<String>` used by the generate/refine
+ * Drop-in replacement for Koog's `FinishTool<String>` used by the generated
  * subgraphs (whose `Output` is now [FinalizePayload]).
  *
  * ## Why this exists
@@ -52,9 +59,9 @@ public data class FinalizePayload(
  * re-encodings. research/analyze phases are unaffected because their `Output` types
  * are data classes (object -> object decoding works).
  *
- * ## Two-parameter protocol
+ * ## Three-parameter protocol
  *
- * The tool implements `finalize_task_result(result, explanation?)`:
+ * The tool implements `finalize_task_result(result, explanation?, answered?)`:
  * - `result` (required): the manifest. Accepted in any of these forms and always
  *   decoded to a [String]:
  *   - JSON string: returned verbatim (the intended form);
@@ -66,6 +73,11 @@ public data class FinalizePayload(
  *   generated/changed and why, in the user's language. Missing or null decodes
  *   to a null [FinalizePayload.explanation]; the application layer then synthesizes
  *   a deterministic reply.
+ * - `answered` (optional): true only when the user message is a pure question and
+ *   the manifest is returned verbatim. Only a JSON boolean literal is accepted;
+ *   object/array/string/number/null all decode to null (symmetric with
+ *   [FinalizePayload.explanation] tolerance, so a malformed value cannot silently
+ *   switch a change request into a pure-answer escape).
  *
  * The optional second parameter (instead of a `{"manifest": ..., "explanation": ...}`
  * wrapper) keeps the `result` contract unchanged and never lets the explanation
@@ -96,6 +108,11 @@ public class LenientStringFinishTool : Tool<FinalizePayload, FinalizePayload>(
                 description = "Optional. A short natural-language explanation of what was generated/changed " +
                     "and why, in the same language as the user's input.",
                 type = ToolParameterType.String,
+            ),
+            ToolParameterDescriptor(
+                name = "answered",
+                description = "Set true only when the user message is a pure question; keep result identical to the input manifest",
+                type = ToolParameterType.Boolean,
             )
         ),
     ),
@@ -122,6 +139,7 @@ public class LenientStringFinishTool : Tool<FinalizePayload, FinalizePayload>(
         val entries = LinkedHashMap<String, JSONElement>()
         entries["result"] = JSONLiteral(payload.manifest, isString = true)
         payload.explanation?.let { entries["explanation"] = JSONLiteral(it, isString = true) }
+        payload.answered?.let { entries["answered"] = JSONLiteral(it.toString(), isString = false) }
         return JSONObject(entries)
     }
 
@@ -143,6 +161,7 @@ public class LenientStringFinishTool : Tool<FinalizePayload, FinalizePayload>(
             return FinalizePayload(
                 manifest = extractResultValue(raw.entries["result"]),
                 explanation = extractOptionalText(raw.entries["explanation"]),
+                answered = extractOptionalBool(raw.entries["answered"]),
             )
         }
 
@@ -161,6 +180,21 @@ public class LenientStringFinishTool : Tool<FinalizePayload, FinalizePayload>(
         fun extractOptionalText(value: JSONElement?): String? = when (value) {
             null, is JSONNull -> null
             is JSONLiteral -> value.content.takeIf { value.isString && it.isNotBlank() }
+            else -> null
+        }
+
+        /** Only a JSON boolean literal (isString==false and content "true"/"false") decodes to a
+         *  non-null Boolean. Missing / JSON null / object / array / string / number all decode
+         *  to null so a malformed value cannot silently turn a change request into a pure-answer
+         *  escape (symmetric with [extractOptionalText]). */
+        fun extractOptionalBool(value: JSONElement?): Boolean? = when (value) {
+            null, is JSONNull -> null
+            is JSONLiteral -> when {
+                value.isString -> null
+                value.content == "true" -> true
+                value.content == "false" -> false
+                else -> null
+            }
             else -> null
         }
     }

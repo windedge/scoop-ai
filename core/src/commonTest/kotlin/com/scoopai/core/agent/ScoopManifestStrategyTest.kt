@@ -22,12 +22,14 @@ import ai.koog.serialization.JSONSerializer
 import ai.koog.serialization.JSONObject
 import ai.koog.serialization.kotlinx.toKoogJSONObject
 import ai.koog.serialization.typeToken
+import com.scoopai.core.AssistContext
 import com.scoopai.core.ManifestResult
 import com.scoopai.core.SessionRequest
 import com.scoopai.core.observer.GenerationObserver
 import com.scoopai.core.agent.prompt.buildAnalyzePrompt
 import com.scoopai.core.agent.prompt.buildGeneratePrompt
-import com.scoopai.core.agent.prompt.buildRefinePrompt
+import com.scoopai.core.agent.prompt.buildAssistPrompt
+import com.scoopai.core.agent.prompt.buildRepairPrompt
 import com.scoopai.core.agent.prompt.buildResearchPrompt
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -57,7 +59,7 @@ class ScoopManifestStrategyTest {
     @OptIn(InternalAgentToolsApi::class)
     private val refineFinishTool = FinishTool<String>(typeToken<String>())
 
-    /** A [ManifestIo] that always reports a validation failure (used to drive the refine loop to exhaustion). */
+    /** A [ManifestIo] that always reports a validation failure (used to drive the repair loop to exhaustion). */
     private val failingManifestIo = object : com.scoopai.core.tools.api.ManifestIo {
         override fun validate(json: String?): String =
             """{"valid":false,"errors":["sample structural validation error"]}"""
@@ -85,7 +87,7 @@ class ScoopManifestStrategyTest {
             researchPromptBuilder = { buildResearchPrompt(it, null) },
             analyzePromptBuilder = { buildAnalyzePrompt(it) },
             generatePromptBuilder = { skeleton, analyze, _ -> buildGeneratePrompt(skeleton, analyze, null) },
-            refinePromptBuilder = { buildRefinePrompt(it) },
+            assistPromptBuilder = { if (it.explanatory) buildAssistPrompt(it) else buildRepairPrompt(it) },
             manifestIo = manifestIo,
             onPhase = onPhase,
             observer = observer,
@@ -239,9 +241,9 @@ class ScoopManifestStrategyTest {
     }
 
     @Test
-    fun `refine loop exhausted after max retries marks result exhausted with issues`() = runBlocking {
+    fun `repair loop exhausted after max retries marks result exhausted with issues`() = runBlocking {
         // Given: research + analyze + generate produce valid data, but the deterministic
-        // verify node always fails validation (failingManifestIo). The refine loop runs
+        // verify node always fails validation (failingManifestIo). The repair loop runs
         // up to maxRetries=3 times and then gives up.
         val researchResult = ResearchOutput(
             status = ResearchStatus.OK,
@@ -275,8 +277,8 @@ class ScoopManifestStrategyTest {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
             mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
-            // Refine is invoked up to 3 times (retryCount 1..3), each time verify still fails.
-            mockLLMToolCall(refineFinishTool, manifestJson) onRequestContains "manifest refiner"
+            // Assist/repair subgraph is invoked up to 3 times (retryCount 1..3), each time verify still fails.
+            mockLLMToolCall(refineFinishTool, manifestJson) onRequestContains "manifest repairer"
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -285,7 +287,7 @@ class ScoopManifestStrategyTest {
             .runUrl("https://github.com/sharkdp/fd")
 
         // Then: the result must be flagged as exhausted with the unresolved issues attached.
-        assertTrue(result.exhausted, "exhausted should be true after refine loop gives up")
+        assertTrue(result.exhausted, "exhausted should be true after repair loop gives up")
         assertTrue(result.issues.isNotEmpty(), "issues should be non-empty, got: ${result.issues}")
         assertTrue(
             result.issues.any { it.contains("sample structural validation error") },
@@ -510,7 +512,7 @@ class ScoopManifestStrategyTest {
     //
     // Koog 1.0.0 FinishTool<String> throws IndexOutOfBoundsException("Index -1
     // out of bounds for length 0") when the model passes the manifest as a JSON
-    // object. The strategy now wires LenientStringFinishTool into generate/refine,
+    // object. The strategy now wires LenientStringFinishTool into generate/repair,
     // which stringifies object-form results instead of crashing.
     // =========================================================================
 
@@ -594,15 +596,15 @@ class ScoopManifestStrategyTest {
     }
 
     @Test
-    fun `refine request branch in unified session graph runs successfully`() = runBlocking {
+    fun `assist request branch in unified session graph runs successfully`() = runBlocking {
         val refinedManifest = """{"version":"1.0.1","architecture":{"64bit":{"url":"https://example.com/app.zip","hash":"abc123"}},"bin":["app.exe"]}"""
         val promptExecutor = getMockExecutor {
-            mockLLMToolCall(refineFinishTool, refinedManifest) onRequestContains "manifest refiner"
+            mockLLMToolCall(refineFinishTool, refinedManifest) onRequestContains "manifest assistant"
             mockLLMAnswer("").asDefaultResponse
         }
 
         val agent = createTestAgent(promptExecutor)
-        val request = SessionRequest.Refine(
+        val request = SessionRequest.Assist(
             currentManifest = """{"version":"1.0.0"}""",
             instruction = "Update to 1.0.1",
             suggestedAppName = "test-app",
@@ -611,7 +613,7 @@ class ScoopManifestStrategyTest {
 
         assertEquals("test-app", result.suggestedAppName)
         assertTrue(result.manifest.contains("1.0.1"), "Should contain refined version 1.0.1, got: ${result.manifest}")
-        assertTrue(!result.exhausted, "Refine should succeed without being marked exhausted")
+        assertTrue(!result.exhausted, "Assist should succeed without being marked exhausted")
     }
 
     @Test
@@ -862,5 +864,31 @@ class ScoopManifestStrategyTest {
             explanation,
             "the period in e.g. must not be treated as a sentence boundary",
         )
+    }
+
+    // =========================================================================
+    // assistPhaseName: the single source of truth for the subgraph phase name.
+    // A user follow-up (explanatory=true) is "assist"; the internal repair loop
+    // (explanatory=false) is "repair" (renamed from the old monolithic "refine").
+    // =========================================================================
+
+    @Test
+    fun `assistPhaseName returns assist for a user follow-up`() {
+        val ctx = AssistContext(
+            manifest = "{}",
+            feedback = "reviewer note",
+            explanatory = true,
+        )
+        assertEquals("assist", assistPhaseName(ctx))
+    }
+
+    @Test
+    fun `assistPhaseName returns repair for the internal repair loop`() {
+        val ctx = AssistContext(
+            manifest = "{}",
+            feedback = "reviewer note",
+            explanatory = false,
+        )
+        assertEquals("repair", assistPhaseName(ctx))
     }
 }

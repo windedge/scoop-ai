@@ -52,10 +52,10 @@ class GenerationObserverTest {
         observer.recordLlmCall(100, 60)
         observer.exitPhase("generate", 12000)
 
-        observer.enterPhase("refine")
+        observer.enterPhase("assist")
         observer.recordLlmCall(50, 30)
         observer.recordToolCall()
-        observer.exitPhase("refine", 8000)
+        observer.exitPhase("assist", 8000)
 
         val stages = observer.snapshot()
         assertEquals(4, stages.size)
@@ -78,7 +78,7 @@ class GenerationObserverTest {
         assertEquals(60, stages[2].outputTokens)
         assertEquals(0, stages[2].toolCallCount)
 
-        assertEquals("refine", stages[3].phaseName)
+        assertEquals("assist", stages[3].phaseName)
         assertEquals(8000, stages[3].durationMs)
         assertEquals(50, stages[3].inputTokens)
         assertEquals(30, stages[3].outputTokens)

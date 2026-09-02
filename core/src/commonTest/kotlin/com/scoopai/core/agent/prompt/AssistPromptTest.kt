@@ -1,6 +1,6 @@
 package com.scoopai.core.agent.prompt
 
-import com.scoopai.core.RefineContext
+import com.scoopai.core.AssistContext
 import com.scoopai.core.agent.AnalyzeOutput
 import com.scoopai.core.agent.AnalyzeStatus
 import kotlin.test.Test
@@ -8,36 +8,36 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Prompt tests for the finalize explanation protocol (architecture proposal 4.5):
- * - generate phase: one optional-parameter note in the Finalize section;
- * - refine phase: conditional requirement driven by [RefineContext.explanatory].
+ * Prompt tests for the finalize explanation protocol (architecture proposal 4.5)
+ * as applied to the ASSIST phase (user follow-up, explanatory=true):
+ * - assist prompt: conditional explanation guidance plus the Question Escape Hatch.
  */
-class RefinePromptTest {
+class AssistPromptTest {
 
-    // ---------------------------------------------------------------
-    // buildRefinePrompt: explanatory=true asks for an explanation
-    // ---------------------------------------------------------------
-
-    private fun refineContext(explanatory: Boolean) = RefineContext(
+    private fun assistContext() = AssistContext(
         manifest = """{"version":"1.0.0"}""",
         feedback = "Remove bin, keep shortcuts",
         retryCount = 1,
-        explanatory = explanatory,
+        explanatory = true,
     )
 
     @Test
-    fun `buildRefinePrompt mentions the explanation parameter when explanatory is true`() {
-        val prompt = buildRefinePrompt(refineContext(explanatory = true))
+    fun `buildAssistPrompt uses the assistant identity and mentions the explanation parameter`() {
+        val prompt = buildAssistPrompt(assistContext())
 
         assertTrue(
+            prompt.contains("You are a Scoop manifest assistant."),
+            "assist prompt must open with the assistant identity, got:\n$prompt",
+        )
+        assertTrue(
             prompt.contains("explanation"),
-            "explanatory refine prompt must mention the explanation parameter",
+            "explanatory assist prompt must mention the explanation parameter",
         )
     }
 
     @Test
-    fun `buildRefinePrompt requires answering which fields were added removed or modified when explanatory is true`() {
-        val prompt = buildRefinePrompt(refineContext(explanatory = true))
+    fun `buildAssistPrompt requires answering which fields were added removed or modified`() {
+        val prompt = buildAssistPrompt(assistContext())
 
         assertTrue(
             prompt.contains("added") && prompt.contains("removed") && prompt.contains("modified"),
@@ -46,8 +46,8 @@ class RefinePromptTest {
     }
 
     @Test
-    fun `buildRefinePrompt requires the explanation to follow the user language when explanatory is true`() {
-        val prompt = buildRefinePrompt(refineContext(explanatory = true))
+    fun `buildAssistPrompt requires the explanation to follow the user language`() {
+        val prompt = buildAssistPrompt(assistContext())
 
         assertTrue(
             prompt.contains("language"),
@@ -56,26 +56,30 @@ class RefinePromptTest {
     }
 
     @Test
-    fun `buildRefinePrompt omits the explanation guidance when explanatory is false`() {
-        val prompt = buildRefinePrompt(refineContext(explanatory = false))
+    fun `buildAssistPrompt caps the explanation at 3 short sentences`() {
+        val prompt = buildAssistPrompt(assistContext())
 
-        assertFalse(
-            prompt.contains("explanation"),
-            "internal repair rounds must not be asked for an explanation, got:\n$prompt",
+        assertTrue(
+            prompt.contains("3 short sentences"),
+            "explanatory assist prompt must cap the explanation length, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("60 words"),
+            "explanatory assist prompt must give a word budget, got:\n$prompt",
         )
     }
 
     @Test
-    fun `buildRefinePrompt caps the explanation at 3 short sentences when explanatory is true`() {
-        val prompt = buildRefinePrompt(refineContext(explanatory = true))
+    fun `buildAssistPrompt includes the question escape hatch and answered guidance`() {
+        val prompt = buildAssistPrompt(assistContext())
 
         assertTrue(
-            prompt.contains("3 short sentences"),
-            "explanatory refine prompt must cap the explanation length, got:\n$prompt",
+            prompt.contains("Question Escape Hatch"),
+            "assist prompt must include the Question Escape Hatch section, got:\n$prompt",
         )
         assertTrue(
-            prompt.contains("60 words"),
-            "explanatory refine prompt must give a word budget, got:\n$prompt",
+            prompt.contains("answered"),
+            "assist prompt must mention the Boolean `answered` parameter, got:\n$prompt",
         )
     }
 

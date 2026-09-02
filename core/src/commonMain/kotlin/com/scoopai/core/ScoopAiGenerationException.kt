@@ -3,7 +3,7 @@ package com.scoopai.core
 /**
  * Typed failure for a manifest generation run that aborted because of an
  * LLM/model capability problem (a hard error), as opposed to
- * [ManifestResult.exhausted] which means the refine loop gave up but still
+ * [ManifestResult.exhausted] which means the repair loop gave up but still
  * produced a manifest.
  *
  * Currently produced when Koog's `subgraphWithTask` gives up on a model that

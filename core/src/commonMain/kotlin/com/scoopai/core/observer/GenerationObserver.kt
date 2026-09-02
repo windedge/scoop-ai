@@ -23,7 +23,7 @@ import com.scoopai.core.StageInfo
  * supported and would evict the enclosing phase's accumulator. The semantic
  * review agent therefore records its statistics under the enclosing "verify"
  * phase instead of pushing its own phase. The same phase name MAY be entered
- * and exited repeatedly (e.g. once per verify pass in the refine loop); each
+ * and exited repeatedly (e.g. once per verify pass in the assist/repair loop); each
  * completed pair appends one [StageInfo] to [snapshot].
  *
  * [snapshot] returns all completed phases. [exitPhase] is tolerant of

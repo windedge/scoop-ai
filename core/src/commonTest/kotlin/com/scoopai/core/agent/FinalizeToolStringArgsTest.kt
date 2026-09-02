@@ -17,7 +17,7 @@ import kotlin.test.assertTrue
 
 /**
  * Regression tests for the P0 bug: `finalize_task_result` failed with
- * "Error index -1 out of bounds" in the generate/refine phases whenever the
+ * "Error index -1 out of bounds" in the generate/assist/repair phases whenever the
  * `result` parameter was passed as a JSON object (models stringify the manifest
  * object instead of escaping it into a string).
  *

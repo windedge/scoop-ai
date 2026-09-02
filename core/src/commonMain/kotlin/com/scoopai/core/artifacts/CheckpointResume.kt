@@ -110,8 +110,8 @@ data class ResumeData(
          * or captured from artifacts.
          *
          * The factory only consumes the JSON strings it actually needs for the
-         * requested [fromStage]; any additional/ignored outputs (e.g. refine,
-         * generate) are simply not part of the signature and are discarded.
+         * requested [fromStage]; any additional/ignored outputs (e.g. assist,
+         * repair, generate) are simply not part of the signature and are discarded.
          *
          * Stage requirements:
          * - [CheckpointResume.ResumeStage.ANALYZE]: needs research

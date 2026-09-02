@@ -640,11 +640,11 @@ class ScoopManifestGeneratorMockTest {
         assertEquals(4, result2.stages.size, "second run should also produce 4 stages, not accumulated")    }
 
     // =========================================================================
-    // T-3.11: refine phase onPhaseOutput (missing invoke)
+    // T-3.11: assist phase onPhaseOutput (missing invoke)
     // =========================================================================
 
     @Test
-    fun `refine phase output is written to artifacts when verify fails`() = runBlocking {
+    fun `repair phase output is written to artifacts when verify fails`() = runBlocking {
         val dir = createTempDir()
         try {
             val runArtifacts = com.scoopai.core.artifacts.RunArtifacts(
@@ -681,7 +681,7 @@ class ScoopManifestGeneratorMockTest {
             )
             val manifestJson = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip","hash":"abc123","extract_dir":"fd-v10.2.0-x86_64-pc-windows-msvc"}},"bin":["fd.exe"]}"""
 
-            // Mock ManifestIo that returns validation errors to trigger refine
+            // Mock ManifestIo that returns validation errors to trigger repair
             val mockManifestIo = object : ManifestIo {
                 override fun validate(json: String?) = """{"valid":false,"errors":["test validation error"]}"""
                 override fun write(json: String?, path: String?) = ""
@@ -705,11 +705,11 @@ class ScoopManifestGeneratorMockTest {
                 artifacts = sensitiveWriter,
             )
 
-            // Generate will trigger refine (up to 3 retries) then exhaust
+            // Generate will trigger repair (up to 3 retries) then exhaust
             generator.generate("https://github.com/sharkdp/fd")
 
             val base = java.io.File(dir, ".scoopai/runs/refine-output-test")
-            assertTrue(java.io.File(base, "refine.json").exists(), "refine.json should exist when verify triggers refine")
+            assertTrue(java.io.File(base, "repair.json").exists(), "repair.json should exist when verify triggers repair")
             // Other phase files should still exist
             assertTrue(java.io.File(base, "research.json").exists())
             assertTrue(java.io.File(base, "analyze.json").exists())
@@ -726,7 +726,7 @@ class ScoopManifestGeneratorMockTest {
     // =========================================================================
 
     @Test
-    fun `unparseable review result triggers refine instead of silently passing`() = runBlocking {
+    fun `unparseable review result triggers repair instead of silently passing`() = runBlocking {
         val researchResult = ResearchOutput(
             status = ResearchStatus.OK,
             project = "sharkdp/fd",
@@ -762,11 +762,11 @@ class ScoopManifestGeneratorMockTest {
             mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
             // Review agent receives the bare manifest JSON as its last message;
             // it returns narrative garbage (no parseable JSON): fail-closed, so
-            // verify fails and the run must go through the refine loop.
+            // verify fails and the run must go through the repair loop.
             mockLLMAnswer("This manifest looks perfectly fine to me!") onCondition { text -> text.trim().startsWith("{") }
-            // Refine repairs (returns the same manifest), but review keeps failing,
+            // Repair repairs (returns the same manifest), but review keeps failing,
             // so the loop runs to exhaustion.
-            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "manifest refiner"
+            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "manifest repairer"
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -782,10 +782,10 @@ class ScoopManifestGeneratorMockTest {
 
         val result = generator.generate("https://github.com/sharkdp/fd")
 
-        // Must NOT silently pass: the run iterates through refine...
-        assertTrue("refine" in phases, "unparseable review should drive the refine loop, phases=$phases")
+        // Must NOT silently pass: the run iterates through repair...
+        assertTrue("repair" in phases, "unparseable review should drive the repair loop, phases=$phases")
         // ...and exhausts retries with the review issue surfaced.
-        assertTrue(result.exhausted, "exhausted should be true after refine gives up")
+        assertTrue(result.exhausted, "exhausted should be true after repair gives up")
         assertTrue(
             result.issues.any { it.contains("Semantic review returned an unparseable or unexpected result") },
             "issues should carry the unparseable-review error, got: ${result.issues}"
@@ -913,7 +913,7 @@ class ScoopManifestGeneratorMockTest {
 
         generator.generate("https://github.com/sharkdp/fd")
 
-        // research / analyze / generate each fired once; refine did not run.
+        // research / analyze / generate each fired once; repair did not run.
         assertEquals("research", captured.keys.firstOrNull { it == "research" })
         assertEquals("analyze", captured.keys.firstOrNull { it == "analyze" })
         assertEquals("generate", captured.keys.firstOrNull { it == "generate" })
@@ -1011,7 +1011,7 @@ class ScoopManifestGeneratorMockTest {
     }
 
     @Test
-    fun `refine modifies existing manifest and returns updated ManifestResult`() = runBlocking {
+    fun `assist modifies existing manifest and returns updated ManifestResult`() = runBlocking {
         val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
         val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
 
@@ -1019,7 +1019,7 @@ class ScoopManifestGeneratorMockTest {
         val phaseOutputs = mutableListOf<Pair<String, String>>()
 
         val promptExecutor = getMockExecutor {
-            mockLLMToolCall(lenientFinishTool, FinalizePayload(refinedManifest)) onRequestContains "manifest refiner"
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(refinedManifest)) onRequestContains "manifest assistant"
             mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""").asDefaultResponse
         }
 
@@ -1034,27 +1034,29 @@ class ScoopManifestGeneratorMockTest {
             phaseOutputListener = { p, out -> phaseOutputs.add(p to out) },
         )
 
-        val result = generator.refine(
+        val result = generator.assist(
             manifestJson = initialManifest,
             instruction = "Add start menu shortcut for app.exe",
             suggestedAppName = "initial-app",
         )
 
-        assertEquals(listOf("refine", "verify"), phases, "Should only run refine and verify phases")
+        assertEquals(listOf("assist", "verify"), phases, "Should only run assist and verify phases")
         val expectedManifest = formatManifestJson(normalizeManifest(refinedManifest))
         assertEquals(expectedManifest, result.manifest)
         assertEquals("initial-app", result.suggestedAppName)
-        assertTrue(phaseOutputs.any { it.first == "refine" })
+        assertTrue(phaseOutputs.any { it.first == "assist" })
     }
 
     @Test
-    fun `refine returns issues and exhausted true when refined manifest contains validation errors`() = runBlocking {
+    fun `assist returns issues and exhausted true when refined manifest contains validation errors`() = runBlocking {
         val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
         // Refined manifest with hardcoded autoupdate version placeholder issue
         val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"autoupdate":{"url":"https://example.com/1.0.0/app.zip"}}"""
 
         val promptExecutor = getMockExecutor {
-            mockLLMToolCall(lenientFinishTool, FinalizePayload(refinedManifest)) onRequestContains "manifest refiner"
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(refinedManifest)) onRequestContains "manifest assistant"
+            // After verify fails, internal repair rounds (explanatory=false) run up to maxRetries=3 times.
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(refinedManifest)) onRequestContains "manifest repairer"
             mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""").asDefaultResponse
         }
 
@@ -1067,7 +1069,7 @@ class ScoopManifestGeneratorMockTest {
             maxIterations = 50,
         )
 
-        val result = generator.refine(
+        val result = generator.assist(
             manifestJson = initialManifest,
             instruction = "Add autoupdate",
             suggestedAppName = "initial-app",
@@ -1079,13 +1081,13 @@ class ScoopManifestGeneratorMockTest {
     }
 
     @Test
-    fun `refine allows removing bin field without autoFillBin adding it back`() = runBlocking {
+    fun `assist allows removing bin field without autoFillBin adding it back`() = runBlocking {
         val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
         // User requested removing bin; refined manifest has only shortcuts and no bin
         val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","shortcuts":[["app.exe","Initial App"]]}"""
 
         val promptExecutor = getMockExecutor {
-            mockLLMToolCall(lenientFinishTool, FinalizePayload(refinedManifest)) onRequestContains "manifest refiner"
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(refinedManifest)) onRequestContains "manifest assistant"
             mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""").asDefaultResponse
         }
 
@@ -1098,7 +1100,7 @@ class ScoopManifestGeneratorMockTest {
             maxIterations = 50,
         )
 
-        val result = generator.refine(
+        val result = generator.assist(
             manifestJson = initialManifest,
             instruction = "Remove bin attribute, keep only shortcuts",
             suggestedAppName = "initial-app",
@@ -1110,7 +1112,7 @@ class ScoopManifestGeneratorMockTest {
     }
 
     @Test
-    fun `refine passes evidence to refine subgraph and receives updated manifest`() = runBlocking {
+    fun `assist passes evidence to assist subgraph and receives updated manifest`() = runBlocking {
         val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
         val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","App Launcher"]]}"""
 
@@ -1128,7 +1130,7 @@ class ScoopManifestGeneratorMockTest {
             maxIterations = 50,
         )
 
-        val result = generator.refine(
+        val result = generator.assist(
             manifestJson = initialManifest,
             instruction = "Add shortcut for main executable",
             evidence = "Archive contains: app.exe, config.ini",
@@ -1251,7 +1253,7 @@ class ScoopManifestGeneratorMockTest {
                 FinalizePayload(manifest = manifestJson, explanation = explanationText)
             ) onRequestContains "GENERATE phase"
             // Internal repair rounds: no explanation parameter.
-            mockLLMToolCall(lenientFinishTool, FinalizePayload(manifest = manifestJson)) onRequestContains "manifest refiner"
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(manifest = manifestJson)) onRequestContains "manifest repairer"
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -1299,7 +1301,7 @@ class ScoopManifestGeneratorMockTest {
             mockLLMToolCall(
                 lenientFinishTool,
                 FinalizePayload(manifest = manifestJson, explanation = "")
-            ) onRequestContains "manifest refiner"
+            ) onRequestContains "manifest repairer"
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -1345,7 +1347,7 @@ class ScoopManifestGeneratorMockTest {
             mockLLMToolCall(
                 lenientFinishTool,
                 FinalizePayload(manifest = manifestJson, explanation = "   ")
-            ) onRequestContains "manifest refiner"
+            ) onRequestContains "manifest repairer"
             mockLLMAnswer("").asDefaultResponse
         }
 
@@ -1368,8 +1370,8 @@ class ScoopManifestGeneratorMockTest {
     }
 
     @Test
-    fun `refine flows the finalize explanation into ManifestResult explanation`() = runBlocking {
-        // User-driven refine (generator.refine, explanatory=true): the finalize
+    fun `assist flows the finalize explanation into ManifestResult explanation`() = runBlocking {
+        // User-driven assist (generator.assist, explanatory=true): the finalize
         // explanation must flow end-to-end into ManifestResult.explanation.
         val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
         val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
@@ -1379,7 +1381,7 @@ class ScoopManifestGeneratorMockTest {
             mockLLMToolCall(
                 lenientFinishTool,
                 FinalizePayload(manifest = refinedManifest, explanation = explanationText)
-            ) onRequestContains "manifest refiner"
+            ) onRequestContains "manifest assistant"
             mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""").asDefaultResponse
         }
 
@@ -1390,7 +1392,7 @@ class ScoopManifestGeneratorMockTest {
             maxIterations = 50,
         )
 
-        val result = generator.refine(
+        val result = generator.assist(
             manifestJson = initialManifest,
             instruction = "Add start menu shortcut for app.exe",
             suggestedAppName = "initial-app",
@@ -1399,9 +1401,170 @@ class ScoopManifestGeneratorMockTest {
         assertEquals(
             explanationText,
             result.explanation,
-            "refine finalize explanation must flow into ManifestResult.explanation",
+            "assist finalize explanation must flow into ManifestResult.explanation",
         )
         assertTrue(result.manifest.contains("shortcuts"), "refined manifest should still be produced")
+    }
+
+    // =========================================================================
+    // Question escape hatch (answer): end-to-end flow (part 2)
+    // =========================================================================
+
+    @Test
+    fun `pure question assist returns answered result with unchanged manifest and no verify`() = runBlocking {
+        // A user follow-up that is only a question (no change request): the model
+        // finalizes with answered=true and returns the input manifest verbatim.
+        val inputManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val explanationText = "The manifest already contains the shortcuts you asked about."
+
+        val phases = mutableListOf<String>()
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = inputManifest, explanation = explanationText, answered = true)
+            ) onRequestContains "manifest assistant"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry.EMPTY,
+            maxIterations = 50,
+            onPhase = { phases.add(it) },
+        )
+
+        val result = generator.assist(
+            manifestJson = inputManifest,
+            instruction = "Does this manifest include a start menu shortcut?",
+            suggestedAppName = "initial-app",
+        )
+
+        assertTrue(result.answered, "pure question must produce answered=true")
+        assertEquals(explanationText, result.explanation)
+        // manifest is the input echoed back verbatim (formatManifestJson handled)
+        assertEquals(formatManifestJson(inputManifest), result.manifest)
+        assertTrue(result.issues.isEmpty())
+        // phases: only assist, no verify (escape bypasses normalize/verify)
+        assertEquals(listOf("assist"), phases)
+    }
+
+    @Test
+    fun `answered true but modified manifest is not treated as a pure answer`() = runBlocking {
+        // Guard: the model sets answered=true but DID modify the manifest. The
+        // checkAnswered node compares the finalize manifest against the input and
+        // must route into normalize/verify (answered=false), not the escape.
+        val inputManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val modifiedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
+
+        val phases = mutableListOf<String>()
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = modifiedManifest, answered = true)
+            ) onRequestContains "manifest assistant"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry.EMPTY,
+            maxIterations = 50,
+            onPhase = { phases.add(it) },
+        )
+
+        val result = generator.assist(
+            manifestJson = inputManifest,
+            instruction = "Add a start menu shortcut for app.exe",
+            suggestedAppName = "initial-app",
+        )
+
+        assertTrue(!result.answered, "modified manifest must NOT be treated as a pure answer")
+        assertEquals(listOf("assist", "verify"), phases)
+        assertTrue(result.manifest.contains("shortcuts"), "modified manifest must be preserved through normalize/verify")
+    }
+
+    @Test
+    fun `assist without answered follows the normal modify behavior`() = runBlocking {
+        // Regression: a user change request that omits `answered` (null) must behave
+        // exactly like the old refine flow: assist -> normalize -> verify.
+        val inputManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
+
+        val phases = mutableListOf<String>()
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = refinedManifest)
+            ) onRequestContains "manifest assistant"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry.EMPTY,
+            maxIterations = 50,
+            onPhase = { phases.add(it) },
+        )
+
+        val result = generator.assist(
+            manifestJson = inputManifest,
+            instruction = "Add a start menu shortcut for app.exe",
+            suggestedAppName = "initial-app",
+        )
+
+        assertTrue(!result.answered, "change request without answered must not be answered")
+        assertEquals(listOf("assist", "verify"), phases)
+        assertEquals(formatManifestJson(normalizeManifest(refinedManifest)), result.manifest)
+    }
+
+    @Test
+    fun `internal repair loop emits repair phase and does not trigger the answer escape`() = runBlocking {
+        // A generate session whose verify keeps failing drives the internal repair
+        // loop (explanatory=false): onPhase must emit "repair", and a finalize with
+        // answered=true but a fixed manifest must NOT be treated as a pure answer.
+        val (researchResult, analyzeResult, manifestJson) = explanationTestFixtures()
+        val repairedManifest = """{"version":"10.2.0","description":"Fast find","architecture":{"64bit":{"url":"https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip","hash":"abc123","extract_dir":"fd-v10.2.0-x86_64-pc-windows-msvc"}},"bin":["fd.exe"],"shortcuts":[["fd.exe","fd"]]}"""
+
+        val mockManifestIo = object : ManifestIo {
+            override fun validate(json: String?) = """{"valid":false,"errors":["test validation error"]}"""
+            override fun write(json: String?, path: String?) = ""
+            override fun read(path: String?) = ""
+        }
+
+        val phases = mutableListOf<String>()
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = manifestJson)
+            ) onRequestContains "GENERATE phase"
+            // Internal repair rounds finalize with answered=true but a DIFFERENT manifest:
+            // the repair loop is never a pure-answer escape.
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = repairedManifest, answered = true)
+            ) onRequestContains "manifest repairer"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 200,
+            onPhase = { phases.add(it) },
+            manifestIo = mockManifestIo,
+        )
+
+        val result = generator.generate("https://github.com/sharkdp/fd")
+
+        assertTrue("repair" in phases, "internal repair loop must emit the repair phase, phases=$phases")
+        assertTrue(!result.answered, "repair loop must not set answered")
+        assertTrue(result.exhausted, "verify keeps failing so the run must exhaust")
     }
 
     // =========================================================================
@@ -1409,7 +1572,7 @@ class ScoopManifestGeneratorMockTest {
     // =========================================================================
 
     @Test
-    fun `runSession delegates to generate and refine correctly`() = runBlocking {
+    fun `runSession delegates to generate and assist correctly`() = runBlocking {
         val researchResult = ResearchOutput(
             status = ResearchStatus.OK,
             project = "sharkdp/fd",

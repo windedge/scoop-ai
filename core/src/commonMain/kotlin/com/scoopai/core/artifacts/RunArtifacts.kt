@@ -5,7 +5,7 @@ import java.io.File
 /**
  * Debug artifacts for a single generation run.
  *
- * Writes phase outputs (research/analyze/generate/refine) to
+ * Writes phase outputs (research/analyze/generate/assist/repair) to
  * `<baseDir>/.scoopai/runs/<runId>/` directory. All writes use atomic
  * temp-file + rename to avoid half-written files.
  *

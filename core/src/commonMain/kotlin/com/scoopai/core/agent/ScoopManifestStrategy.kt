@@ -6,8 +6,8 @@ import ai.koog.agents.core.dsl.builder.strategy
 import ai.koog.agents.core.tools.ToolBase
 import ai.koog.agents.ext.agent.subgraphWithTask
 import ai.koog.prompt.params.LLMParams
+import com.scoopai.core.AssistContext
 import com.scoopai.core.ManifestResult
-import com.scoopai.core.RefineContext
 import com.scoopai.core.SessionRequest
 import com.scoopai.core.observer.GenerationObserver
 import com.scoopai.core.agent.nodes.assembleManifestSkeleton
@@ -46,9 +46,28 @@ internal val phaseJson: Json = Json {
 }
 
 /**
+ * The single source of truth for the phase name emitted for the assist/repair
+ * subgraph: a user follow-up ([AssistContext.explanatory] = true) is "assist",
+ * the internal repair loop ([AssistContext.explanatory] = false) is "repair".
+ */
+internal fun assistPhaseName(ctx: AssistContext): String = if (ctx.explanatory) "assist" else "repair"
+
+/**
+ * Carrier produced by the [ScoopManifestStrategy]'s checkAnswered node: the
+ * finalize payload plus a flag telling whether the finalize was a pure-answer
+ * escape hatch (the user message was a question, so the manifest is echoed back
+ * unmodified).
+ */
+@kotlinx.serialization.Serializable
+private data class CheckedFinalize(
+    val payload: FinalizePayload,
+    val isPureAnswer: Boolean,
+)
+
+/**
  * Creates a graph strategy for generating Scoop manifests.
  *
- * Flow (v4 — prefetch + 3-phase + edge-based refine loop):
+ * Flow (v4 — prefetch + 3-phase + edge-based assist/repair loop):
  * ```
  * nodeStart → prefetch(deterministic: pre-collect data)
  *   → research(LLM, research tools)
@@ -58,9 +77,12 @@ internal val phaseJson: Json = Json {
  *        → generate(LLM, no tools: skeleton review + finalize)
  *        → verify(validate + review)
  *          [pass] → nodeFinish
- *          [fail + retry ≤ 3] → refine(LLM, no tools) → verify (loop)
+ *          [fail + retry ≤ 3] → assist(LLM, no tools, repair) → verify (loop)
  *          [fail + retry > 3] → nodeFinish (exhausted)
  * ```
+ *
+ * User follow-ups route request → prepareAssistFromRequest → assist(explanatory=true)
+ * → checkAnswered (question escape hatch) → normalize → verify → nodeFinish.
  *
  * @param researchTools Tools available in the research phase.
  * @param analyzeTools Tools available in the analyze phase (hash/compute, archive listing, etc.).
@@ -68,7 +90,7 @@ internal val phaseJson: Json = Json {
  * @param researchPromptBuilder Builds the research prompt from [PrefetchResult].
  * @param analyzePromptBuilder Builds the analyze prompt from [ResearchOutput].
  * @param generatePromptBuilder Builds the generate prompt from (skeleton, analyze, research).
- * @param refinePromptBuilder Builds the refine prompt from [RefineContext].
+ * @param assistPromptBuilder Builds the assist/repair prompt from [AssistContext].
  * @param manifestIo Structural validate tool (used in verify node).
  * @param reviewExecutor Semantic review executor (independent LLM agent, used in verify node).
  * @param gitHubApi GitHub API for prefetching project data before LLM phases.
@@ -81,12 +103,12 @@ fun scoopManifestStrategy(
     researchPromptBuilder: (suspend (PrefetchResult) -> String)? = null,
     analyzePromptBuilder: (suspend (ResearchOutput) -> String)? = null,
     generatePromptBuilder: (suspend (String, AnalyzeOutput, ResearchOutput?) -> String)? = null,
-    refinePromptBuilder: (suspend (RefineContext) -> String)? = null,
+    assistPromptBuilder: (suspend (AssistContext) -> String)? = null,
     manifestIo: ManifestIo? = null,
     reviewExecutor: (suspend (String) -> String)? = null,
     gitHubApi: GitHubApi? = null,
     archiveInspector: ArchiveInspector? = null,
-    /** Callback invoked when a phase starts (name: "research", "analyze", "generate", "refine"). */
+    /** Callback invoked when a phase starts (name: "research", "analyze", "generate", "assist", "repair"). */
     onPhase: ((String) -> Unit)? = null,
     /** Observer for recording per-phase execution statistics. */
     observer: GenerationObserver = GenerationObserver(),
@@ -104,7 +126,7 @@ fun scoopManifestStrategy(
 ) = strategy<SessionRequest, ManifestResult>("unified_scoop_manifest") {
 
     // ── Storage keys ───────────────────────────────────────────
-    val retryCountKey = createStorageKey<Int>("refine_retry_count")
+    val retryCountKey = createStorageKey<Int>("assist_retry_count")
     val maxRetries = 3
     val researchDataKey = createStorageKey<ResearchOutput>("research_data")
     val analyzeDataKey = createStorageKey<AnalyzeOutput>("analyze_data")
@@ -117,8 +139,19 @@ fun scoopManifestStrategy(
     var researchStart: TimeMark? = null
     var analyzeStart: TimeMark? = null
     var generateStart: TimeMark? = null
-    var refineStart: TimeMark? = null
+    var assistStart: TimeMark? = null
     var verifyStart: TimeMark? = null
+
+    // Captured at subgraph entry ("assist" or "repair") and used at the exit
+    // edge/node so observer.enterPhase and exitPhase always use the same name.
+    var assistPhaseNameForEvents: String = "assist"
+
+    // Captured at subgraph entry: whether the current assist/repair round is a
+    // user follow-up (explanatory=true). The question escape hatch (answered) is
+    // only honored for a user follow-up, never for the internal repair loop (which
+    // legitimately re-fixes the same manifest across rounds and must not be
+    // mistaken fora pure-answer).
+    var assistIsUserFollowUp: Boolean = false
 
     // ── Request routing and context initialization ──
     val routeRequest by node<SessionRequest, SessionRequest>("routeRequest") { request ->
@@ -127,7 +160,7 @@ fun scoopManifestStrategy(
                 storage.set(retryCountKey, 0)
                 request
             }
-            is SessionRequest.Refine -> {
+            is SessionRequest.Assist -> {
                 storage.set(retryCountKey, 1)
                 request.suggestedAppName?.let { storage.set(suggestedAppNameKey, it) }
                 storage.set(finalManifestKey, request.currentManifest)
@@ -142,11 +175,11 @@ fun scoopManifestStrategy(
         executePrefetch(gen.url, gitHubApi, archiveInspector)
     }
 
-    // ── Prepare Refine context directly from request ──
-    // User-initiated refine: the finalize call is asked to produce an explanation.
-    val prepareRefineFromRequest by node<SessionRequest, RefineContext>("prepareRefineFromRequest") { request ->
-        val ref = request as SessionRequest.Refine
-        RefineContext(
+    // ── Prepare Assist context directly from request ──
+    // User-initiated assist: the finalize call is asked to produce an explanation.
+    val prepareAssistFromRequest by node<SessionRequest, AssistContext>("prepareAssistFromRequest") { request ->
+        val ref = request as SessionRequest.Assist
+        AssistContext(
             manifest = ref.currentManifest,
             feedback = ref.instruction,
             history = ref.history,
@@ -230,20 +263,22 @@ fun scoopManifestStrategy(
         generatePromptBuilder?.invoke(skeleton, storage.get(analyzeDataKey)!!, storage.get(researchDataKey)) ?: skeleton
     }
 
-    // ── Refine phase (LLM, no tools, lightweight fix loop) ──
-    // Same lenient finish tool as generate: refine also finalizes a FinalizePayload.
+    // ── Assist subgraph (LLM, no tools, lightweight fix loop) ──
+    // Same lenient finish tool as generate: assist also finalizes a FinalizePayload.
     // Internal repair rounds (explanatory=false) do not require an explanation;
-    // user-initiated refines (explanatory=true) do (see RefineContext kdoc).
-    val refine by subgraphWithTask<RefineContext, FinalizePayload, FinalizePayload>(
+    // user-initiated assists (explanatory=true) do (see AssistContext kdoc).
+    val assist by subgraphWithTask<AssistContext, FinalizePayload, FinalizePayload>(
         tools = emptyList<ToolBase<*, *>>(),
         finishTool = LenientStringFinishTool(),
         llmParams = llmParams,
     ) { input ->
-        onPhase?.invoke("refine")
-        observer.enterPhase("refine")
-        logger.info { PhaseProgressLogger.starting("refine") }
-        refineStart = TimeSource.Monotonic.markNow()
-        refinePromptBuilder?.invoke(input) ?: ""
+        assistPhaseNameForEvents = assistPhaseName(input)
+        assistIsUserFollowUp = input.explanatory
+        onPhase?.invoke(assistPhaseNameForEvents)
+        observer.enterPhase(assistPhaseNameForEvents)
+        logger.info { PhaseProgressLogger.starting(assistPhaseNameForEvents) }
+        assistStart = TimeSource.Monotonic.markNow()
+        assistPromptBuilder?.invoke(input) ?: ""
     }
 
     // ── Normalize node (deterministic: post-process + normalize) ──
@@ -255,11 +290,11 @@ fun scoopManifestStrategy(
     }
 
     // ── Verify node (deterministic: validate + review + app name conflict) ──
-    // Executed once per pass: the initial check plus every refine-loop round.
+    // Executed once per pass: the initial check plus every assist/repair-loop round.
     // enterPhase/exitPhase must stay strictly paired per execution (try/finally);
     // the semantic review inside validateManifest folds into this phase's
     // statistics (architecture proposal 4.6).
-    val verify by node<String, RefineContext?>("verify") { manifest ->
+    val verify by node<String, AssistContext?>("verify") { manifest ->
         onPhase?.invoke("verify")
         observer.enterPhase("verify")
         logger.info { PhaseProgressLogger.starting("verify") }
@@ -274,7 +309,7 @@ fun scoopManifestStrategy(
     }
 
     // ── Build final result node (reads from storage, replaces edge transform that used captured vars) ──
-    val buildFinalResult by node<RefineContext?, ManifestResult>("buildFinalResult") { _ ->
+    val buildFinalResult by node<AssistContext?, ManifestResult>("buildFinalResult") { _ ->
         val manifest = storage.get(finalManifestKey) ?: ""
         val conflict = storage.get(appNameConflictKey)
         ManifestResult(
@@ -286,11 +321,11 @@ fun scoopManifestStrategy(
     }
 
     // ── Build exhausted result node ──
-    val buildExhaustedResult by node<RefineContext?, ManifestResult>("buildExhaustedResult") { ctx ->
+    val buildExhaustedResult by node<AssistContext?, ManifestResult>("buildExhaustedResult") { ctx ->
         val issueList = ctx?.let { splitFeedback(it.feedback) } ?: emptyList()
         val conflict = storage.get(appNameConflictKey)
         val allIssues = if (conflict != null && conflict !in issueList) issueList + conflict else issueList
-        logger.warn { "[strategy] Refine exhausted after $maxRetries attempts. Returning last manifest with ${allIssues.size} issue(s)." }
+        logger.warn { "[strategy] repair loop exhausted after $maxRetries attempts. Returning last manifest with ${allIssues.size} issue(s)." }
         val manifest = storage.get(finalManifestKey) ?: ""
         ManifestResult(
             manifest = extractJsonBlock(manifest)?.let { formatManifestJson(it) } ?: manifest,
@@ -301,6 +336,28 @@ fun scoopManifestStrategy(
         )
     }
 
+    // ── Question escape hatch (assist → checkAnswered → buildAnswerResult | normalize) ──
+    // Only used on the user-assist / repair path. The generate path keeps its original
+    // generate → normalize edge and never reaches checkAnswered (finalManifestKey is
+    // only written on the verify pass for a generate session).
+    val checkAnswered by node<FinalizePayload, CheckedFinalize>("checkAnswered") { payload ->
+        val isPureAnswer = assistIsUserFollowUp &&
+            payload.answered == true &&
+            normalizeIfValid(payload.manifest) == normalizeIfValid(storage.get(finalManifestKey) ?: "") &&
+            normalizeIfValid(payload.manifest).isNotEmpty()
+        CheckedFinalize(payload = payload, isPureAnswer = isPureAnswer)
+    }
+
+    val buildAnswerResult by node<CheckedFinalize, ManifestResult>("buildAnswerResult") { checked ->
+        val manifest = storage.get(finalManifestKey) ?: ""
+        ManifestResult(
+            manifest = extractJsonBlock(manifest)?.let { formatManifestJson(it) } ?: manifest,
+            suggestedAppName = storage.get(suggestedAppNameKey),
+            answered = true,
+            explanation = checked.payload.explanation?.trim()?.takeIf { it.isNotEmpty() },
+        )
+    }
+
     // ── Edges ──
     edge(nodeStart forwardTo routeRequest)
 
@@ -308,9 +365,9 @@ fun scoopManifestStrategy(
     edge(routeRequest forwardTo prefetch onCondition { it is SessionRequest.Generate })
     edge(prefetch forwardTo research)
 
-    // Refine branch
-    edge(routeRequest forwardTo prepareRefineFromRequest onCondition { it is SessionRequest.Refine })
-    edge(prepareRefineFromRequest forwardTo refine)
+    // Assist branch (user follow-up)
+    edge(routeRequest forwardTo prepareAssistFromRequest onCondition { it is SessionRequest.Assist })
+    edge(prepareAssistFromRequest forwardTo assist)
 
     // Research → researchDone (completion logging)
     edge(research forwardTo researchDone)
@@ -348,18 +405,28 @@ fun scoopManifestStrategy(
         payload.manifest          // normalize still receives a String, signature unchanged
     })
 
-    // Refine path: refine → normalize
-    edge(refine forwardTo normalize transformed { payload ->
-        val elapsed = refineStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
-        observer.exitPhase("refine", elapsed)
-        logger.info { PhaseProgressLogger.completed("refine", elapsed, llmCalls = observer.lastCompletedLlmCallCount()) }
-        onPhaseOutput?.invoke("refine", payload.manifest)
+    // Assist/repair path: assist → checkAnswered → normalize (or answer escape)
+    // The assist subgraph also serves the internal repair loop (built via the
+    // verify → assist edge below), so the phase name for events is captured at
+    // entry in assistPhaseNameForEvents and reused here at exit.
+    edge(assist forwardTo checkAnswered transformed { payload ->
+        val elapsed = assistStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
+        observer.exitPhase(assistPhaseNameForEvents, elapsed)
+        logger.info { PhaseProgressLogger.completed(assistPhaseNameForEvents, elapsed, llmCalls = observer.lastCompletedLlmCallCount()) }
+        onPhaseOutput?.invoke(assistPhaseNameForEvents, payload.manifest)
         // Same non-blank-only rule as the generate edge: a repair round without a
-        // usable explanation must not erase the last valid one, while a user refine
+        // usable explanation must not erase the last valid one, while a user assist
         // with a new explanation overwrites it.
         payload.explanation?.trim()?.takeIf { it.isNotEmpty() }?.let { explanation -> storage.set(explanationKey, explanation) }
-        payload.manifest
+        payload
     })
+
+    // Pure-answer escape: manifest unchanged → answer result (no normalize/verify)
+    edge(checkAnswered forwardTo buildAnswerResult onCondition { it.isPureAnswer })
+    edge(buildAnswerResult forwardTo nodeFinish)
+
+    // Change request / repair: route into normalize
+    edge(checkAnswered forwardTo normalize onCondition { !it.isPureAnswer } transformed { it.payload.manifest })
 
     // Unified normalize → verify Guard
     edge(normalize forwardTo verify)
@@ -370,8 +437,8 @@ fun scoopManifestStrategy(
     })
     edge(buildFinalResult forwardTo nodeFinish)
 
-    // Verify → fail + retry ≤ 3 → refine loop
-    edge(verify forwardTo refine onCondition { ctx ->
+    // Verify → fail + retry ≤ 3 → repair loop (explanatory=false)
+    edge(verify forwardTo assist onCondition { ctx ->
         ctx != null && ctx.retryCount <= maxRetries
     } transformed { ctx ->
         ctx!!
@@ -433,7 +500,7 @@ internal fun normalizeManifest(manifestJson: String): String {
 }
 
 /**
- * Validates a manifest JSON string and returns a [RefineContext] with errors if found,
+ * Validates a manifest JSON string and returns an [AssistContext] with errors if found,
  * or null if validation passes.
  */
 internal suspend fun validateManifest(
@@ -447,7 +514,7 @@ internal suspend fun validateManifest(
     suggestedAppNameKey: AIAgentStorageKey<String>? = null,
     appNameConflictKey: AIAgentStorageKey<String>? = null,
     finalManifestSetter: suspend (String) -> Unit,
-): RefineContext? {
+): AssistContext? {
     finalManifestSetter(manifest)
     val errors = mutableListOf<String>()
 
@@ -486,8 +553,8 @@ internal suspend fun validateManifest(
 
     // Step 1.7: App name conflict check
     // (reads suggestedAppName from storage, checks against local bucket names)
-    // NOTE: Name conflict is a non-blocking Notice; it must NOT trigger a Refine loop because
-    // the LLM cannot change local bucket contents. It is recorded to be surfaced in ManifestResult.issues.
+    // NOTE: Name conflict is a non-blocking Notice; it must NOT trigger an assist/repair
+    // loop because the LLM cannot change local bucket contents. It is recorded to be surfaced in ManifestResult.issues.
     if (usedAppNamesProvider != null && suggestedAppNameKey != null) {
         try {
             val suggestedName = storage.get(suggestedAppNameKey)
@@ -531,7 +598,7 @@ internal suspend fun validateManifest(
         val currentRetry = (storage.get(retryCountKey) ?: 0) + 1
         storage.set(retryCountKey, currentRetry)
         logger.info { "[verify] Errors found, retry #$currentRetry (max $maxRetries)" }
-        return RefineContext(manifest = manifest, feedback = errors.joinToString("\n- ", "- "), retryCount = currentRetry)
+        return AssistContext(manifest = manifest, feedback = errors.joinToString("\n- ", "- "), retryCount = currentRetry)
     } else {
         logger.info { "[verify] Validation passed, proceeding to finish" }
         return null
@@ -563,7 +630,18 @@ internal fun isValidJson(text: String): Boolean = try {
 }
 
 /**
- * Splits a [RefineContext.feedback] string back into the individual issue messages.
+ * Normalizes a manifest JSON string for semantic comparison, returning an empty
+ * string when the input is not a parseable JSON object. Used by the question
+ * escape hatch to compare the finalize result against the input manifest: both
+ * sides run through [normalizeManifest] so cosmetic differences (whitespace,
+ * key order, benign normalizations) do not prevent a pure-answer from being
+ * recognized, while a genuinely modified manifest fails the comparison.
+ */
+internal fun normalizeIfValid(manifestJson: String): String =
+    if (isValidJson(manifestJson)) normalizeManifest(manifestJson) else ""
+
+/**
+ * Splits an [AssistContext.feedback] string back into the individual issue messages.
  *
  * `feedback` is produced by `errors.joinToString("\n- ", "- ")`, so each issue line
  * is prefixed with "- ". This reverses that join so the issues can be surfaced as a
@@ -618,7 +696,7 @@ internal fun firstSentence(text: String, limit: Int = NO_ASSETS_DETAIL_LIMIT): S
  * Deterministically synthesizes the noAssets explanation from the research output
  * (English fallback text, architecture proposal 4.7).
  *
- * The noAssets early-finish branch never reaches the generate/refine subgraphs, so
+ * The noAssets early-finish branch never reaches the generate/assist/repair subgraphs, so
  * the explanation of such a run can never come from a finalize_task_result call;
  * the engine produces it from the fields the research phase already gathered
  * ([ResearchOutput.alternatives], [ResearchOutput.notes], [ResearchOutput.project]).

@@ -663,14 +663,14 @@ class GenerateCommandTest {
     }
 
     @Test
-    fun `exhausted with valid JSON reports refine loop exhaustion`() {
+    fun `exhausted with valid JSON reports repair loop exhaustion`() {
         val detail = GenerateCommand.manifestRejectionDetail(
             """{"version":"1.0"}""",
             exhausted = true,
             issues = listOf("a", "b"),
         )
         assertEquals(
-            "manifest generation failed: refine loop exhausted with 2 unresolved issue(s): a; b",
+            "manifest generation failed: repair loop exhausted with 2 unresolved issue(s): a; b",
             detail,
         )
     }
@@ -681,7 +681,7 @@ class GenerateCommandTest {
             "{not json", exhausted = true, issues = listOf("x")
         )
         assertTrue(
-            detail != null && detail.contains("refine loop exhausted"),
+            detail != null && detail.contains("repair loop exhausted"),
             "exhausted must win over invalid JSON, got: $detail",
         )
     }

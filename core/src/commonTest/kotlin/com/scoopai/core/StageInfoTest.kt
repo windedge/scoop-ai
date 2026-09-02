@@ -136,7 +136,7 @@ class StageInfoTest {
                 StageInfo("research", 10000, 200, 80, 3),
                 StageInfo("analyze", 15000, 300, 120, 6),
                 StageInfo("generate", 12000, 100, 60, 0),
-                StageInfo("refine", 8000, 50, 30, 0),
+                StageInfo("assist", 8000, 50, 30, 0),
             ),
         )
         val jsonStr = json.encodeToString(ManifestResult.serializer(), original)

@@ -97,13 +97,13 @@ class ConsoleProgressTest {
         progress.phase("research")
         progress.phase("analyze")
         progress.phase("generate")
-        progress.phase("refine")
+        progress.phase("assist")
         progress.done()
         val output = baos.toString(StandardCharsets.UTF_8.name())
         // ByteArrayOutputStream captures all writes (\r is just a character).
         // The \r before each phase means a TTY will overwrite the line,
         // but the buffer still contains all writes chronologically.
-        val expected = "\r[phase] research\r[phase] analyze\r[phase] generate\r[phase] refine${System.lineSeparator()}"
+        val expected = "\r[phase] research\r[phase] analyze\r[phase] generate\r[phase] assist${System.lineSeparator()}"
         assertEquals(expected, output)
     }
 }

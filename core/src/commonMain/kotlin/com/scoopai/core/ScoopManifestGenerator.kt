@@ -19,7 +19,8 @@ import com.scoopai.core.agent.prompt.REVIEW_AGENT_SYSTEM_PROMPT
 import com.scoopai.core.observer.GenerationObserver
 import com.scoopai.core.agent.prompt.buildAnalyzePrompt
 import com.scoopai.core.agent.prompt.buildGeneratePrompt
-import com.scoopai.core.agent.prompt.buildRefinePrompt
+import com.scoopai.core.agent.prompt.buildAssistPrompt
+import com.scoopai.core.agent.prompt.buildRepairPrompt
 import com.scoopai.core.agent.prompt.buildResearchPrompt
 import com.scoopai.core.agent.normalizeManifest
 import com.scoopai.core.agent.parseValidateErrors
@@ -44,11 +45,11 @@ private val logger = KotlinLogging.logger {}
 
 /**
  * Generates a Scoop manifest using a Koog graph strategy with three LLM phases
- * (research → analyze → generate) and a deterministic verify + optional refine loop.
+ * (research → analyze → generate) and a deterministic verify + optional assist loop.
  *
  * Flow: research(LLM) → analyze(LLM) → prepareManifest(deterministic) → generate(LLM) → verify(validate+review)
  *                                                                                           ↓ pass        ↓ fail
- *                                                                                      nodeFinish    refine(LLM, optional)
+ *                                                                                      nodeFinish    assist(LLM, optional)
  *                                                                                                        ↓ (max 3)
  *                                                                                                     verify
  */
@@ -70,7 +71,7 @@ class ScoopManifestGenerator(
     private val onPhase: ((String) -> Unit)? = null,
     /**
      * In-memory listener invoked once per completed phase (research / analyze /
-     * generate / refine) with the raw, un-masked phase output JSON
+     * generate / assist / repair) with the raw, un-masked phase output JSON
      * (`phaseName, output`). Intended for in-memory checkpoints only (e.g.
      * [com.scoopai.core.artifacts.ResumeData.fromPhaseOutputs]); do NOT persist
      * this content in sensitive scenarios, as it is not masked.
@@ -105,7 +106,7 @@ class ScoopManifestGenerator(
     }
 
     /**
-     * Executes a unified Scoop AI session (either Generate or Refine) through the
+     * Executes a unified Scoop AI session (either Generate or Assist) through the
      * single unified agent strategy, ensuring all validation, normalization, and
      * error handling policies are enforced.
      */
@@ -136,8 +137,8 @@ class ScoopManifestGenerator(
                     research,
                 )
             }
-        val refinePrompt: suspend (RefineContext) -> String =
-            { buildRefinePrompt(it) }
+        val assistPrompt: suspend (AssistContext) -> String =
+            { if (it.explanatory) buildAssistPrompt(it) else buildRepairPrompt(it) }
 
         val reviewAgent = AIAgent(
             promptExecutor = promptExecutor,
@@ -189,7 +190,7 @@ class ScoopManifestGenerator(
             researchPromptBuilder = researchPrompt,
             analyzePromptBuilder = analyzePrompt,
             generatePromptBuilder = generatePrompt,
-            refinePromptBuilder = refinePrompt,
+            assistPromptBuilder = assistPrompt,
             manifestIo = manifestIo,
             reviewExecutor = reviewExecutor,
             gitHubApi = gitHubApi,
@@ -205,7 +206,7 @@ class ScoopManifestGenerator(
 
         val agentConfig = AIAgentConfig(
             prompt = prompt("chat") {
-                system("You are a Scoop manifest generator. You generate and refine Scoop bucket manifests for Windows software.")
+                system("You are a Scoop manifest generator. You generate and assist Scoop bucket manifests for Windows software.")
             },
             model = modelWithoutToolChoice,
             maxAgentIterations = maxIterations,
@@ -299,14 +300,14 @@ class ScoopManifestGenerator(
         resumeData = resumeData,
     )
 
-    suspend fun refine(
+    suspend fun assist(
         manifestJson: String,
         instruction: String,
         history: List<String> = emptyList(),
         evidence: String? = null,
         suggestedAppName: String? = null,
     ): ManifestResult = runSession(
-        request = SessionRequest.Refine(
+        request = SessionRequest.Assist(
             currentManifest = manifestJson,
             instruction = instruction,
             history = history,

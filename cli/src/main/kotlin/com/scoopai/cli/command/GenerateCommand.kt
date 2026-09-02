@@ -457,7 +457,7 @@ open class GenerateCommand(
             issues: List<String>,
         ): String? = when {
             manifest.isBlank() -> "no manifest generated"
-            exhausted -> "manifest generation failed: refine loop exhausted with " +
+            exhausted -> "manifest generation failed: repair loop exhausted with " +
                 "${issues.size} unresolved issue(s): ${issues.joinToString("; ")}"
             !isManifestValidJson(manifest) -> "manifest generation failed: generated manifest is not valid JSON"
             else -> null

@@ -28,9 +28,9 @@ class PhaseProgressLoggerTest {
     }
 
     @Test
-    fun `starting returns formatted message for refine`() {
-        val msg = PhaseProgressLogger.starting("refine")
-        assertEquals("[phase:refine] starting", msg)
+    fun `starting returns formatted message for repair`() {
+        val msg = PhaseProgressLogger.starting("repair")
+        assertEquals("[phase:repair] starting", msg)
     }
 
     // ---------------------------------------------------------------
@@ -63,8 +63,8 @@ class PhaseProgressLoggerTest {
 
     @Test
     fun `completed with large duration`() {
-        val msgLargeDuration = PhaseProgressLogger.completed("refine", 123456)
-        assertEquals("[phase:refine] completed in 123s, tokens=N/A", msgLargeDuration)
+        val msgLargeDuration = PhaseProgressLogger.completed("assist", 123456)
+        assertEquals("[phase:assist] completed in 123s, tokens=N/A", msgLargeDuration)
     }
 
     // ---------------------------------------------------------------
@@ -73,7 +73,7 @@ class PhaseProgressLoggerTest {
 
     @Test
     fun `completed for four phases`() {
-        val names = listOf("research", "analyze", "generate", "refine")
+        val names = listOf("research", "analyze", "generate", "assist")
         for (phase in names) {
             val msg = PhaseProgressLogger.completed(phase, 1000)
             assertEquals("[phase:$phase] completed in 1s, tokens=N/A", msg)

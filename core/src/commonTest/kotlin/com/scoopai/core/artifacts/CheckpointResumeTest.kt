@@ -240,7 +240,7 @@ class CheckpointResumeTest {
     @Test
     fun `fromPhaseOutputs ignores extra analyze output for ANALYZE stage`() {
         // The factory only consumes the untyped JSON strings it is given; any
-        // extra/ignored outputs (refine, generate) never reach the signature.
+        // extra/ignored outputs (assist, generate) never reach the signature.
         // For ANALYZE, a provided analyzeJson must be ignored (not decoded).
         val resume = ResumeData.fromPhaseOutputs(
             fromStage = CheckpointResume.ResumeStage.ANALYZE,
