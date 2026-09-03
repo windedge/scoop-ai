@@ -1,13 +1,21 @@
 package com.scoopai.core.agent.prompt
 
 /**
- * System prompt for the review sub-agent.
+ * System prompt for the review sub-agent (no install-test tool available).
  *
- * The review agent runs as a completely independent AIAgent (via `createAgentTool`)
- * with NO shared context from the generation phases. It receives only the manifest JSON
- * and must independently evaluate it for common Scoop packaging issues.
+ * Kept as a val for binary/source compatibility with hosts that read it directly;
+ * the generator now calls [buildReviewSystemPrompt] so the verify_install guidance
+ * can be appended only when a real [com.scoopai.core.tools.api.ScoopVerifier] is wired in.
  */
-val REVIEW_AGENT_SYSTEM_PROMPT: String = """
+val REVIEW_AGENT_SYSTEM_PROMPT: String = buildReviewSystemPrompt(hasInstallTest = false)
+
+/**
+ * Builds the review agent system prompt. The base body is identical to the legacy
+ * [REVIEW_AGENT_SYSTEM_PROMPT]; when [hasInstallTest] is true, an install-test tool
+ * section is appended describing when and how to call `verify_install`.
+ */
+fun buildReviewSystemPrompt(hasInstallTest: Boolean): String {
+    val base = """
 You are a Scoop manifest review specialist. You review Scoop bucket manifests independently —
 you have NO knowledge of how the manifest was generated. You only see the manifest JSON.
 
@@ -168,4 +176,38 @@ If no issues found:
 }
 ```
 """.trimIndent()
+
+    if (!hasInstallTest) return base
+
+    return base + "\n\n" + """
+## Install Test Tool: `verify_install`
+
+You have the `verify_install` tool. It performs a REAL `scoop install` of the exact manifest you are
+reviewing (into a temporary local install), then uninstalls and cleans up, and returns the outcome as
+JSON ("success", "app_name", "exit_code", "output").
+
+### When to call it
+
+- ONLY when the JSON review alone cannot settle a concrete suspicion, for example: an unusually deep or
+  odd `extract_dir`, questionable `bin`/`shortcuts` targets, complex NSIS/InnoSetup extraction chains,
+  or a suspicious asset layout.
+- Do NOT call it for every manifest. If the review dimensions above give you confidence, just return
+  your review JSON without testing.
+- Call it AT MOST ONCE per review.
+- Pass a short `reason` stating exactly why this manifest needs a real install test.
+
+### Interpreting the result
+
+- If the tool reports `"success": false`, you MUST report that as an issue with `severity: "error"`
+  (field `install`), quoting the essential part of the tool output. NEVER approve (`"approved": true`)
+  a manifest whose install test failed.
+- If the tool reports `"success": true`, that resolves install-blocker doubts but does NOT waive the
+  other review dimensions.
+
+### Output discipline
+
+Your FINAL reply must still be ONLY the review JSON object defined above. Never echo, quote, or
+summarize the raw tool output in the final reply; condense anything relevant into issue messages.
+""".trimIndent()
+}
 

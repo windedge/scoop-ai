@@ -84,6 +84,115 @@ class AssistPromptTest {
     }
 
     // ---------------------------------------------------------------
+    // buildAssistPrompt: install test honesty section (B2)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `buildAssistPrompt without install test says no install test was performed`() {
+        val prompt = buildAssistPrompt(assistContext(), installTestActive = false)
+
+        assertTrue(
+            prompt.contains("No install test was performed"),
+            "assist prompt must state honestly that no install test ran, got:\n$prompt",
+        )
+        assertFalse(
+            prompt.contains("automatically install-tested"),
+            "inactive prompt must not claim an automatic install test",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt with installTestActive gives verify_install usage guidance`() {
+        val prompt = buildAssistPrompt(assistContext(), installTestActive = true)
+
+        assertTrue(
+            prompt.contains("verify_install"),
+            "active prompt must expose the verify_install tool, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("real scoop install") || prompt.contains("REAL scoop install"),
+            "active prompt must describe the real install test, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt with installTestActive instructs to call only when the user asks`() {
+        val prompt = buildAssistPrompt(assistContext(), installTestActive = true)
+
+        assertTrue(
+            prompt.contains("only when the user explicitly asks") || prompt.contains("ONLY when the user explicitly asks"),
+            "active prompt must gate verify_install behind an explicit user request, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt with installTestActive requires a separate turn before finalize`() {
+        val prompt = buildAssistPrompt(assistContext(), installTestActive = true)
+
+        assertTrue(
+            prompt.contains("own separate turn") || prompt.contains("OWN separate turn"),
+            "active prompt must require verify_install in its own turn, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("finalize_task_result"),
+            "active prompt must reference the finalize tool for the separate-turn rule",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt with installTestActive says verify re-runs the test after fix`() {
+        val prompt = buildAssistPrompt(assistContext(), installTestActive = true)
+
+        assertTrue(
+            prompt.contains("re-runs the install test") || prompt.contains("re-runs the install test automatically"),
+            "active prompt must say the verify phase re-runs the install test, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("run a second verify_install") || prompt.contains("do NOT run a second") || prompt.contains("Do NOT run a second"),
+            "active prompt must forbid a second verify_install inside the assist subgraph, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt with installTestActive no longer claims automatic install test`() {
+        val prompt = buildAssistPrompt(assistContext(), installTestActive = true)
+
+        assertFalse(
+            prompt.contains("automatically install-tested"),
+            "B2 removed the automatic-install-test claim",
+        )
+    }
+
+    @Test
+    fun `buildRepairPrompt forbids verify_install and mentions the verify phase owns it`() {
+        val repairContext = AssistContext(
+            manifest = """{"version":"1.0.0"}""",
+            feedback = "fix bin",
+            retryCount = 1,
+            explanatory = false,
+        )
+
+        val prompt = buildRepairPrompt(repairContext)
+        assertTrue(
+            prompt.contains("Do NOT call verify_install") || prompt.contains("Do NOT call `verify_install`"),
+            "repair prompt must ban calling verify_install, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("verify phase"),
+            "repair prompt must say the verify phase owns install testing, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt default keeps backward compatible no-install-test wording`() {
+        val prompt = buildAssistPrompt(assistContext())
+        assertTrue(
+            prompt.contains("No install test was performed"),
+            "the one-argument overload must behave as installTestActive=false",
+        )
+    }
+
+    // ---------------------------------------------------------------
     // buildGeneratePrompt: optional explanation parameter note
     // ---------------------------------------------------------------
 

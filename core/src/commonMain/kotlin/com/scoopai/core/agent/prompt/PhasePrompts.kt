@@ -134,7 +134,7 @@ $task
    - Exclude assets containing: `darwin`, `linux`, `macos`
    - Exclude extensions: `.sha256`, `.sig`, `.asc`, `.pem`
    - Exclude source archives containing `source` or `src` with `.tar.gz`
-   - If there are ambiguous candidates or multiple asset variants, use the `__ask_user__` questionnaire tool: provide a clear `question` and structured candidate choices in `options` (e.g. `["app-x64.zip (Recommended)", "app-arm64.zip", "app-setup.exe"]`) so the user can interactively select. Set `isMultiSelect: true` if multiple choices can be selected simultaneously.
+   - If there are ambiguous candidates or multiple asset variants, use the `__ask_user__` questionnaire tool with a `questions` array, e.g. `{"questions": [{"prompt": "Which asset?", "options": [{"label": "app-x64.zip (Recommended)"}, {"label": "app-arm64.zip"}, {"label": "app-setup.exe"}]}]}` so the user can interactively select. Do not invent extra fields (e.g. `isMultiSelect` does not exist).
 
 7. **Discover persist targets — prefer source archive search over file-by-file reading** — Unless the user requirements explicitly say to skip persist discovery:
 
@@ -629,16 +629,27 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
  * question about the manifest (no change request), the LLM answers via the
  * `explanation` parameter and returns the manifest verbatim (see
  * [com.scoopai.core.agent.LenientStringFinishTool] `answered` flag).
+ *
+ * When [installTestActive] is true the assist subgraph exposes the `verify_install`
+ * tool: run it only when the user explicitly asks, in its own turn, then hand the
+ * fixed manifest back via `finalize_task_result` (the verify phase re-tests).
+ * When false the prompt honestly states that no install test ran.
  */
-fun buildAssistPrompt(ctx: AssistContext): String =
-    buildAssistKernel(ctx, opening = "You are a Scoop manifest assistant.", includingEscape = true)
+fun buildAssistPrompt(ctx: AssistContext, installTestActive: Boolean = false): String =
+    buildAssistKernel(
+        ctx,
+        opening = "You are a Scoop manifest assistant.",
+        includingEscape = true,
+        installTestActive = installTestActive,
+ )
 
 /**
  * Builds the prompt for the REPAIR phase (internal fix loop, explanatory = false).
  *
  * Same shared kernel as [buildAssistPrompt] but without the Question Escape Hatch;
  * the internal repair loop is never a pure-question follow-up, so it must not be
- * told about the `answered` escape-hatch parameter.
+ * told about the `answered` escape-hatch parameter. It also never gets the install
+ * test honesty section: the repair loop is not user-facing.
  */
 fun buildRepairPrompt(ctx: AssistContext): String =
     buildAssistKernel(ctx, opening = "You are a Scoop manifest repairer.", includingEscape = false)
@@ -649,7 +660,12 @@ fun buildRepairPrompt(ctx: AssistContext): String =
  * dl-7z / NSIS / evidence / name-conflict / explanation sections are written once
  * here so they cannot drift apart.
  */
-private fun buildAssistKernel(ctx: AssistContext, opening: String, includingEscape: Boolean): String = buildString {
+private fun buildAssistKernel(
+    ctx: AssistContext,
+    opening: String,
+    includingEscape: Boolean,
+    installTestActive: Boolean = false,
+): String = buildString {
     appendLine("⚠️ **CRITICAL: Do NOT change `version` or `url` to a different release.** The version was fixed during the analyze phase. If a listed issue cannot be fixed without changing version, LEAVE it unfixed — better to ship with a warning than to downgrade the version.")
     appendLine()
     appendLine("$opening Modify the manifest according to the instructions and feedback below.")
@@ -692,6 +708,24 @@ private fun buildAssistKernel(ctx: AssistContext, opening: String, includingEsca
         appendLine()
         appendLine("## Question Escape Hatch")
         appendLine("If the user's message is a pure question about the manifest (no change request), do NOT modify the manifest. Answer in at most 3 short sentences (~60 words) in the user's language via the existing `explanation` parameter, set the Boolean parameter `answered` to true, and return the manifest verbatim in `result`. If the message asks for any change (add/remove/modify/rename fields, switch version or asset, fix a problem), `answered` must be false or omitted.")
+    }
+    if (ctx.explanatory) {
+        appendLine()
+        appendLine("## Install Test Status")
+        if (installTestActive) {
+            appendLine("You have the `verify_install` tool: it performs a REAL scoop install of the current manifest, then uninstalls and cleans up, returning JSON (`success`, `exit_code`, `error`, `output`).")
+            appendLine()
+            appendLine("### When to call it")
+            appendLine("- ONLY when the user explicitly asks for an install test. Do NOT call it proactively or for every manifest.")
+            appendLine("- Call it in its OWN separate turn: invoke `verify_install` alone, wait for its result, then decide the next step. Do NOT call it in the same turn as `finalize_task_result`.")
+            appendLine("- After it returns, honestly report the outcome: if `success` is false, describe the failure (fix the manifest if you can); if `success` is true, say the install test passed.")
+            appendLine("- If the test reveals a problem, fix the manifest and then call `finalize_task_result` to hand it over. The verify phase re-runs the install test automatically; do NOT run a second `verify_install` inside the assist subgraph.")
+        } else {
+            appendLine("No install test was performed for this manifest. Say so honestly if the user asks about installability; never claim the app was install-tested.")
+        }
+    } else {
+        // Repair loop: the verify phase owns install tests and re-runs them per round.
+        appendLine("- Install testing is handled automatically by the verify phase. Do NOT call `verify_install` here.")
     }
     appendLine()
     appendLine("## Name Conflict Resolution")

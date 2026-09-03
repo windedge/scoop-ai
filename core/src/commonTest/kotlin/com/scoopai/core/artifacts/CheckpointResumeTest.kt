@@ -1,9 +1,12 @@
 package com.scoopai.core.artifacts
 
+import ai.koog.agents.core.agent.execution.path
 import com.scoopai.core.agent.AnalyzeOutput
 import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.agent.ResearchStatus
+import com.scoopai.core.agent.SCOOP_MANIFEST_STRATEGY_NAME
 import com.scoopai.core.agent.phaseJson
+import com.scoopai.core.agent.scoopManifestStrategy
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import org.junit.jupiter.api.Test
@@ -253,6 +256,42 @@ class CheckpointResumeTest {
     }
 
     // ---------------------------------------------------------------
+    // resumeNodePath (single source of truth for checkpoint node targets)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `resumeNodePath ANALYZE targets research finalizeTask under the current strategy name`() {
+        assertEquals(
+            "$SCOOP_MANIFEST_STRATEGY_NAME/research/finalizeTask",
+            resumeNodePath(CheckpointResume.ResumeStage.ANALYZE),
+        )
+    }
+
+    @Test
+    fun `resumeNodePath GENERATE targets analyze finalizeTask under the current strategy name`() {
+        assertEquals(
+            "$SCOOP_MANIFEST_STRATEGY_NAME/analyze/finalizeTask",
+            resumeNodePath(CheckpointResume.ResumeStage.GENERATE),
+        )
+    }
+
+    @Test
+    fun `resume node paths resolve against the real unified strategy metadata`() {
+        // Proof that a checkpoint targeting resumeNodePath(stage) can actually be
+        // looked up in the metadata of the strategy Koog builds: if the strategy
+        // name or a phase subgraph is ever renamed, this test fails.
+        val strategy = scoopManifestStrategy()
+        for (stage in CheckpointResume.ResumeStage.entries) {
+            val target = resumeNodePath(stage)
+            assertTrue(
+                target in strategy.metadata.nodesMap,
+                "Resume target '$target' must exist in the strategy's node map, " +
+                    "got keys: ${strategy.metadata.nodesMap.keys}",
+            )
+        }
+    }
+
+    // ---------------------------------------------------------------
     // toAgentCheckpointData
     // ---------------------------------------------------------------
 
@@ -269,9 +308,10 @@ class CheckpointResumeTest {
 
         assertEquals("resume-analyze-${dir.name}", checkpoint.checkpointId)
         assertNotNull(graphProps)
-        assertTrue(
-            graphProps.nodePath.endsWith("/scoop_manifest_v3/research/finalizeTask"),
-            "Node path should end with research/finalizeTask, got: ${graphProps.nodePath}"
+        assertEquals(
+            path(dir.name, resumeNodePath(CheckpointResume.ResumeStage.ANALYZE)),
+            graphProps.nodePath,
+            "ANALYZE checkpoint must target research/finalizeTask under the current strategy name",
         )
         // ANALYZE resume does not need pre-populated storage
         assertNull(checkpoint.storage, "ANALYZE checkpoint should have null storage")
@@ -292,9 +332,10 @@ class CheckpointResumeTest {
 
         assertEquals("resume-generate-${dir.name}", checkpoint.checkpointId)
         assertNotNull(graphProps)
-        assertTrue(
-            graphProps.nodePath.endsWith("/scoop_manifest_v3/analyze/finalizeTask"),
-            "Node path should end with analyze/finalizeTask, got: ${graphProps.nodePath}"
+        assertEquals(
+            path(dir.name, resumeNodePath(CheckpointResume.ResumeStage.GENERATE)),
+            graphProps.nodePath,
+            "GENERATE checkpoint must target analyze/finalizeTask under the current strategy name",
         )
         // GENERATE resume needs pre-populated storage with research_data and suggested_app_name
         assertNotNull(storage, "GENERATE checkpoint should have non-null storage with research_data")

@@ -38,6 +38,15 @@ import kotlin.time.TimeSource
 
 private val logger = KotlinLogging.logger {}
 
+/**
+ * The strategy name used to register the Scoop manifest strategy graph with Koog.
+ *
+ * Single source of truth shared by [scoopManifestStrategy] (which registers the
+ * graph under this name) and [com.scoopai.core.artifacts.ResumeData] (which builds
+ * checkpoint node paths that must resolve against that same graph).
+ */
+public const val SCOOP_MANIFEST_STRATEGY_NAME: String = "unified_scoop_manifest"
+
 /** Shared Json instance for phase output parsing (lenient). */
 internal val phaseJson: Json = Json {
     ignoreUnknownKeys = true
@@ -77,7 +86,7 @@ private data class CheckedFinalize(
  *        → generate(LLM, no tools: skeleton review + finalize)
  *        → verify(validate + review)
  *          [pass] → nodeFinish
- *          [fail + retry ≤ 3] → assist(LLM, no tools, repair) → verify (loop)
+ *          [fail + retry ≤ 3] → assist(LLM, optional tools, repair) → verify (loop)
  *          [fail + retry > 3] → nodeFinish (exhausted)
  * ```
  *
@@ -123,7 +132,13 @@ fun scoopManifestStrategy(
      * and reports a conflict error if the name is already used.
      */
     usedAppNamesProvider: (suspend () -> Set<String>)? = null,
-) = strategy<SessionRequest, ManifestResult>("unified_scoop_manifest") {
+    /**
+     * Tools for the assist/repair subgraph. Their schemas are advertised to the LLM;
+     * execution resolves by name against the agent-level registry, so each tool must
+     * also be registered there. Empty (the default) keeps the subgraph tool-free.
+     */
+    assistTools: List<ToolBase<*, *>> = emptyList(),
+) = strategy<SessionRequest, ManifestResult>(SCOOP_MANIFEST_STRATEGY_NAME) {
 
     // ── Storage keys ───────────────────────────────────────────
     val retryCountKey = createStorageKey<Int>("assist_retry_count")
@@ -263,12 +278,11 @@ fun scoopManifestStrategy(
         generatePromptBuilder?.invoke(skeleton, storage.get(analyzeDataKey)!!, storage.get(researchDataKey)) ?: skeleton
     }
 
-    // ── Assist subgraph (LLM, no tools, lightweight fix loop) ──
-    // Same lenient finish tool as generate: assist also finalizes a FinalizePayload.
-    // Internal repair rounds (explanatory=false) do not require an explanation;
-    // user-initiated assists (explanatory=true) do (see AssistContext kdoc).
+    // ── Assist subgraph (LLM, optional tools, lightweight fix loop) ──
+    // Same lenient finish tool as generate; the tools advertise only the schema
+    // and resolve by name against the agent-level registry at execution time.
     val assist by subgraphWithTask<AssistContext, FinalizePayload, FinalizePayload>(
-        tools = emptyList<ToolBase<*, *>>(),
+        tools = assistTools,
         finishTool = LenientStringFinishTool(),
         llmParams = llmParams,
     ) { input ->

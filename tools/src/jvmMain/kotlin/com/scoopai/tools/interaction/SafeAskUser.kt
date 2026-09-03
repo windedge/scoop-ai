@@ -2,6 +2,8 @@ package com.scoopai.tools.interaction
 
 import ai.koog.agents.core.tools.SimpleTool
 import ai.koog.agents.core.tools.annotations.LLMDescription
+import ai.koog.serialization.JSONSerializer
+import ai.koog.serialization.JSONObject
 import ai.koog.serialization.typeToken
 import kotlinx.serialization.Serializable
 import java.io.BufferedReader
@@ -59,6 +61,10 @@ open class AskUserTool(
 ) {
     companion object {
         const val DEFAULT_RESPONSE = "Please make your best judgment and proceed autonomously."
+    }
+
+    override fun decodeArgs(rawArgs: JSONObject, serializer: JSONSerializer): SafeAskUser.Args {
+        return super.decodeArgs(canonicalizeAskUserArgs(rawArgs), serializer)
     }
 
     open fun isNonInteractive(): Boolean {

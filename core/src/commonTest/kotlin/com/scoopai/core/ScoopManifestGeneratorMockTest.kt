@@ -501,6 +501,105 @@ class ScoopManifestGeneratorMockTest {
     }
 
     @Test
+    fun `checkpoint resume from ANALYZE skips research and resolves the node path against the live strategy`() = runBlocking {
+        // End-to-end proof of the checkpoint-resume contract: the node path built by
+        // CheckpointResume (strategy/phase/finalizeTask) must resolve inside the real
+        // strategy graph at runtime. Regression: it used to embed the stale strategy
+        // name "scoop_manifest_v3" and fail with "Node ... not found".
+        val dir = createTempDir()
+        try {
+            val artifacts = com.scoopai.core.artifacts.RunArtifacts(
+                runId = "resume-analyze-e2e",
+                baseDir = dir.path,
+            )
+            val researchResult = ResearchOutput(
+                status = ResearchStatus.OK,
+                project = "sharkdp/fd",
+                version = "10.2.0",
+                suggested_app_name = "fd",
+                windows_assets = listOf(
+                    WindowsAsset(
+                        url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                        architecture = "64bit",
+                        asset_type = "zip",
+                        source = "release_api"
+                    )
+                )
+            )
+            val analyzeResult = AnalyzeOutput(
+                status = AnalyzeStatus.OK,
+                strategy = "portable_zip",
+                entries = listOf(
+                    AssetEntry(
+                        architecture = "64bit",
+                        url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                        hash = "abc123",
+                        extract_dir = "fd-v10.2.0-x86_64-pc-windows-msvc"
+                    )
+                ),
+                bin = emptyList()
+            )
+            val manifestJson = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip","hash":"abc123","extract_dir":"fd-v10.2.0-x86_64-pc-windows-msvc"}},"bin":["fd.exe"]}"""
+            val model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash
+
+            // ── Pass 1: full generation writes research/analyze artifacts ──
+            val executor1 = getMockExecutor {
+                mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+                mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+                mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+                mockLLMAnswer("""{"approved":true,"issues":[],"summary":"No issues found. Manifest looks good."}""") onCondition { text -> text.trim().startsWith("{") }
+                mockLLMAnswer("").asDefaultResponse
+            }
+            val generator1 = ScoopManifestGenerator(
+                promptExecutor = executor1,
+                model = model,
+                toolRegistry = ToolRegistry {},
+                maxIterations = 50,
+                artifacts = com.scoopai.core.artifacts.SensitiveArtifactWriter(artifacts) { it },
+            )
+            val result1 = generator1.generate("https://github.com/sharkdp/fd")
+            assertTrue(result1.manifest.contains("fd.exe"), "Pass 1 must succeed before resuming")
+
+            // ── Pass 2: resume from ANALYZE. Research must be skipped: the mock only
+            // serves analyze/generate/review prompts, and any accidental research LLM
+            // call falls through to the empty default and fails the subgraph. ──
+            val phases = mutableListOf<String>()
+            val executor2 = getMockExecutor {
+                mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+                mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+                mockLLMAnswer("""{"approved":true,"issues":[],"summary":"No issues found. Manifest looks good."}""") onCondition { text -> text.trim().startsWith("{") }
+                mockLLMAnswer("").asDefaultResponse
+            }
+            val generator2 = ScoopManifestGenerator(
+                promptExecutor = executor2,
+                model = model,
+                toolRegistry = ToolRegistry {},
+                maxIterations = 50,
+                onPhase = { name -> phases.add(name) },
+            )
+            val runDir = java.io.File(dir, ".scoopai/runs/resume-analyze-e2e")
+            val resumeData = com.scoopai.core.artifacts.CheckpointResume(runDir)
+                .loadResumePoint(com.scoopai.core.artifacts.CheckpointResume.ResumeStage.ANALYZE)
+            assertNotNull(resumeData, "research.json artifact must produce a resume point")
+
+            val result2 = generator2.generate(
+                "https://github.com/sharkdp/fd",
+                resumeData = resumeData,
+            )
+
+            // The resumed run must reach generate + verify without a research phase.
+            assertTrue(result2.manifest.contains("fd.exe"), "Resumed run must still produce the manifest")
+            assertEquals(
+                listOf("analyze", "generate", "verify"),
+                phases,
+                "Resumed from ANALYZE must skip research and run analyze/generate/verify",
+            )
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `RunArtifacts directory is created on success in mock flow`() = runBlocking {
         val dir = createTempDir()
         try {
@@ -1568,6 +1667,192 @@ class ScoopManifestGeneratorMockTest {
     }
 
     // =========================================================================
+    // verify_install: review agent install-test tool (agentic, fake verifier)
+    // =========================================================================
+
+    /** Deterministic in-memory ScoopVerifier capturing every verifyInstall call. */
+    private class FakeScoopVerifier : com.scoopai.core.tools.api.ScoopVerifier {
+        var calls: Int = 0
+        var lastManifest: String? = null
+        var lastAppName: String? = null
+        var response: String =
+            """{"success":true,"app_name":"scoop-ai-verify","exit_code":0,"output":"install ok"}"""
+
+        override suspend fun verifyInstall(manifestJson: String, appName: String): String {
+            calls++
+            lastManifest = manifestJson
+            lastAppName = appName
+            return response
+        }
+    }
+
+    private val installFailureVerifierResponse =
+        """{"success":false,"app_name":"scoop-ai-verify","exit_code":1,"output":"verify-stub-install-failed: checksum mismatch"}"""
+
+    private val reviewErrorJson =
+        """{"approved":false,"issues":[{"severity":"error","field":"install","message":"Install test failed: the manifest did not install successfully"}],"summary":"Install test failed"}"""
+
+    private val reviewApprovedJson =
+        """{"approved":true,"issues":[],"summary":"No issues found. Manifest looks good."}"""
+
+    @Test
+    fun `install test failure surfaces as error issue and drives the repair loop to exhaustion`() = runBlocking {
+        val (researchResult, analyzeResult, manifestJson) = explanationTestFixtures()
+        val fakeVerifier = FakeScoopVerifier().apply { response = installFailureVerifierResponse }
+        val phases = mutableListOf<String>()
+
+        // Tool instance used ONLY for mock LLM response registration; the review
+        // agent executes its own instance from its injected registry.
+        val mockToolRef = com.scoopai.core.agent.VerifyInstallTool(fakeVerifier) { "" }
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            // Review round 2 (last message = fake verifier output): always report the failure.
+            mockLLMAnswer(reviewErrorJson) onCondition { it.contains("verify-stub-install-failed") }
+            // Review round 1 (last message = bare manifest): model calls verify_install.
+            mockLLMToolCall(mockToolRef, com.scoopai.core.agent.VerifyInstallArgs("checking installability")) onCondition { it.trim().startsWith("{") }
+            // Repair loop finalizes with the same manifest; review keeps failing.
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(manifest = manifestJson)) onRequestContains "manifest repairer"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 200,
+            onPhase = { phases.add(it) },
+            scoopVerifier = fakeVerifier,
+        )
+
+        val result = generator.generate("https://github.com/sharkdp/fd")
+
+        assertTrue(fakeVerifier.calls >= 1, "review agent must have invoked the verify_install tool, calls=${fakeVerifier.calls}")
+        assertEquals("scoop-ai-verify", fakeVerifier.lastAppName, "appName must be the fixed whitelist-safe test name")
+        assertTrue("repair" in phases, "install failure must trigger the repair loop, phases=$phases")
+        assertTrue(result.exhausted, "persistent install failure must exhaust retries")
+        assertTrue(
+            result.issues.any { it.contains("Install test failed") },
+            "the install failure must surface as an issue, got: ${result.issues}",
+        )
+    }
+
+    @Test
+    fun `install test failure recovered by repair produces a passing result`() = runBlocking {
+        val (researchResult, analyzeResult, manifestJson) = explanationTestFixtures()
+        val fakeVerifier = FakeScoopVerifier().apply { response = installFailureVerifierResponse }
+        val phases = mutableListOf<String>()
+        var reviewRounds = 0
+
+        val mockToolRef = com.scoopai.core.agent.VerifyInstallTool(fakeVerifier) { "" }
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            // Review round 2: first run reports the failure, later runs approve.
+            mockLLMAnswer(reviewErrorJson) onCondition {
+                it.contains("verify-stub-install-failed") && reviewRounds++ == 0
+            }
+            mockLLMAnswer(reviewApprovedJson) onCondition { it.contains("verify-stub-install-failed") }
+            // Review round 1: model calls verify_install with a stated reason.
+            mockLLMToolCall(mockToolRef, com.scoopai.core.agent.VerifyInstallArgs("checking installability")) onCondition { it.trim().startsWith("{") }
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(manifest = manifestJson)) onRequestContains "manifest repairer"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 200,
+            onPhase = { phases.add(it) },
+            scoopVerifier = fakeVerifier,
+        )
+
+        val result = generator.generate("https://github.com/sharkdp/fd")
+
+        assertTrue("repair" in phases, "first failing review must trigger repair, phases=$phases")
+        assertTrue(!result.exhausted, "recovered review must pass without exhausting")
+        assertTrue(result.manifest.contains("10.2.0"), "passing result must carry the manifest")
+        assertTrue(fakeVerifier.calls >= 2, "each verify round must re-run the install test, calls=${fakeVerifier.calls}")
+    }
+
+    @Test
+    fun `install test tool success and approved review pass with answered false`() = runBlocking {
+        val (researchResult, analyzeResult, manifestJson) = explanationTestFixtures()
+        val fakeVerifier = FakeScoopVerifier()
+        val phases = mutableListOf<String>()
+
+        val mockToolRef = com.scoopai.core.agent.VerifyInstallTool(fakeVerifier) { "" }
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            // Review round 2 (tool result present): approve.
+            mockLLMAnswer(reviewApprovedJson) onCondition { it.contains("install ok") }
+            // Review round 1 (bare manifest): call verify_install.
+            mockLLMToolCall(mockToolRef, com.scoopai.core.agent.VerifyInstallArgs("checking installability")) onCondition { it.trim().startsWith("{") }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+            onPhase = { phases.add(it) },
+            scoopVerifier = fakeVerifier,
+        )
+
+        val result = generator.generate("https://github.com/sharkdp/fd")
+
+        assertEquals(listOf("research", "analyze", "generate", "verify"), phases, "must pass without a repair phase")
+        assertTrue(!result.exhausted, "approved review must not exhaust")
+        assertTrue(!result.answered, "generate flow must never set answered")
+        assertTrue(result.issues.isEmpty(), "no issues expected, got: ${result.issues}")
+        assertEquals(1, fakeVerifier.calls, "review agent should call verify_install exactly once")
+        assertEquals("scoop-ai-verify", fakeVerifier.lastAppName)
+        assertTrue(
+            fakeVerifier.lastManifest?.contains("10.2.0") == true,
+            "verifier must receive the manifest under review, got: ${fakeVerifier.lastManifest}",
+        )
+    }
+
+    @Test
+    fun `without scoopVerifier the review runs tool-free and still passes`() = runBlocking {
+        val (researchResult, analyzeResult, manifestJson) = explanationTestFixtures()
+        val phases = mutableListOf<String>()
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            // No verify tool registered: review must answer with JSON on first call.
+            mockLLMAnswer(reviewApprovedJson) onCondition { it.trim().startsWith("{") }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+            onPhase = { phases.add(it) },
+            // scoopVerifier defaults to null: the no-tool path must stay intact.
+        )
+
+        val result = generator.generate("https://github.com/sharkdp/fd")
+
+        assertEquals(listOf("research", "analyze", "generate", "verify"), phases)
+        assertTrue(!result.exhausted)
+        assertTrue(result.manifest.contains("10.2.0"))
+    }
+
+    // =========================================================================
     // helpers
     // =========================================================================
 
@@ -1623,6 +1908,85 @@ class ScoopManifestGeneratorMockTest {
         assertTrue(result.manifest.contains("10.2.0"))
     }
 
+    // =========================================================================
+    // assistVerifier (B1): the assist/repair subgraph gets a verify_install tool
+    // and the outer agent registry is extended so the schema resolves at runtime.
+    // =========================================================================
+
+    @Test
+    fun `assist session with assistVerifier can call verify_install and still finalize`() = runBlocking {
+        val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
+        val assistVerifier = FakeScoopVerifier()
+        val phases = mutableListOf<String>()
+
+        // The assist subgraph schema exposes verify_install; the mock drives the
+        // model through a verify_install call then a finalize call, proving B1
+        // (the outer registry resolves the tool by name at execution time).
+        val mockAssistToolRef = com.scoopai.core.agent.VerifyInstallTool(assistVerifier) { "" }
+
+        val promptExecutor = getMockExecutor {
+            // Assist subgraph turn 1: model calls verify_install (prompt says "manifest assistant").
+            mockLLMToolCall(mockAssistToolRef, com.scoopai.core.agent.VerifyInstallArgs("user asked to install-test")) onCondition { it.contains("manifest assistant") }
+            // Assist subgraph turn 2: tool result ("install ok") is the last message; model finalizes.
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(manifest = refinedManifest, explanation = "Added a Start Menu shortcut.")) onCondition { it.contains("install ok") }
+            // Review agent approves the refined manifest (last message = manifest JSON).
+            mockLLMAnswer(reviewApprovedJson) onCondition { text -> text.trim().startsWith("{") && !text.contains("install ok") }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+            onPhase = { phases.add(it) },
+            assistVerifier = assistVerifier,
+        )
+
+        val result = generator.assist(
+            manifestJson = initialManifest,
+            instruction = "Add start menu shortcut for app.exe",
+            suggestedAppName = "initial-app",
+        )
+
+        assertTrue(assistVerifier.calls >= 1, "assist subgraph must have invoked verify_install, calls=${assistVerifier.calls}")
+        assertEquals(initialManifest, assistVerifier.lastManifest, "assist verifier must receive the ctx.manifest (currentManifest)")
+        assertEquals(com.scoopai.core.agent.VerifyInstallTool.VERIFY_APP_NAME, assistVerifier.lastAppName)
+        assertTrue(!result.exhausted, "assist must pass after the install-test round")
+        assertEquals(listOf("assist", "verify"), phases, "must run assist then verify, phases=$phases")
+    }
+
+    @Test
+    fun `assist session without assistVerifier stays tool-free and still passes`() = runBlocking {
+        val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
+
+        val promptExecutor = getMockExecutor {
+            // No verify_install tool: the assist LLM finalizes directly.
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(manifest = refinedManifest)) onRequestContains "manifest assistant"
+            mockLLMAnswer(reviewApprovedJson) onCondition { text -> text.trim().startsWith("{") }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+            // assistVerifier defaults to null: tool-free assist path must stay intact.
+        )
+
+        val result = generator.assist(
+            manifestJson = initialManifest,
+            instruction = "Add start menu shortcut for app.exe",
+            suggestedAppName = "initial-app",
+        )
+
+        assertTrue(!result.exhausted, "tool-free assist must pass")
+        assertTrue(result.manifest.contains("shortcuts"), "assist must still apply the change")
+    }
+
     private fun createTempDir(): java.io.File {
         val dir = java.io.File(
             System.getProperty("java.io.tmpdir"),
@@ -1632,4 +1996,3 @@ class ScoopManifestGeneratorMockTest {
         return dir
     }
 }
-

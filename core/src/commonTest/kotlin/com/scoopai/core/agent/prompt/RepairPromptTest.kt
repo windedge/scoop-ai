@@ -65,4 +65,18 @@ class RepairPromptTest {
             "repair prompt must keep the dl-7z extraction context, got:\n$prompt",
         )
     }
+
+    @Test
+    fun `buildRepairPrompt bans calling verify_install`() {
+        val prompt = buildRepairPrompt(repairContext())
+
+        assertTrue(
+            prompt.contains("Do NOT call verify_install") || prompt.contains("Do NOT call `verify_install`"),
+            "repair prompt must ban the verify_install tool, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("verify phase"),
+            "repair prompt must say the verify phase owns install testing, got:\n$prompt",
+        )
+    }
 }

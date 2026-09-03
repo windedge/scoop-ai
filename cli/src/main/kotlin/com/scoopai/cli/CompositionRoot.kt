@@ -59,7 +59,6 @@ class CompositionRoot(
             githubToken = effectiveGithubToken(),
             gitHubApi = gitHubApi,
             manifestIo = manifestIo,
-            scoopVerifier = scoopVerifier,
         )
     }
 

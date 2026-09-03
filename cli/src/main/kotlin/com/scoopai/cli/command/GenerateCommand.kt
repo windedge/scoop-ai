@@ -60,7 +60,9 @@ open class GenerateCommand(
     val githubToken: String? by option("--github-token").help("GitHub personal access token (avoids rate limits)")
 
     // ── Boolean flags ─────────────────────────────────────────────────
-    val verify: Boolean by option("--verify", "-V").help("Verify manifest by running scoop install").flag()
+    val verify: Boolean by option("--verify", "-V")
+        .help("Let the review agent run a real install test (scoop install/uninstall) when it deems necessary")
+        .flag()
     val nonInteractive: Boolean by option("-n", "--non-interactive").help("Skip __ask_user__ prompts and use defaults (for batch/CI)").flag()
     val debug: Boolean by option("--debug").help("Print stack traces on errors").flag()
     val noProgress: Boolean by option("--no-progress").help("Disable TTY progress overlay").flag()

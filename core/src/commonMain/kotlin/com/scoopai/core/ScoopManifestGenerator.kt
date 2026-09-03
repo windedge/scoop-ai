@@ -15,7 +15,7 @@ import com.scoopai.core.agent.PhaseTools
 import com.scoopai.core.agent.PrefetchResult
 import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.artifacts.ResumeData
-import com.scoopai.core.agent.prompt.REVIEW_AGENT_SYSTEM_PROMPT
+import com.scoopai.core.agent.prompt.buildReviewSystemPrompt
 import com.scoopai.core.observer.GenerationObserver
 import com.scoopai.core.agent.prompt.buildAnalyzePrompt
 import com.scoopai.core.agent.prompt.buildGeneratePrompt
@@ -33,6 +33,8 @@ import com.scoopai.core.llm.LlmParamsBuilder
 import com.scoopai.core.tools.api.ArchiveInspector
 import com.scoopai.core.tools.api.GitHubApi
 import com.scoopai.core.tools.api.ManifestIo
+import com.scoopai.core.tools.api.ScoopVerifier
+import com.scoopai.core.agent.VerifyInstallTool
 import ai.koog.agents.core.tools.ToolBase
 import ai.koog.agents.core.dsl.builder.strategy
 import ai.koog.agents.ext.agent.subgraphWithTask
@@ -95,6 +97,18 @@ class ScoopManifestGenerator(
      * Used by hosts (e.g. Scooper) for transparent tool call progress reporting.
      */
     private val onToolActivity: ((ToolActivity) -> Unit)? = null,
+    /**
+     * Real install verifier wired into the review agent as the `verify_install`
+     * tool. When non-null, the review agent may run a real scoop install of the
+     * manifest under review; when null, the review agent stays tool-free.
+     */
+    private val scoopVerifier: ScoopVerifier? = null,
+    /**
+     * Verifier for the assist/repair subgraph's `verify_install` tool. Kept
+     * separate from [scoopVerifier] so assist and review have independent
+     * install budgets. When null the assist subgraph stays tool-free.
+     */
+    private val assistVerifier: ScoopVerifier? = null,
 ) {
     /**
      * Model with [LLMCapability.ToolChoice] stripped so that Koog uses its
@@ -138,14 +152,41 @@ class ScoopManifestGenerator(
                 )
             }
         val assistPrompt: suspend (AssistContext) -> String =
-            { if (it.explanatory) buildAssistPrompt(it) else buildRepairPrompt(it) }
+            {
+                if (it.explanatory) buildAssistPrompt(it, installTestActive = assistVerifier != null)
+                else buildRepairPrompt(it)
+            }
+
+        // The verify_install tool resolves the manifest at execution time so each
+        // review round installs the manifest currently under review.
+        var pendingManifest: String? = null
+        val verifyInstallTool = scoopVerifier?.let { verifier ->
+            VerifyInstallTool(verifier) { pendingManifest.orEmpty() }
+        }
+
+        // The assist/repair subgraph's verify_install tool resolves the manifest it
+        // is editing at execution time. Only an Assist session has one (the current
+        // manifest); a Generate session's repair loop leaves it null so the tool's
+        // blank guard returns early instead of burning install budget.
+        val assistManifest: String? = (request as? SessionRequest.Assist)?.currentManifest
+        val assistVerifyInstallTool = assistVerifier?.let { verifier ->
+            VerifyInstallTool(verifier) { assistManifest.orEmpty() }
+        }
 
         val reviewAgent = AIAgent(
             promptExecutor = promptExecutor,
             llmModel = model,
-            toolRegistry = ToolRegistry.EMPTY,
-            systemPrompt = REVIEW_AGENT_SYSTEM_PROMPT,
-            maxIterations = 5,
+            toolRegistry = if (verifyInstallTool != null) {
+                ToolRegistry { tool(verifyInstallTool) }
+            } else {
+                ToolRegistry.EMPTY
+            },
+            systemPrompt = buildReviewSystemPrompt(hasInstallTest = verifyInstallTool != null),
+            // Koog counts nodes per iteration: one review round = 3 nodes (LLM /
+            // execute tools / send results) plus the finish node. 5 lets a tool-free
+            // review finish with one spare step; 9 leaves room for up to two tool
+            // rounds (tool call + result round trip) before finishing.
+            maxIterations = if (verifyInstallTool != null) 9 else 5,
         ) {
             handleEvents {
                 onLLMCallCompleted { ctx ->
@@ -155,20 +196,46 @@ class ScoopManifestGenerator(
                     tokenAccumulator.output += outputTokens
                     observer.recordLlmCall(inputTokens, outputTokens)
                 }
+                // Mirror the outer agent's tool wiring so hosts see review-phase
+                // verify_install activity too. With an empty registry nothing fires.
+                onToolCallStarting { ctx ->
+                    observer.recordToolCall()
+                    val args = sanitizeForLog(ctx.toolArgs.toString())
+                    logger.info { "[review-tool] ${ctx.toolName}($args)" }
+                    onToolActivity?.invoke(ToolActivity.Started(ctx.toolName, args))
+                }
+                onToolCallCompleted { ctx ->
+                    val result = sanitizeForLog(ctx.toolResult?.toString() ?: "null", maxLen = 200)
+                    logger.info { "[review-tool] ${ctx.toolName} -> $result" }
+                    onToolActivity?.invoke(ToolActivity.Completed(ctx.toolName, result))
+                }
+                onToolCallFailed { ctx ->
+                    val errorMsg = sanitizeForLog(
+                        ctx.message.ifBlank { ctx.error?.message ?: "unknown tool error" },
+                        maxLen = 200,
+                    )
+                    logger.warn { "[review-tool] ${ctx.toolName} failed: $errorMsg" }
+                    onToolActivity?.invoke(ToolActivity.Failed(ctx.toolName, errorMsg))
+                }
+                onToolValidationFailed { ctx ->
+                    // Validation failures never reach Completed/Failed handlers; emit
+                    // Failed so hosts do not see a hanging Started event.
+                    val errorMsg = sanitizeForLog(
+                        ctx.message.ifBlank { ctx.error.message ?: "invalid tool arguments" },
+                        maxLen = 200,
+                    )
+                    logger.warn { "[review-tool] ${ctx.toolName} invalid args: $errorMsg" }
+                    onToolActivity?.invoke(ToolActivity.Failed(ctx.toolName, errorMsg))
+                }
             }
         }
-        // The review agent runs INSIDE the verify node, which already brackets its
-        // body with observer.enterPhase("verify")/exitPhase("verify"). GenerationObserver
-        // has a single current-phase slot (no nesting): pushing a separate "review"
-        // phase here would evict the verify accumulator, and the subsequent
-        // exitPhase("verify") would be silently dropped, so "verify" would never
-        // appear in the snapshot. The review's LLM calls are recorded into the
-        // enclosing verify phase instead (architecture proposal 4.6).
+        // The review agent runs inside the verify node's enter/exitPhase brackets;
+        // the observer has no nesting, so its LLM/tool stats fold into "verify".
         val reviewExecutor: suspend (String) -> String = { manifest ->
+            pendingManifest = manifest
             @Suppress("UNCHECKED_CAST")
             (reviewAgent as GraphAIAgent<String, String>).run(manifest)
         }
-
         val llmParams = LlmParamsBuilder.build(modelWithoutToolChoice, thinkingLevel)
         val phaseWrite: ((String, String) -> Unit)? = artifacts?.let { writer ->
             { phase, content -> writer.writePhase(phase, content) }
@@ -202,6 +269,7 @@ class ScoopManifestGenerator(
             observer = observer,
             onPhaseOutput = onPhaseOutput,
             usedAppNamesProvider = usedAppNamesProvider,
+            assistTools = listOfNotNull(assistVerifyInstallTool),
         )
 
         val agentConfig = AIAgentConfig(
@@ -212,11 +280,17 @@ class ScoopManifestGenerator(
             maxAgentIterations = maxIterations,
         )
 
+        // When an assist verifier is wired in, the agent-level registry must also
+        // expose the tool so the assist subgraph's schema resolves at execution time.
+        val outerToolRegistry = assistVerifyInstallTool?.let { assistTool ->
+            toolRegistry + ToolRegistry { tool(assistTool) }
+        } ?: toolRegistry
+
         val agent: GraphAIAgent<SessionRequest, ManifestResult> = AIAgent(
             promptExecutor = promptExecutor,
             agentConfig = agentConfig,
             strategy = strategy,
-            toolRegistry = toolRegistry,
+            toolRegistry = outerToolRegistry,
         ) {
             handleEvents {
                 onToolCallStarting { ctx ->

@@ -10,7 +10,6 @@ import com.scoopai.core.tools.api.ArchiveInspector
 import com.scoopai.core.tools.api.GitHubApi
 import com.scoopai.core.tools.api.HashComputer
 import com.scoopai.core.tools.api.ManifestIo
-import com.scoopai.core.tools.api.ScoopVerifier
 import com.scoopai.core.tools.api.WebFetcher
 import com.scoopai.tools.archive.ZipArchiveInspector
 import com.scoopai.tools.cache.ScoopCacheManager
@@ -22,7 +21,6 @@ import com.scoopai.tools.interaction.AskUserTool
 import com.scoopai.tools.interaction.Question
 import com.scoopai.tools.interaction.QuestionOption
 import com.scoopai.tools.interaction.SafeAskUser
-import com.scoopai.tools.verify.ProcessScoopVerifier
 import com.scoopai.tools.web.JdkHttpWebFetcher
 
 /**
@@ -44,7 +42,6 @@ object DefaultToolRegistryFactory {
         gitHubApi: GitHubApi = JdkHttpGitHubApi(githubToken = githubToken),
         webFetcher: WebFetcher = JdkHttpWebFetcher(),
         manifestIo: ManifestIo = FileManifestIo(),
-        scoopVerifier: ScoopVerifier? = null,
         extraTools: List<Tool<*, *>> = emptyList(),
         nonInteractive: Boolean? = null,
         askUserHandler: (suspend (String) -> String)? = null,
@@ -138,7 +135,6 @@ object DefaultToolRegistryFactory {
             registerIfToolSet(hashComputer)
             registerIfToolSet(archiveInspector)
             registerIfToolSet(manifestIo)
-            registerIfToolSet(scoopVerifier)
             tool(askUserTool)
             tools(extraTools)
         }

@@ -13,6 +13,7 @@ import ai.koog.prompt.message.Message
 import ai.koog.prompt.message.RequestMetaInfo
 import com.scoopai.core.agent.AnalyzeOutput
 import com.scoopai.core.agent.ResearchOutput
+import com.scoopai.core.agent.SCOOP_MANIFEST_STRATEGY_NAME
 import com.scoopai.core.agent.phaseJson
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -170,14 +171,12 @@ data class ResumeData(
      */
     fun toAgentCheckpointData(url: String): AgentCheckpointData {
         val time = Clock.System.now()
-        val strategyName = "scoop_manifest_v3"
 
-        val (subgraphName, lastOutput, storageMap) = when (fromStage) {
+        val (lastOutput, storageMap) = when (fromStage) {
             CheckpointResume.ResumeStage.ANALYZE -> {
                 val researchOutput = requireNotNull(researchOutput) { "researchOutput required for ANALYZE resume" }
                 val json = serializeToKoogElement(researchOutput, ResearchOutput.serializer())
-                Triple(
-                    "research",
+                Pair(
                     json,
                     emptyMap<String, JSONElement>(),
                 )
@@ -188,8 +187,7 @@ data class ResumeData(
                 val json = serializeToKoogElement(analyzeOutput, AnalyzeOutput.serializer())
                 // Pre-populate storage with research data so prepareManifest can read it
                 val researchJson = serializeToKoogElement(researchOutput, ResearchOutput.serializer())
-                Triple(
-                    "analyze",
+                Pair(
                     json,
                     mapOf(
                         "research_data" to researchJson,
@@ -199,7 +197,7 @@ data class ResumeData(
             }
         }
 
-        val nodePath = path(runId, strategyName, subgraphName, "finalizeTask")
+        val nodePath = path(runId, resumeNodePath(fromStage))
 
         return AgentCheckpointData(
             checkpointId = "resume-${fromStage.name.lowercase()}-${runId}",
@@ -222,3 +220,38 @@ data class ResumeData(
         return jsonElement.toKoogJSONElement()
     }
 }
+
+/**
+ * Builds the graph node path (minus the leading run/session id segment) at which a
+ * checkpoint for [stage] resumes execution. The path must name a node that actually
+ * exists in the strategy Koog executes, otherwise resume fails with "Node ... not found".
+ *
+ * Semantics per stage:
+ * - [CheckpointResume.ResumeStage.ANALYZE]: skip the research LLM phase and start from
+ *   analyze. The checkpoint targets `<strategy>/research/finalizeTask`, the finish node
+ *   inside the `research` subgraph; Koog re-runs that finish node with the saved research
+ *   output and resumes from the following `analyze` subgraph.
+ * - [CheckpointResume.ResumeStage.GENERATE]: skip research + analyze and start from
+ *   generate. The checkpoint targets `<strategy>/analyze/finalizeTask`, the finish node
+ *   inside the `analyze` subgraph; Koog resumes from the following `prepareManifest` node.
+ *
+ * Shape: `<strategyName>/<phaseSubgraph>/finalizeTask`. The first component is the
+ * [SCOOP_MANIFEST_STRATEGY_NAME] the strategy registers under (single source of truth
+ * shared with the strategy). The middle component is the property name of the
+ * `subgraphWithTask` delegate (research / analyze), which doubles as the Koog subgraph
+ * name because no explicit `name=` is passed (Koog falls back to the Kotlin property
+ * name). The leaf is always `finalizeTask`: every `subgraphWithTask` unconditionally
+ * declares a finish node with that name (Koog AIAgentSubgraphExt.setupSubgraphWithTask).
+ *
+ * Repair rounds run inside the same `assist` subgraph as user assists, and no resume
+ * stage targets the assist/repair path, so a crash in the middle of a repair loop
+ * cannot be checkpoint-resumed (accepted limitation).
+ */
+internal fun resumeNodePath(stage: CheckpointResume.ResumeStage): String = path(
+    SCOOP_MANIFEST_STRATEGY_NAME,
+    when (stage) {
+        CheckpointResume.ResumeStage.ANALYZE -> "research"
+        CheckpointResume.ResumeStage.GENERATE -> "analyze"
+    },
+    "finalizeTask",
+)

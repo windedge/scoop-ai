@@ -1,5 +1,6 @@
 package com.scoopai.tools
 
+import com.scoopai.core.tools.api.ScoopVerifier
 import com.scoopai.core.ScoopManifestGenerator
 import com.scoopai.core.artifacts.SensitiveArtifactWriter
 import com.scoopai.tools.archive.ZipArchiveInspector
@@ -62,19 +63,24 @@ object DefaultScoopAiFactory {
             defaultAppName = config.appName?.ifBlank { null },
             persistMode = config.persistMode,
         )
-        val scoopVerifier = if (config.verify) ProcessScoopVerifier.tryCreate() else null
-
         val toolRegistry = DefaultToolRegistryFactory.create(
             cache = cache,
             githubToken = config.githubToken,
             gitHubApi = gitHubApi,
             manifestIo = manifestIo,
-            scoopVerifier = scoopVerifier,
             nonInteractive = config.nonInteractive,
             askUserHandler = askUserHandler,
             questionnaireHandler = questionnaireHandler,
             skipDownloadConfirm = config.skipDownloadConfirm,
         )
+
+        // Only probe scoop when install verification is requested. Two instances
+        // are created so the review agent and the assist/repair subgraph each get
+        // their own verifier with an independent install budget; when scoop is
+        // unavailable both stay null and the subgraphs run tool-free.
+        fun verifier() = if (config.verify) ProcessScoopVerifier.tryCreate(cache = cache) else null
+        val scoopVerifier = verifier()
+        val assistVerifier = verifier()
 
         return ScoopManifestGenerator(
             promptExecutor = resolved.createExecutor(),
@@ -89,6 +95,8 @@ object DefaultScoopAiFactory {
             phaseOutputListener = onPhaseOutput,
             artifacts = artifacts,
             usedAppNamesProvider = usedAppNamesProvider,
+            scoopVerifier = scoopVerifier,
+            assistVerifier = assistVerifier,
         )
     }
 }
