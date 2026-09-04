@@ -67,6 +67,11 @@ internal fun assistPhaseName(ctx: AssistContext): String = if (ctx.explanatory) 
  * escape hatch (the user message was a question, so the manifest is echoed back
  * unmodified).
  */
+@kotlinx.serialization.Serializable
+private data class CheckedFinalize(
+    val payload: FinalizePayload,
+    val isPureAnswer: Boolean,
+)
 
 // Repair rounds finalize with their own explanation; combine it under the generate
 // summary when they differ, otherwise keep the single explanation as-is. An assist
@@ -76,12 +81,6 @@ internal suspend fun AIAgentStorageAPI.getCombinedExplanation(generateKey: AIAge
     val final = get(finalKey)
     return if (gen != null && final != null && final != gen) "$gen\n\nFix applied: $final" else final
 }
-
-@kotlinx.serialization.Serializable
-private data class CheckedFinalize(
-    val payload: FinalizePayload,
-    val isPureAnswer: Boolean,
-)
 
 /**
  * Creates a graph strategy for generating Scoop manifests.

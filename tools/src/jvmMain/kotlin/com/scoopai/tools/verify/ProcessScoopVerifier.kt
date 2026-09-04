@@ -76,20 +76,19 @@ class ProcessScoopVerifier private constructor(
             val resolvedHome = Path.of(System.getProperty("user.home"))
             val resolvedScoopEnv = System.getenv("SCOOP")
             val resolvedCommand = resolveScoopCommand(resolvedHome, resolvedScoopEnv)
+            val cmd = resolvedCommand.joinToString(" ")
+
+            fun disabled(reason: String) =
+                System.err.println("scoop verification disabled: $reason. Install tests will be skipped.")
+
             val check = try {
                 runBlocking { runProcess(resolvedCommand + "--version", timeoutMs = 30_000) }
             } catch (e: Exception) {
-                System.err.println(
-                    "scoop verification disabled: cannot run '${resolvedCommand.joinToString(" ")} --version' " +
-                        "(${e.message}). Install tests will be skipped."
-                )
+                disabled("cannot run '$cmd --version' (${e.message})")
                 return null
             }
             if (check.exitCode != 0) {
-                System.err.println(
-                    "scoop verification disabled: '${resolvedCommand.joinToString(" ")} --version' " +
-                        "exited with ${check.exitCode}. Install tests will be skipped."
-                )
+                disabled("'$cmd --version' exited with ${check.exitCode}")
                 return null
             }
             return ProcessScoopVerifier(

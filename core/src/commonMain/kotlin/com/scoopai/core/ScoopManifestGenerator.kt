@@ -183,22 +183,12 @@ class ScoopManifestGenerator(
                 )
             }
 
-        // save_to_bucket is assist-only: a Generate session's repair loop must not
-        // save an unverified manifest. Registered only when the host provides a
-        // handler, so CLI sessions run without it.
-        val saveToBucketTool = if (request is SessionRequest.Assist) {
-            saveHandler?.let { SaveToBucketTool(it) }
-        } else {
-            null
-        }
-        // install_app is assist-only, symmetric to save_to_bucket: a Generate
-        // session's repair loop must not install. Registered only when the host
-        // provides a handler, so CLI sessions run without it.
-        val installAppTool = if (request is SessionRequest.Assist) {
-            installHandler?.let { InstallAppTool(it) }
-        } else {
-            null
-        }
+        // save_to_bucket/install_app are assist-only: a Generate session's repair
+        // loop must not save or install an unverified manifest. Registered only
+        // when the host provides a handler, so CLI sessions run without them.
+        val assistOnly = request is SessionRequest.Assist
+        val saveToBucketTool = if (assistOnly) saveHandler?.let(::SaveToBucketTool) else null
+        val installAppTool = if (assistOnly) installHandler?.let(::InstallAppTool) else null
         val assistPrompt: suspend (AssistContext) -> String =
             {
                 if (it.explanatory) {
@@ -228,6 +218,10 @@ class ScoopManifestGenerator(
         val assistVerifyInstallTool = assistVerifier?.let { verifier ->
             VerifyInstallTool(verifier) { assistManifest.orEmpty() }
         }
+
+        // All assist-subgraph tools, shared by the strategy registration and the
+        // agent-level registry (schemas must resolve there at execution time).
+        val wiredAssistTools = listOfNotNull(assistVerifyInstallTool, saveToBucketTool, installAppTool)
 
         val reviewAgent = AIAgent(
             promptExecutor = promptExecutor,
@@ -325,7 +319,7 @@ class ScoopManifestGenerator(
             observer = observer,
             onPhaseOutput = onPhaseOutput,
             usedAppNamesProvider = usedAppNamesProvider,
-            assistTools = listOfNotNull(assistVerifyInstallTool, saveToBucketTool, installAppTool),
+            assistTools = wiredAssistTools,
         )
 
         val agentConfig = AIAgentConfig(
@@ -338,8 +332,7 @@ class ScoopManifestGenerator(
 
         // When assist subgraph tools are wired in, the agent-level registry must
         // also expose them so their schemas resolve at execution time.
-        val outerToolRegistry = listOfNotNull(assistVerifyInstallTool, saveToBucketTool, installAppTool)
-            .fold(toolRegistry) { registry, assistTool -> registry + ToolRegistry { tool(assistTool) } }
+        val outerToolRegistry = wiredAssistTools.fold(toolRegistry) { registry, assistTool -> registry + ToolRegistry { tool(assistTool) } }
 
         val agent: GraphAIAgent<SessionRequest, ManifestResult> = AIAgent(
             promptExecutor = promptExecutor,
