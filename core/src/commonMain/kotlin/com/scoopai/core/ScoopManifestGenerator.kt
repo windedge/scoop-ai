@@ -10,6 +10,8 @@ import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.model.PromptExecutor
 import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.llm.LLModel
+import ai.koog.serialization.JSONElement
+import ai.koog.serialization.JSONLiteral
 import com.scoopai.core.agent.AnalyzeOutput
 import com.scoopai.core.agent.PhaseTools
 import com.scoopai.core.agent.PrefetchResult
@@ -44,6 +46,16 @@ import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
 private val logger = KotlinLogging.logger {}
+
+/**
+ * Koog wraps plain tool text in an escaped JSONLiteral(isString=true); unwrap it so
+ * the raw content (e.g. full manifest JSON) reaches events/logger unescaped.
+ */
+internal fun koogToolResultToString(el: JSONElement?): String = when {
+    el == null -> "null"
+    el is JSONLiteral && el.isString -> el.content
+    else -> el.toString()
+}
 
 /**
  * Generates a Scoop manifest using a Koog graph strategy with three LLM phases
@@ -205,9 +217,9 @@ class ScoopManifestGenerator(
                     onToolActivity?.invoke(ToolActivity.Started(ctx.toolName, args))
                 }
                 onToolCallCompleted { ctx ->
-                    val result = sanitizeForLog(ctx.toolResult?.toString() ?: "null", maxLen = 200)
-                    logger.info { "[review-tool] ${ctx.toolName} -> $result" }
-                    onToolActivity?.invoke(ToolActivity.Completed(ctx.toolName, result))
+                    val raw = koogToolResultToString(ctx.toolResult)
+                    logger.info { "[review-tool] ${ctx.toolName} -> ${sanitizeForLog(raw, maxLen = 200)}" }
+                    onToolActivity?.invoke(ToolActivity.Completed(ctx.toolName, raw))
                 }
                 onToolCallFailed { ctx ->
                     val errorMsg = sanitizeForLog(
@@ -300,9 +312,9 @@ class ScoopManifestGenerator(
                     onToolActivity?.invoke(ToolActivity.Started(ctx.toolName, args))
                 }
                 onToolCallCompleted { ctx ->
-                    val result = sanitizeForLog(ctx.toolResult?.toString() ?: "null", maxLen = 200)
-                    logger.info { "[tool] ${ctx.toolName} -> $result" }
-                    onToolActivity?.invoke(ToolActivity.Completed(ctx.toolName, result))
+                    val raw = koogToolResultToString(ctx.toolResult)
+                    logger.info { "[tool] ${ctx.toolName} -> ${sanitizeForLog(raw, maxLen = 200)}" }
+                    onToolActivity?.invoke(ToolActivity.Completed(ctx.toolName, raw))
                 }
                 onToolCallFailed { ctx ->
                     val errorMsg = sanitizeForLog(ctx.message.ifBlank { ctx.error?.message ?: "unknown tool error" }, maxLen = 200)

@@ -15,6 +15,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
@@ -48,16 +49,51 @@ class ProcessScoopVerifier private constructor(
         private const val POLL_INTERVAL_MS = 200L
         private val APP_NAME_PATTERN = Regex("^[A-Za-z0-9._-]+$")
 
-        /** scoop --version 探测成功才创建；scoop 不可用时返回 null */
+        private fun isOsWindows(): Boolean =
+            System.getProperty("os.name").lowercase().contains("windows")
+
+        /**
+         * 解析实际可执行的 scoop 命令。Windows 上 scoop 是 shims 里的 .cmd/
+         * .ps1（非 .exe），ProcessBuilder 直跑会 IOException，故用 cmd /c 包装。
+         * 解析结果一次性缓存，探测与后续命令共用。
+         */
+        internal fun resolveScoopCommand(
+            home: Path,
+            scoopEnv: String?,
+            isWindows: Boolean = isOsWindows(),
+        ): List<String> {
+            if (!isWindows) return listOf("scoop")
+            val envShim = scoopEnv?.takeIf { it.isNotBlank() }
+                ?.let { Path.of(it).resolve("shims").resolve("scoop.cmd") }
+            val shim = envShim ?: home.resolve("scoop").resolve("shims").resolve("scoop.cmd")
+            val scoopCmd = if (Files.isRegularFile(shim)) shim else null
+            return if (scoopCmd != null) listOf("cmd", "/c", scoopCmd.toString())
+            else listOf("cmd", "/c", "scoop")
+        }
+
+        /** scoop --version 探测成功才创建；scoop 不可用时返回 null 并输出原因到 stderr */
         fun tryCreate(cache: ScoopCacheManager? = null, scoopRoot: Path? = null): ProcessScoopVerifier? {
+            val resolvedHome = Path.of(System.getProperty("user.home"))
+            val resolvedScoopEnv = System.getenv("SCOOP")
+            val resolvedCommand = resolveScoopCommand(resolvedHome, resolvedScoopEnv)
             val check = try {
-                runBlocking { runProcess(listOf("scoop", "--version"), timeoutMs = 30_000) }
-            } catch (_: Exception) {
+                runBlocking { runProcess(resolvedCommand + "--version", timeoutMs = 30_000) }
+            } catch (e: Exception) {
+                System.err.println(
+                    "scoop verification disabled: cannot run '${resolvedCommand.joinToString(" ")} --version' " +
+                        "(${e.message}). Install tests will be skipped."
+                )
                 return null
             }
-            if (check.exitCode != 0) return null
+            if (check.exitCode != 0) {
+                System.err.println(
+                    "scoop verification disabled: '${resolvedCommand.joinToString(" ")} --version' " +
+                        "exited with ${check.exitCode}. Install tests will be skipped."
+                )
+                return null
+            }
             return ProcessScoopVerifier(
-                commandRunner = { args -> runScoopCommand(*args.toTypedArray()) },
+                commandRunner = { args -> runScoopCommand(resolvedCommand, *args.toTypedArray()) },
                 scoopRoot = scoopRoot ?: defaultScoopRoot(),
                 cache = cache,
             )
@@ -76,13 +112,13 @@ class ProcessScoopVerifier private constructor(
             else Path.of(System.getProperty("user.home")).resolve("scoop")
         }
 
-        internal suspend fun runScoopCommand(vararg args: String): ScoopProcessResult {
+        internal suspend fun runScoopCommand(command: List<String>, vararg args: String): ScoopProcessResult {
             val timeoutMs = if (args.firstOrNull() == "install") {
                 INSTALL_TIMEOUT_MINUTES * 60_000
             } else {
                 UNINSTALL_TIMEOUT_SECONDS * 1000
             }
-            return runProcess(listOf("scoop", *args), timeoutMs)
+            return runProcess(command + args, timeoutMs)
         }
 
         /**
@@ -90,9 +126,16 @@ class ProcessScoopVerifier private constructor(
          * 轮询 waitFor 同时检查协程取消；超时或结束时 destroyForcibly 兜底。
          */
         internal suspend fun runProcess(command: List<String>, timeoutMs: Long): ScoopProcessResult {
-            val proc = ProcessBuilder(command)
-                .redirectErrorStream(true)
-                .start()
+            val proc = try {
+                ProcessBuilder(command)
+                    .redirectErrorStream(true)
+                    .start()
+            } catch (e: IOException) {
+                throw IOException(
+                    "failed to start process for scoop command [${command.joinToString(" ")}]: ${e.message}",
+                    e,
+                )
+            }
             val captured = StringBuilder()
             // 阻塞读无法被协程取消，用后台线程 drain；进程被杀后流关闭线程自然退出
             val drain = thread(isDaemon = true) {
@@ -117,8 +160,10 @@ class ProcessScoopVerifier private constructor(
                 while (!proc.waitFor(POLL_INTERVAL_MS, TimeUnit.MILLISECONDS)) {
                     coroutineContext.ensureActive()
                     if (System.currentTimeMillis() >= deadline) {
+                        val label = command.dropWhile { it == "scoop" || it == "cmd" || it == "/c" || it.endsWith("scoop.cmd") }
+                            .firstOrNull() ?: command.first()
                         throw ScoopProcessTimeoutException(
-                            "scoop ${command.drop(1).firstOrNull() ?: command.first()} timed out after ${timeoutMs / 1000}s"
+                            "scoop $label timed out after ${timeoutMs / 1000}s"
                         )
                     }
                 }

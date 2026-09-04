@@ -282,6 +282,75 @@ class ProcessScoopVerifierTest {
     }
 
     // -----------------------------------------------------------------------
+    // resolveScoopCommand：Windows 上 scoop 是 shims/scoop.cmd 而非 .exe，
+    // ProcessBuilder 直跑会 IOException，需 cmd /c 包装（TDD bug 修复回归）
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `resolveScoopCommand returns bare scoop on non-Windows`() {
+        val command = ProcessScoopVerifier.resolveScoopCommand(
+            home = Path.of("C:/Users/tester"),
+            scoopEnv = null,
+            isWindows = false,
+        )
+        assertEquals(listOf("scoop"), command)
+    }
+
+    @Test
+    fun `resolveScoopCommand uses scoopEnv shims on Windows when present`() {
+        val envDir = Files.createTempDirectory("scoop-env-")
+        Files.createDirectories(envDir.resolve("shims"))
+        Files.writeString(envDir.resolve("shims").resolve("scoop.cmd"), "@echo off")
+
+        val command = ProcessScoopVerifier.resolveScoopCommand(
+            home = Path.of("C:/Users/tester"),
+            scoopEnv = envDir.toString(),
+            isWindows = true,
+        )
+
+        assertEquals(
+            listOf("cmd", "/c", envDir.resolve("shims").resolve("scoop.cmd").toString()),
+            command,
+        )
+    }
+
+    @Test
+    fun `resolveScoopCommand falls back to default home shims when env is empty`() {
+        val homeDir = Files.createTempDirectory("scoop-home-")
+        val scoopCmd = homeDir.resolve("scoop").resolve("shims").resolve("scoop.cmd")
+        Files.createDirectories(scoopCmd.parent)
+        Files.writeString(scoopCmd, "@echo off")
+
+        val command = ProcessScoopVerifier.resolveScoopCommand(
+            home = homeDir,
+            scoopEnv = null,
+            isWindows = true,
+        )
+
+        assertEquals(listOf("cmd", "/c", scoopCmd.toString()), command)
+    }
+
+    @Test
+    fun `resolveScoopCommand falls back to PATH resolution on Windows when no shim exists`() {
+        val command = ProcessScoopVerifier.resolveScoopCommand(
+            home = Files.createTempDirectory("no-scoop-home-"),
+            scoopEnv = null,
+            isWindows = true,
+        )
+        assertEquals(listOf("cmd", "/c", "scoop"), command)
+    }
+
+    @Test
+    fun `resolveScoopCommand falls back to PATH resolution when scoopEnv shims missing`() {
+        val command = ProcessScoopVerifier.resolveScoopCommand(
+            home = Files.createTempDirectory("no-scoop-home-"),
+            scoopEnv = Files.createTempDirectory("empty-scoop-env-").toString(),
+            isWindows = true,
+        )
+        assertEquals(listOf("cmd", "/c", "scoop"), command)
+    }
+
+    // -----------------------------------------------------------------------
     // runProcess 进程级行为（真实进程，Windows CI 友好：ping 做长睡眠）
     // -----------------------------------------------------------------------
 

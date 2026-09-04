@@ -15,6 +15,8 @@ import com.scoopai.core.agent.normalizeManifest
 import com.scoopai.core.agent.formatManifestJson
 import com.scoopai.core.observer.GenerationObserver
 import com.scoopai.core.tools.api.ManifestIo
+import ai.koog.serialization.JSONLiteral
+import ai.koog.serialization.JSONObject
 import ai.koog.serialization.typeToken
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
@@ -1107,6 +1109,11 @@ class ScoopManifestGeneratorMockTest {
 
         val startedEvent = activities.filterIsInstance<ToolActivity.Started>().first { it.toolName == com.scoopai.core.agent.PhaseTools.FETCH_REPO_INFO }
         assertTrue(startedEvent.toolArgs.contains("sharkdp/fd"), "Started event should contain args")
+
+        // Result is a mock-injected opaque string, so assert presence only.
+        val completed = activities.filterIsInstance<ToolActivity.Completed>().firstOrNull { it.toolName == com.scoopai.core.agent.PhaseTools.FETCH_REPO_INFO }
+        assertNotNull(completed, "Should record a fetchRepoInfo Completed event")
+        assertTrue(completed.toolResult.isNotBlank(), "Completed event must carry a tool result")
     }
 
     @Test
@@ -1985,6 +1992,30 @@ class ScoopManifestGeneratorMockTest {
 
         assertTrue(!result.exhausted, "tool-free assist must pass")
         assertTrue(result.manifest.contains("shortcuts"), "assist must still apply the change")
+    }
+
+    // ---------------------------------------------------------------------
+    // koogToolResultToString: tool event result conversion
+
+    @Test
+    fun `koogToolResultToString unwraps string literal to raw content`() = runBlocking {
+        val el = JSONLiteral(content = """{"success":true,"version":"1.2.3"}""", isString = true)
+        val out = koogToolResultToString(el)
+        assertEquals("""{"success":true,"version":"1.2.3"}""", out)
+        assertTrue(out.startsWith("{"), "must yield a JSON object, not an escaped literal")
+    }
+
+    @Test
+    fun `koogToolResultToString keeps json object as legal json text`() = runBlocking {
+        val el = JSONObject(mapOf("success" to JSONLiteral("true", isString = false)))
+        val out = koogToolResultToString(el)
+        assertEquals(el.toString(), out)
+        assertTrue(out.contains("success"), "must be valid JSON rendering")
+    }
+
+    @Test
+    fun `koogToolResultToString maps null to null string`() = runBlocking {
+        assertEquals("null", koogToolResultToString(null))
     }
 
     private fun createTempDir(): java.io.File {
