@@ -154,6 +154,20 @@ class AssistPromptTest {
     }
 
     @Test
+    fun `buildAssistPrompt with failure details in the message forbids re-running the install test`() {
+        val prompt = buildAssistPrompt(assistContext(), installTestActive = true)
+
+        assertTrue(
+            prompt.contains("do NOT call verify_install") || prompt.contains("do NOT call `verify_install`"),
+            "active prompt must forbid reproducing the failure via verify_install when details are already present, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("error summary or log excerpt") || prompt.contains("install test failure details"),
+            "active prompt must reference the failure details the user's message already contains",
+        )
+    }
+
+    @Test
     fun `buildAssistPrompt with installTestActive no longer claims automatic install test`() {
         val prompt = buildAssistPrompt(assistContext(), installTestActive = true)
 

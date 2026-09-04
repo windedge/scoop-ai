@@ -720,6 +720,7 @@ private fun buildAssistKernel(
             appendLine("- Call it in its OWN separate turn: invoke `verify_install` alone, wait for its result, then decide the next step. Do NOT call it in the same turn as `finalize_task_result`.")
             appendLine("- After it returns, honestly report the outcome: if `success` is false, describe the failure (fix the manifest if you can); if `success` is true, say the install test passed.")
             appendLine("- If the test reveals a problem, fix the manifest and then call `finalize_task_result` to hand it over. The verify phase re-runs the install test automatically; do NOT run a second `verify_install` inside the assist subgraph.")
+            appendLine("- If the user's message already contains install test failure details (error summary or log excerpt), do NOT call verify_install to reproduce the failure; fix the manifest directly from those details. The verify phase re-tests automatically.")
         } else {
             appendLine("No install test was performed for this manifest. Say so honestly if the user asks about installability; never claim the app was install-tested.")
         }
