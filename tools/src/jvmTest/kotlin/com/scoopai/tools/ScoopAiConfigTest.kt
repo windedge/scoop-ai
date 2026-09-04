@@ -20,7 +20,6 @@ class ScoopAiConfigTest {
         assertNull(config.appName)
         assertEquals("auto", config.persistMode)
         assertTrue(config.keepCache)
-        assertFalse(config.verify)
         assertTrue(config.nonInteractive)
         assertEquals(500, config.maxIterations)
         assertFalse(config.skipDownloadConfirm)
@@ -37,7 +36,6 @@ class ScoopAiConfigTest {
             appName = "myapp",
             persistMode = "force",
             keepCache = false,
-            verify = true,
             nonInteractive = false,
             maxIterations = 100,
             skipDownloadConfirm = true,
@@ -50,9 +48,21 @@ class ScoopAiConfigTest {
         assertEquals("myapp", config.appName)
         assertEquals("force", config.persistMode)
         assertFalse(config.keepCache)
-        assertTrue(config.verify)
         assertFalse(config.nonInteractive)
         assertEquals(100, config.maxIterations)
         assertTrue(config.skipDownloadConfirm)
+    }
+
+    // ---------------------------------------------------------------
+    // verify is always on: no user-facing config switch may exist
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `config exposes no verify switch`() {
+        val fields = ScoopAiConfig::class.java.declaredFields.map { it.name }
+        assertFalse(
+            fields.any { it.equals("verify", ignoreCase = true) },
+            "ScoopAiConfig must not carry a verify flag: install verification is always on",
+        )
     }
 }

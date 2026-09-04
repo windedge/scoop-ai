@@ -5,6 +5,7 @@ import com.scoopai.cli.CliRunner
 import com.scoopai.cli.ScoopAi
 import com.scoopai.cli.command.GenerateCommand
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -150,7 +151,7 @@ class CompatibilityTest {
         assertTrue(result.output.contains("--api-key"), "should list --api-key")
         assertTrue(result.output.contains("--base-url"), "should list --base-url")
         assertTrue(result.output.contains("--model"), "should list --model")
-        assertTrue(result.output.contains("--verify"), "should list --verify")
+        assertFalse(result.output.contains("--verify"), "--verify was removed and must not be listed")
         assertTrue(result.output.contains("--app-name"), "should list --app-name")
         assertTrue(result.output.contains("--cache"), "should list --cache")
         assertTrue(result.output.contains("--no-cache") || result.output.contains("--cache"),

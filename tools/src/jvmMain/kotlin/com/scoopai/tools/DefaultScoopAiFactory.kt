@@ -74,11 +74,11 @@ object DefaultScoopAiFactory {
             skipDownloadConfirm = config.skipDownloadConfirm,
         )
 
-        // Only probe scoop when install verification is requested. Two instances
-        // are created so the review agent and the assist/repair subgraph each get
-        // their own verifier with an independent install budget; when scoop is
-        // unavailable both stay null and the subgraphs run tool-free.
-        fun verifier() = if (config.verify) ProcessScoopVerifier.tryCreate(cache = cache) else null
+        // Install verification is always on: probe scoop unconditionally. Two
+        // instances are created so the review agent and the assist/repair subgraph
+        // each get their own verifier with an independent install budget; when
+        // scoop is unavailable both stay null and the subgraphs run tool-free.
+        fun verifier() = ProcessScoopVerifier.tryCreate(cache = cache)
         val scoopVerifier = verifier()
         val assistVerifier = verifier()
 

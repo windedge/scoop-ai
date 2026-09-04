@@ -1,6 +1,7 @@
 package com.scoopai.cli
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -20,7 +21,6 @@ class EnvArgsTest {
         assertEquals("", envArgs.apiKey)
         assertNull(envArgs.baseUrl)
         assertNull(envArgs.modelName)
-        assertEquals(false, envArgs.verify)
         assertNull(envArgs.appName)
         assertEquals(true, envArgs.keepCache)
         assertNull(envArgs.userPrompt)
@@ -66,9 +66,12 @@ class EnvArgsTest {
     }
 
     @Test
-    fun `construct with verify field`() {
-        val envArgs = EnvArgs(url = "https://github.com/x/y", verify = true)
-        assertTrue(envArgs.verify)
+    fun `envArgs exposes no verify switch`() {
+        val fields = EnvArgs::class.java.declaredFields.map { it.name }
+        assertFalse(
+            fields.any { it.equals("verify", ignoreCase = true) },
+            "EnvArgs must not carry a verify flag: install verification is always on",
+        )
     }
 
     @Test
@@ -130,14 +133,12 @@ class EnvArgsTest {
             output = "custom.json",
             provider = "openai",
             debug = true,
-            verify = true,
             keepCache = false,
             persistMode = "force",
         )
         assertEquals("custom.json", envArgs.output)
         assertEquals("openai", envArgs.provider)
         assertTrue(envArgs.debug)
-        assertTrue(envArgs.verify)
         assertEquals(false, envArgs.keepCache)
         assertEquals("force", envArgs.persistMode)
         assertEquals("https://github.com/owner/repo", envArgs.url)

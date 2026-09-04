@@ -117,7 +117,7 @@ Global options:
 |----------|------------------------------------|
 | `<url>`  | GitHub repository URL or project URL |
 
-#### Options (18 options)
+#### Options (17 options)
 
 | Short | Long               | Type     | Default                 | Description                                       |
 |-------|--------------------|----------|-------------------------|---------------------------------------------------|
@@ -126,7 +126,6 @@ Global options:
 |       | `--api-key`        | `String` | env                     | LLM API key (overrides provider-specific env var) |
 |       | `--base-url`       | `String` | env                     | Custom API base URL (required for `openai-compatible`) |
 | `-m`  | `--model`          | `String` | provider default        | LLM model name override                           |
-| `-V`  | `--verify`         | flag     | `false`                 | Run `scoop install` to verify the generated manifest |
 |       | `--app-name`       | `String` | inferred from URL       | Application name for output path and cache        |
 |       | `--cache`          | choice   | `keep`                  | Cache mode: keep\|discard (default: keep)       |
 | `-p`  | `--prompt`         | `String` | `null`                  | Additional instructions for manifest generation   |
@@ -275,7 +274,6 @@ They appear as `set` or `unset` in diagnostic output.
 | `SCOOP_AI_BASE_URL`    | Custom API base URL                      | --         |
 | `SCOOP_AI_MODEL`       | LLM model name                           | provider default |
 | `SCOOP_AI_OUTPUT`      | Default output file path                 | --         |
-| `SCOOP_AI_VERIFY`      | Set to `true` to enable install verification | --     |
 | `SCOOP_AI_DEBUG`       | Set to `true` to enable debug output     | --         |
 | `SCOOP_AI_GITHUB_TOKEN`| GitHub personal access token (fallback) **(sensitive)** | --         |
 

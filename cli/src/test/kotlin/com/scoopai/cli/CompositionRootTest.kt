@@ -5,6 +5,7 @@ import com.scoopai.tools.manifest.FileManifestIo
 import com.scoopai.tools.cache.ScoopCacheManager
 import com.scoopai.tools.github.JdkHttpGitHubApi
 import com.scoopai.tools.archive.ZipArchiveInspector
+import com.scoopai.tools.verify.ProcessScoopVerifier
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
@@ -69,10 +70,13 @@ class CompositionRootTest {
     }
 
     @Test
-    fun `scoopVerifier is null when verify is false and env is empty`() {
+    fun `scoopVerifier is attempted without any config switch`() {
         val envArgs = EnvArgs(url = "https://github.com/owner/repo")
         val root = CompositionRoot(envArgs, emptyMap())
-        assertNull(root.scoopVerifier)
+        // The verify switch is gone: probing scoop is unconditional. The lazy
+        // property must therefore resolve exactly like a bare scoop probe.
+        val expected = ProcessScoopVerifier.tryCreate() != null
+        assertEquals(expected, root.scoopVerifier != null)
     }
 
     @Test
@@ -229,7 +233,6 @@ class CompositionRootTest {
         assertNotNull(root.cache)
         assertNotNull(root.gitHubApi)
         assertNotNull(root.archiveInspector)
-        assertNull(root.scoopVerifier)
         assertNotNull(root.toolRegistry)
     }
 }

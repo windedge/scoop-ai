@@ -87,9 +87,6 @@ Custom API base URL. Required for the openai-compatible provider.
 .B \-m, \-\-model=\fI\,MODEL\/\fR
 LLM model name. Overrides the provider default.
 .TP
-.B \-V, \-\-verify
-Run 'scoop install' to verify the generated manifest.
-.TP
 .B \-\-app\-name=\fI\,NAME\/\fR
 Application name for output path and cache. Inferred from URL by default.
 .TP
@@ -141,9 +138,6 @@ LLM model name override.
 .TP
 .B SCOOP_AI_OUTPUT
 Default output file path.
-.TP
-.B SCOOP_AI_VERIFY
-Set to "true" to enable install verification by default.
 .TP
 .B SCOOP_AI_DEBUG
 Set to "true" to enable debug output.
@@ -207,10 +201,7 @@ Generate a manifest with default settings
 Generate with a specific provider and model
 .B scoop-ai generate \-P openai \-m gpt-4o https://github.com/sharkdp/fd
 .TP
-Generate and verify with Scoop
-.B scoop-ai \-\-verify https://github.com/sharkdp/fd
-.TP
-Force persist field discovery
+Persist the generated manifest to a bucket
 .B scoop-ai \-s force https://github.com/sharkdp/fd
 .TP
 Run environment diagnostics

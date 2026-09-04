@@ -101,14 +101,6 @@ class ConfigShowCommandTest {
         assertTrue(result.output.contains("set"))
     }
 
-    @Test
-    fun `verify env var is reflected`() {
-        val cmd = ConfigShowCommand(env = mapOf("SCOOP_AI_VERIFY" to "true"))
-        val result = cmd.test("")
-        assertTrue(result.output.contains("verify:"))
-        assertTrue(result.output.contains("true"))
-    }
-
     // ---------------------------------------------------------------
     // Output notes
     // ---------------------------------------------------------------

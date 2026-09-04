@@ -195,10 +195,10 @@ class ScoopManifestGenerator(
             },
             systemPrompt = buildReviewSystemPrompt(hasInstallTest = verifyInstallTool != null),
             // Koog counts nodes per iteration: one review round = 3 nodes (LLM /
-            // execute tools / send results) plus the finish node. 5 lets a tool-free
-            // review finish with one spare step; 9 leaves room for up to two tool
-            // rounds (tool call + result round trip) before finishing.
-            maxIterations = if (verifyInstallTool != null) 9 else 5,
+            // execute tools / send results) plus the finish node. 9 leaves room for
+            // up to two tool rounds (tool call + result round trip) before finishing
+            // and also fits a tool-free review with spare steps.
+            maxIterations = 9,
         ) {
             handleEvents {
                 onLLMCallCompleted { ctx ->

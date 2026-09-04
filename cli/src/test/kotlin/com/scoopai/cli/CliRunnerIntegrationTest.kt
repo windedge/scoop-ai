@@ -108,7 +108,7 @@ class CliRunnerIntegrationTest {
         assertTrue(output.contains("--app-name"), "should list --app-name")
         assertTrue(output.contains("--prompt"), "should list --prompt")
         assertTrue(output.contains("--persist"), "should list --persist")
-        assertTrue(output.contains("--verify"), "should list --verify")
+        assertFalse(output.contains("--verify"), "--verify was removed and must not be listed")
         assertTrue(output.contains("--non-interactive"), "should list --non-interactive")
         assertTrue(output.contains("--cache"), "should list --cache")
         assertTrue(output.contains("--debug"), "should list --debug")

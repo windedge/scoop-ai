@@ -1,6 +1,7 @@
 package com.scoopai.tools
 
 import com.scoopai.tools.interaction.SafeAskUser
+import com.scoopai.tools.verify.ProcessScoopVerifier
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -164,7 +165,6 @@ class DefaultScoopAiFactoryTest {
         assertNotNull(cache)
         assertNotNull(cache?.downloadConfirmer)
     }
-
     @Test
     fun `createGenerator with skipDownloadConfirm true leaves downloadConfirmer null even with questionnaireHandler`() {
         DefaultScoopAiFactory.createGenerator(
@@ -195,5 +195,32 @@ class DefaultScoopAiFactoryTest {
         val cache = DefaultToolRegistryFactory.getCacheManager()
         assertNotNull(cache)
         assertEquals(null, cache?.downloadConfirmer)
+    }
+
+    // ---------------------------------------------------------------
+    // Install verification is always on: no config switch gates the
+    // verifier creation, so the wired verifiers resolve exactly when a
+    // bare scoop probe succeeds on this machine.
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `createGenerator wires verifiers unconditionally without a config switch`() {
+        val generator = DefaultScoopAiFactory.createGenerator(
+            ScoopAiConfig(
+                provider = "deepseek",
+                apiKey = "sk-fake",
+                nonInteractive = true,
+            )
+        )
+        val expected = ProcessScoopVerifier.tryCreate() != null
+        for (fieldName in listOf("scoopVerifier", "assistVerifier")) {
+            val field = generator.javaClass.getDeclaredField(fieldName)
+            field.isAccessible = true
+            assertEquals(
+                expected,
+                field.get(generator) != null,
+                "$fieldName must be attempted unconditionally; outcome matches the scoop probe",
+            )
+        }
     }
 }

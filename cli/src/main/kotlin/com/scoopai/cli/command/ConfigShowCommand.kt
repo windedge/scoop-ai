@@ -29,7 +29,6 @@ class ConfigShowCommand(
         val apiKeyStatus = resolveApiKeyStatus(providerStr)
         val gitHubTokenStatus = resolveGitHubTokenStatus()
         val persistMode = env["SCOOP_AI_PERSIST"] ?: "auto"
-        val verify = env["SCOOP_AI_VERIFY"]?.lowercase() == "true"
         val nonInteractive = env["SCOOP_AI_NON_INTERACTIVE"]?.lowercase() == "true"
         val cacheEnabled = env["SCOOP_AI_NO_CACHE"]?.lowercase() != "true"
         val debug = env["SCOOP_AI_DEBUG"]?.lowercase() == "true"
@@ -42,7 +41,6 @@ class ConfigShowCommand(
         echo("  api-key:            $apiKeyStatus")
         echo("  github-token:       $gitHubTokenStatus")
         echo("  persist-mode:       $persistMode")
-        echo("  verify:             $verify")
         echo("  non-interactive:    $nonInteractive")
         echo("  cache-enabled:      $cacheEnabled")
         echo("  debug:              $debug")

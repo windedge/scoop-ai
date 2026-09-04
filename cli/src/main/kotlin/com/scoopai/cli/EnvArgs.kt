@@ -12,7 +12,6 @@ package com.scoopai.cli
  * @property apiKey API key (default: "" = auto-detect from env).
  * @property baseUrl Custom API base URL.
  * @property modelName LLM model name override.
- * @property verify Whether to run `scoop install` verification.
  * @property appName App name override for cache/output.
  * @property keepCache Whether to keep downloaded files in Scoop cache.
  * @property userPrompt Additional user requirements for manifest generation.
@@ -30,7 +29,6 @@ data class EnvArgs(
     val apiKey: String = "",
     val baseUrl: String? = null,
     val modelName: String? = null,
-    val verify: Boolean = false,
     val appName: String? = null,
     val keepCache: Boolean = true,
     val userPrompt: String? = null,

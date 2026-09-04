@@ -68,7 +68,7 @@ _scoop_ai_completions() {
 
     case "${'$'}subcmd" in
         generate)
-            opts="-o --output -P --provider -m --model --base-url --api-key --github-token --app-name -p --prompt -s --persist -V --verify -n --non-interactive --no-cache --debug --no-progress --help"
+            opts="-o --output -P --provider -m --model --base-url --api-key --github-token --app-name -p --prompt -s --persist -n --non-interactive --no-cache --debug --no-progress --help"
             ;;
         doctor)
             opts="--help"
@@ -135,8 +135,6 @@ _scoop_ai() {
                         '--prompt[additional prompt]:prompt:' \
                         '-s[persist mode]:mode:(auto force none)' \
                         '--persist[persist mode]:mode:(auto force none)' \
-                        '-V[verify manifest]' \
-                        '--verify[verify manifest]' \
                         '-n[non-interactive mode]' \
                         '--non-interactive[non-interactive mode]' \
                         '--no-cache[disable cache]' \
@@ -190,7 +188,6 @@ complete -c scoop-ai -f -n '__fish_seen_subcommand_from generate' -l 'github-tok
 complete -c scoop-ai -f -n '__fish_seen_subcommand_from generate' -l 'app-name' -d 'Application name' -r
 complete -c scoop-ai -f -n '__fish_seen_subcommand_from generate' -s 'p' -l 'prompt' -d 'Additional prompt' -r
 complete -c scoop-ai -f -n '__fish_seen_subcommand_from generate' -s 's' -l 'persist' -d 'Persist mode' -x -a 'auto force none'
-complete -c scoop-ai -f -n '__fish_seen_subcommand_from generate' -s 'V' -l 'verify' -d 'Verify manifest'
 complete -c scoop-ai -f -n '__fish_seen_subcommand_from generate' -s 'n' -l 'non-interactive' -d 'Non-interactive mode'
 complete -c scoop-ai -f -n '__fish_seen_subcommand_from generate' -l 'no-cache' -d 'Disable cache'
 complete -c scoop-ai -f -n '__fish_seen_subcommand_from generate' -l 'debug' -d 'Enable debug output'
@@ -253,7 +250,6 @@ Register-ArgumentCompleter -Native -CommandName scoop-ai -ScriptBlock {
                 '--app-name'
                 '-p'; '--prompt'
                 '-s'; '--persist'
-                '-V'; '--verify'
                 '-n'; '--non-interactive'
                 '--no-cache'
                 '--debug'

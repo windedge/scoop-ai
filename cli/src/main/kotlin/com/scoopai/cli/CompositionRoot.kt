@@ -50,7 +50,7 @@ class CompositionRoot(
     }
 
     val scoopVerifier: ProcessScoopVerifier? by lazy {
-        if (isVerifyEnabled()) ProcessScoopVerifier.tryCreate() else null
+        ProcessScoopVerifier.tryCreate()
     }
 
     val toolRegistry: ToolRegistry by lazy {
@@ -116,16 +116,12 @@ class CompositionRoot(
                 appName = resolvedAppName.ifBlank { null },
                 persistMode = envArgs.persistMode,
                 keepCache = envArgs.keepCache,
-                verify = isVerifyEnabled(),
                 nonInteractive = envArgs.nonInteractive,
             ),
             onPhase = onPhase,
             artifacts = artifacts,
         )
     }
-
-    private fun isVerifyEnabled(): Boolean =
-        envArgs.verify || env["SCOOP_AI_VERIFY"]?.lowercase() == "true"
 
     companion object {
         private fun inferAppName(url: String): String {

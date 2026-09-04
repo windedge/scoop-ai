@@ -183,24 +183,23 @@ class GenerateCommandTest {
     // ---------------------------------------------------------------
 
     @Test
-    fun `verify flag with -V`() {
+    fun `verify option is rejected - the switch no longer exists`() {
         val cmd = GenerateCommand()
-        cmd.test("-V", "https://github.com/x/y")
-        assertTrue(cmd.verify)
+        val result = cmd.test("--verify", "https://github.com/x/y")
+        assertTrue(result.statusCode != 0, "--verify must be rejected: install verification is always on")
     }
 
     @Test
-    fun `verify flag with --verify`() {
+    fun `-V option is rejected - the switch no longer exists`() {
         val cmd = GenerateCommand()
-        cmd.test("--verify", "https://github.com/x/y")
-        assertTrue(cmd.verify)
+        val result = cmd.test("-V", "https://github.com/x/y")
+        assertTrue(result.statusCode != 0, "-V must be rejected: install verification is always on")
     }
 
     @Test
-    fun `verify not set by default`() {
-        val cmd = GenerateCommand()
-        cmd.test("https://github.com/x/y")
-        assertFalse(cmd.verify)
+    fun `help does not list the removed verify flag`() {
+        val result = GenerateCommand().test("--help")
+        assertFalse(result.output.contains("--verify"), "--verify must be gone from help")
     }
 
     @Test
@@ -319,7 +318,7 @@ class GenerateCommandTest {
     // ---------------------------------------------------------------
 
     @Test
-    fun `all 16 flags parsed`() {
+    fun `all 15 flags parsed`() {
         val cmd = GenerateCommand()
         cmd.test(
             "-o", "out.json",
@@ -327,7 +326,6 @@ class GenerateCommandTest {
             "--api-key", "key123",
             "--base-url", "http://x",
             "-m", "model-x",
-            "-V",
             "--app-name", "myapp",
             "--cache", "discard",
             "-p", "use portable",
@@ -344,7 +342,6 @@ class GenerateCommandTest {
         assertEquals("key123", cmd.apiKey)
         assertEquals("http://x", cmd.baseUrl)
         assertEquals("model-x", cmd.model)
-        assertTrue(cmd.verify)
         assertEquals("myapp", cmd.appName)
         assertEquals("discard", cmd.cache)
         assertEquals("use portable", cmd.prompt)
@@ -485,7 +482,6 @@ class GenerateCommandTest {
         assertEquals("", cmd.apiKey)
         assertNull(cmd.baseUrl)
         assertNull(cmd.model)
-        assertFalse(cmd.verify)
         assertNull(cmd.appName)
         assertFalse(cmd.noCache)
         assertNull(cmd.prompt)
@@ -504,10 +500,9 @@ class GenerateCommandTest {
     @Test
     fun `url after all flags`() {
         val cmd = GenerateCommand()
-        cmd.test("--debug", "-V", "--no-cache", "https://github.com/x/y")
+        cmd.test("--debug", "--no-cache", "https://github.com/x/y")
         assertEquals("https://github.com/x/y", cmd.url)
         assertTrue(cmd.debug)
-        assertTrue(cmd.verify)
         assertTrue(cmd.noCache)
     }
 

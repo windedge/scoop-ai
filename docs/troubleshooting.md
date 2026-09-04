@@ -123,7 +123,7 @@ look up the exit code and symptom below.
 - Compare with the official Scoop bucket manifest if one exists:
   `C:\Users\<user>\scoop\buckets\main\bucket\<app>.json`
 - Manually adjust `url`, `hash`, `bin`, or `installer` fields.
-- Re-run with `--verify` to confirm the fix.
+- Run `scoop install <app>` to confirm the fix.
 - If the issue is transient (network), re-run without `--no-cache`.
 
 **See also**: `scoop-ai doctor`, Exit code 70 (IO_ERROR), VerifyFailed FAQ
@@ -256,7 +256,7 @@ look up the exit code and symptom below.
 **Symptoms**:
 - After generating a manifest, `scoop install <app>` tries to download the
   file again instead of reusing the cached copy.
-- Exit code 66 (VERIFY_FAILED) if `--verify` was used.
+- Exit code 66 (VERIFY_FAILED) if the install verification ran.
 
 **Cause**:
 - The `--no-cache` flag was used, which discards downloaded files after
@@ -279,7 +279,7 @@ look up the exit code and symptom below.
 ## Q: Manifest verification failed (scoop install error)
 
 **Symptoms**:
-- "ERROR: scoop install exited with code 1" after `--verify`.
+- "ERROR: scoop install exited with code 1" during install verification.
 - Exit code 66 (VERIFY_FAILED).
 
 **Cause**:
@@ -312,7 +312,7 @@ look up the exit code and symptom below.
 **Symptoms**:
 - After installation with `scoop install`, application settings are not
   preserved across updates.
-- Exit code 66 (VERIFY_FAILED) when `--verify` is used with persist issues.
+- Exit code 66 (VERIFY_FAILED) when install verification reports persist issues.
 
 **Cause**:
 - The `auto` persist mode (default) relies on the research phase to discover
