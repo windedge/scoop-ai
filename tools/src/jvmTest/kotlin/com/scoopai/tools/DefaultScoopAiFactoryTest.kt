@@ -220,6 +220,28 @@ class DefaultScoopAiFactoryTest {
     }
 
     // ---------------------------------------------------------------
+    // install_app host handler pass-through (P3)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `createGenerator accepts installAppHandler without throwing`() {
+        var invoked = false
+        val generator = DefaultScoopAiFactory.createGenerator(
+            config = ScoopAiConfig(
+                provider = "deepseek",
+                apiKey = "sk-fake",
+                nonInteractive = true,
+            ),
+            installAppHandler = { _, _ ->
+                invoked = true
+                """{"success":true,"app":"fd"}"""
+            },
+        )
+        assertNotNull(generator)
+        assertEquals(false, invoked, "construction must not invoke the handler")
+    }
+
+    // ---------------------------------------------------------------
     // Install verification is always on: no config switch gates the
     // verifier creation, so the wired verifiers resolve exactly when a
     // bare scoop probe succeeds on this machine.

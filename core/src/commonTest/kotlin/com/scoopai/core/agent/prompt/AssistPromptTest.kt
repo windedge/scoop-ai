@@ -288,6 +288,76 @@ class AssistPromptTest {
     }
 
     // ---------------------------------------------------------------
+    // buildAssistPrompt / buildRepairPrompt: install_app guidance (P3)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `buildAssistPrompt with installActive gives install_app usage guidance`() {
+        val prompt = buildAssistPrompt(assistContext(), saveActive = true, installActive = true)
+
+        assertTrue(
+            prompt.contains("install_app"),
+            "active prompt must expose the install_app tool, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("explicitly"),
+            "active prompt must gate install_app behind an explicit user request, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("save_to_bucket"),
+            "install guidance must require the manifest to be saved first, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("already installed"),
+            "active prompt must explain the already-installed report, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt with installActive says bucket and name are required`() {
+        val prompt = buildAssistPrompt(assistContext(), installActive = true)
+
+        assertTrue(
+            prompt.contains("required"),
+            "install guidance must mark bucket and name as required, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt without installActive does not mention install_app`() {
+        val prompt = buildAssistPrompt(assistContext(), installTestActive = true, saveActive = true)
+
+        assertFalse(
+            prompt.contains("install_app"),
+            "no-handler prompt must not advertise install_app, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildRepairPrompt with installActive forbids install_app`() {
+        val prompt = buildRepairPrompt(repairContext(), installActive = true)
+
+        assertTrue(
+            prompt.contains("install_app"),
+            "repair prompt with a handler must explicitly ban install_app, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("Do NOT call `install_app`"),
+            "repair prompt must forbid installing mid-repair, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildRepairPrompt without installActive does not mention install_app`() {
+        val prompt = buildRepairPrompt(repairContext())
+
+        assertFalse(
+            prompt.contains("install_app"),
+            "no-handler repair prompt must not mention install_app, got:\n$prompt",
+        )
+    }
+
+    // ---------------------------------------------------------------
     // buildGeneratePrompt: optional explanation parameter note
     // ---------------------------------------------------------------
 

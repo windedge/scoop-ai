@@ -2210,6 +2210,102 @@ class ScoopManifestGeneratorMockTest {
         )
     }
 
+    // =========================================================================
+    // installHandler (P3): the assist subgraph gets an install_app tool backed by
+    // the host callback, and prompts only mention it when the handler exists.
+    // =========================================================================
+
+    @Test
+    fun `assist session with installHandler can call install_app and still finalize`() = runBlocking {
+        val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
+        var installCalls = 0
+        var lastBucket: String? = null
+        var lastName: String? = null
+        val installJson = """{"success":true,"app":"initial-app","bucket":"main-bucket-x"}"""
+
+        // The handler is the host implementation; the engine must not add install logic.
+        val installHandler: suspend (bucket: String, name: String) -> String = { bucket, name ->
+            installCalls++
+            lastBucket = bucket
+            lastName = name
+            installJson
+        }
+        val mockInstallToolRef = com.scoopai.core.agent.InstallAppTool(installHandler)
+
+        val promptExecutor = getMockExecutor {
+            // Assist subgraph turn 1: model calls install_app (prompt advertises it).
+            mockLLMToolCall(
+                mockInstallToolRef,
+                com.scoopai.core.agent.InstallAppArgs(bucket = "main", name = "initial-app"),
+            ) onCondition { it.contains("manifest assistant") }
+            // Assist subgraph turn 2: the install result is the last message; model finalizes.
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(manifest = refinedManifest, explanation = "Installed.")) onCondition { it.contains("main-bucket-x") }
+            // Review agent approves the refined manifest (last message = manifest JSON).
+            mockLLMAnswer(reviewApprovedJson) onCondition { text -> text.trim().startsWith("{") && !text.contains("main-bucket-x") }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+            installHandler = installHandler,
+        )
+
+        val result = generator.assist(
+            manifestJson = initialManifest,
+            instruction = "Install this app from my main bucket as initial-app",
+            suggestedAppName = "initial-app",
+        )
+
+        assertEquals(1, installCalls, "assist subgraph must invoke install_app exactly once")
+        assertEquals("main", lastBucket, "model-provided bucket must reach the host handler")
+        assertEquals("initial-app", lastName, "model-provided name must reach the host handler")
+        assertTrue(!result.exhausted, "assist must pass after the install round")
+        assertTrue(result.manifest.contains("shortcuts"), "assist must still return the refined manifest")
+    }
+
+    @Test
+    fun `assist session without installHandler never mentions install_app in any prompt`() = runBlocking {
+        val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
+        val prompts = mutableListOf<String>()
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(manifest = refinedManifest)) onCondition { text ->
+                prompts.add(text)
+                text.contains("manifest assistant")
+            }
+            mockLLMAnswer(reviewApprovedJson) onCondition { text ->
+                prompts.add(text)
+                text.trim().startsWith("{")
+            }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+            // installHandler defaults to null: no host, no tool, no prompt section.
+        )
+
+        val result = generator.assist(
+            manifestJson = initialManifest,
+            instruction = "Add start menu shortcut for app.exe",
+            suggestedAppName = "initial-app",
+        )
+
+        assertTrue(!result.exhausted, "no-handler assist must pass")
+        assertTrue(
+            prompts.none { it.contains("install_app") },
+            "without a host handler no prompt may mention install_app, got ${prompts.size} prompts",
+        )
+    }
+
     // ---------------------------------------------------------------------
     // koogToolResultToString: tool event result conversion
 

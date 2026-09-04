@@ -39,6 +39,7 @@ import com.scoopai.core.tools.api.ScoopVerifier
 import com.scoopai.core.agent.VerifyInstallTool
 import com.scoopai.core.agent.SaveToBucketArgs
 import com.scoopai.core.agent.SaveToBucketTool
+import com.scoopai.core.agent.InstallAppTool
 import ai.koog.agents.core.tools.ToolBase
 import ai.koog.agents.core.dsl.builder.strategy
 import ai.koog.agents.ext.agent.subgraphWithTask
@@ -131,6 +132,14 @@ class ScoopManifestGenerator(
      * must not save mid-repair.
      */
     private val saveHandler: (suspend (SaveToBucketArgs) -> String)? = null,
+    /**
+     * Host-provided install callback backing the assist subgraph's `install_app`
+     * tool (architecture A: the host owns the install logic). When null the tool
+     * is not registered and the prompts omit the install guidance (CLI has no
+     * host). Only an Assist session wires the tool; a Generate session's repair
+     * loop must not install mid-repair.
+     */
+    private val installHandler: (suspend (bucket: String, name: String) -> String)? = null,
 ) {
     /**
      * Model with [LLMCapability.ToolChoice] stripped so that Koog uses its
@@ -182,6 +191,14 @@ class ScoopManifestGenerator(
         } else {
             null
         }
+        // install_app is assist-only, symmetric to save_to_bucket: a Generate
+        // session's repair loop must not install. Registered only when the host
+        // provides a handler, so CLI sessions run without it.
+        val installAppTool = if (request is SessionRequest.Assist) {
+            installHandler?.let { InstallAppTool(it) }
+        } else {
+            null
+        }
         val assistPrompt: suspend (AssistContext) -> String =
             {
                 if (it.explanatory) {
@@ -189,9 +206,10 @@ class ScoopManifestGenerator(
                         it,
                         installTestActive = assistVerifier != null,
                         saveActive = saveToBucketTool != null,
+                        installActive = installAppTool != null,
                     )
                 } else {
-                    buildRepairPrompt(it, saveActive = saveToBucketTool != null)
+                    buildRepairPrompt(it, saveActive = saveToBucketTool != null, installActive = installAppTool != null)
                 }
             }
 
@@ -307,7 +325,7 @@ class ScoopManifestGenerator(
             observer = observer,
             onPhaseOutput = onPhaseOutput,
             usedAppNamesProvider = usedAppNamesProvider,
-            assistTools = listOfNotNull(assistVerifyInstallTool, saveToBucketTool),
+            assistTools = listOfNotNull(assistVerifyInstallTool, saveToBucketTool, installAppTool),
         )
 
         val agentConfig = AIAgentConfig(
@@ -320,7 +338,7 @@ class ScoopManifestGenerator(
 
         // When assist subgraph tools are wired in, the agent-level registry must
         // also expose them so their schemas resolve at execution time.
-        val outerToolRegistry = listOfNotNull(assistVerifyInstallTool, saveToBucketTool)
+        val outerToolRegistry = listOfNotNull(assistVerifyInstallTool, saveToBucketTool, installAppTool)
             .fold(toolRegistry) { registry, assistTool -> registry + ToolRegistry { tool(assistTool) } }
 
         val agent: GraphAIAgent<SessionRequest, ManifestResult> = AIAgent(

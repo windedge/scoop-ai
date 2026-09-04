@@ -639,11 +639,16 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
  * When [saveActive] is true the assist subgraph exposes the `save_to_bucket`
  * tool backed by the host's save callback: call it only when the user explicitly
  * asks to save/bucket the manifest.
+ *
+ * When [installActive] is true the assist subgraph also exposes the `install_app`
+ * tool backed by the host's install callback: call it only when the user
+ * explicitly asks to install, and only after the manifest was saved to a bucket.
  */
 fun buildAssistPrompt(
     ctx: AssistContext,
     installTestActive: Boolean = false,
     saveActive: Boolean = false,
+    installActive: Boolean = false,
 ): String =
     buildAssistKernel(
         ctx,
@@ -651,6 +656,7 @@ fun buildAssistPrompt(
         includingEscape = true,
         installTestActive = installTestActive,
         saveActive = saveActive,
+        installActive = installActive,
  )
 
 /**
@@ -661,9 +667,16 @@ fun buildAssistPrompt(
  * told about the `answered` escape-hatch parameter. It also never gets the install
  * test honesty section: the repair loop is not user-facing. When [saveActive] is
  * true the schema still advertises save_to_bucket, so the prompt explicitly bans it.
+ * The same applies to [installActive] and the install_app tool.
  */
-fun buildRepairPrompt(ctx: AssistContext, saveActive: Boolean = false): String =
-    buildAssistKernel(ctx, opening = "You are a Scoop manifest repairer.", includingEscape = false, saveActive = saveActive)
+fun buildRepairPrompt(ctx: AssistContext, saveActive: Boolean = false, installActive: Boolean = false): String =
+    buildAssistKernel(
+        ctx,
+        opening = "You are a Scoop manifest repairer.",
+        includingEscape = false,
+        saveActive = saveActive,
+        installActive = installActive,
+    )
 
 /**
  * Shared kernel for the assist and repair prompts. The two callers differ only in
@@ -677,6 +690,7 @@ private fun buildAssistKernel(
     includingEscape: Boolean,
     installTestActive: Boolean = false,
     saveActive: Boolean = false,
+    installActive: Boolean = false,
 ): String = buildString {
     appendLine("⚠️ **CRITICAL: Do NOT change `version` or `url` to a different release.** The version was fixed during the analyze phase. If a listed issue cannot be fixed without changing version, LEAVE it unfixed — better to ship with a warning than to downgrade the version.")
     appendLine()
@@ -752,6 +766,20 @@ private fun buildAssistKernel(
         } else {
             // Repair loop: saving mid-repair would persist an unverified manifest.
             appendLine("- Saving to a bucket is not part of the repair loop. Do NOT call `save_to_bucket` here.")
+        }
+    }
+    if (installActive) {
+        if (ctx.explanatory) {
+            appendLine()
+            appendLine("## Install App")
+            appendLine("You have the `install_app` tool: it installs the app from its saved bucket manifest and returns JSON (`success`, `app`, `bucket`, `message`, `error`).")
+            appendLine("- Call it ONLY when the user explicitly asks to install the app. Do NOT call it proactively.")
+            appendLine("- Precondition: the manifest must already be saved to a bucket. If the user asks to install but has not saved the manifest yet, call `save_to_bucket` first, then install.")
+            appendLine("- `bucket` and `name` are required: use the bucket and name the manifest was saved under.")
+            appendLine("- After it returns, honestly report the outcome, including when the app is already installed.")
+        } else {
+            // Repair loop: installing mid-repair would act on an unverified manifest.
+            appendLine("- Installing the app is not part of the repair loop. Do NOT call `install_app` here.")
         }
     }
     appendLine()
