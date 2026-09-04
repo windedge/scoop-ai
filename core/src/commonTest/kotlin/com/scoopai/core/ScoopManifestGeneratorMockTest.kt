@@ -2116,6 +2116,100 @@ class ScoopManifestGeneratorMockTest {
         assertTrue(result.manifest.contains("shortcuts"), "assist must still apply the change")
     }
 
+    // =========================================================================
+    // saveHandler (P2): the assist subgraph gets a save_to_bucket tool backed by
+    // the host callback, and prompts only mention it when the handler exists.
+    // =========================================================================
+
+    @Test
+    fun `assist session with saveHandler can call save_to_bucket and still finalize`() = runBlocking {
+        val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
+        var saveCalls = 0
+        var lastArgs: com.scoopai.core.agent.SaveToBucketArgs? = null
+        val saveJson = """{"success":true,"path":"C:/scoop/buckets/main/initial-app.json","bucket":"main","name":"initial-app"}"""
+
+        // The handler is the host implementation; the engine must not add save logic.
+        val saveHandler: suspend (com.scoopai.core.agent.SaveToBucketArgs) -> String = { args ->
+            saveCalls++
+            lastArgs = args
+            saveJson
+        }
+        val mockSaveToolRef = com.scoopai.core.agent.SaveToBucketTool(saveHandler)
+
+        val promptExecutor = getMockExecutor {
+            // Assist subgraph turn 1: model calls save_to_bucket (prompt advertises it).
+            mockLLMToolCall(
+                mockSaveToolRef,
+                com.scoopai.core.agent.SaveToBucketArgs(bucket = "main", name = "initial-app"),
+            ) onCondition { it.contains("manifest assistant") }
+            // Assist subgraph turn 2: the save result is the last message; model finalizes.
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(manifest = refinedManifest, explanation = "Saved to main.")) onCondition { it.contains("initial-app.json") }
+            // Review agent approves the refined manifest (last message = manifest JSON).
+            mockLLMAnswer(reviewApprovedJson) onCondition { text -> text.trim().startsWith("{") && !text.contains("initial-app.json") }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+            saveHandler = saveHandler,
+        )
+
+        val result = generator.assist(
+            manifestJson = initialManifest,
+            instruction = "Save this manifest to my main bucket as initial-app",
+            suggestedAppName = "initial-app",
+        )
+
+        assertEquals(1, saveCalls, "assist subgraph must invoke save_to_bucket exactly once")
+        assertEquals("main", lastArgs?.bucket, "model-provided bucket must reach the host handler")
+        assertEquals("initial-app", lastArgs?.name, "model-provided name must reach the host handler")
+        assertTrue(!result.exhausted, "assist must pass after the save round")
+        assertTrue(result.manifest.contains("shortcuts"), "assist must still return the refined manifest")
+    }
+
+    @Test
+    fun `assist session without saveHandler never mentions save_to_bucket in any prompt`() = runBlocking {
+        val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
+        val prompts = mutableListOf<String>()
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(manifest = refinedManifest)) onCondition { text ->
+                prompts.add(text)
+                text.contains("manifest assistant")
+            }
+            mockLLMAnswer(reviewApprovedJson) onCondition { text ->
+                prompts.add(text)
+                text.trim().startsWith("{")
+            }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+            // saveHandler defaults to null: no host, no tool, no prompt section.
+        )
+
+        val result = generator.assist(
+            manifestJson = initialManifest,
+            instruction = "Add start menu shortcut for app.exe",
+            suggestedAppName = "initial-app",
+        )
+
+        assertTrue(!result.exhausted, "no-handler assist must pass")
+        assertTrue(
+            prompts.none { it.contains("save_to_bucket") },
+            "without a host handler no prompt may mention save_to_bucket, got ${prompts.size} prompts",
+        )
+    }
+
     // ---------------------------------------------------------------------
     // koogToolResultToString: tool event result conversion
 

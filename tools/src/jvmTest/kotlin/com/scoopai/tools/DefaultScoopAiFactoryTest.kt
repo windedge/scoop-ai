@@ -198,6 +198,28 @@ class DefaultScoopAiFactoryTest {
     }
 
     // ---------------------------------------------------------------
+    // save_to_bucket host handler pass-through (P2)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `createGenerator accepts saveToBucketHandler without throwing`() {
+        var invoked = false
+        val generator = DefaultScoopAiFactory.createGenerator(
+            config = ScoopAiConfig(
+                provider = "deepseek",
+                apiKey = "sk-fake",
+                nonInteractive = true,
+            ),
+            saveToBucketHandler = { _, _, _ ->
+                invoked = true
+                """{"success":true,"path":"x"}"""
+            },
+        )
+        assertNotNull(generator)
+        assertEquals(false, invoked, "construction must not invoke the handler")
+    }
+
+    // ---------------------------------------------------------------
     // Install verification is always on: no config switch gates the
     // verifier creation, so the wired verifiers resolve exactly when a
     // bare scoop probe succeeds on this machine.

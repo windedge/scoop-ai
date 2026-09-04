@@ -37,6 +37,8 @@ import com.scoopai.core.tools.api.GitHubApi
 import com.scoopai.core.tools.api.ManifestIo
 import com.scoopai.core.tools.api.ScoopVerifier
 import com.scoopai.core.agent.VerifyInstallTool
+import com.scoopai.core.agent.SaveToBucketArgs
+import com.scoopai.core.agent.SaveToBucketTool
 import ai.koog.agents.core.tools.ToolBase
 import ai.koog.agents.core.dsl.builder.strategy
 import ai.koog.agents.ext.agent.subgraphWithTask
@@ -121,6 +123,14 @@ class ScoopManifestGenerator(
      * install budgets. When null the assist subgraph stays tool-free.
      */
     private val assistVerifier: ScoopVerifier? = null,
+    /**
+     * Host-provided save callback backing the assist subgraph's `save_to_bucket`
+     * tool (architecture A: the host owns the save logic). When null the tool is
+     * not registered and the prompts omit the save guidance (CLI has no host).
+     * Only an Assist session wires the tool; a Generate session's repair loop
+     * must not save mid-repair.
+     */
+    private val saveHandler: (suspend (SaveToBucketArgs) -> String)? = null,
 ) {
     /**
      * Model with [LLMCapability.ToolChoice] stripped so that Koog uses its
@@ -163,10 +173,26 @@ class ScoopManifestGenerator(
                     research,
                 )
             }
+
+        // save_to_bucket is assist-only: a Generate session's repair loop must not
+        // save an unverified manifest. Registered only when the host provides a
+        // handler, so CLI sessions run without it.
+        val saveToBucketTool = if (request is SessionRequest.Assist) {
+            saveHandler?.let { SaveToBucketTool(it) }
+        } else {
+            null
+        }
         val assistPrompt: suspend (AssistContext) -> String =
             {
-                if (it.explanatory) buildAssistPrompt(it, installTestActive = assistVerifier != null)
-                else buildRepairPrompt(it)
+                if (it.explanatory) {
+                    buildAssistPrompt(
+                        it,
+                        installTestActive = assistVerifier != null,
+                        saveActive = saveToBucketTool != null,
+                    )
+                } else {
+                    buildRepairPrompt(it, saveActive = saveToBucketTool != null)
+                }
             }
 
         // The verify_install tool resolves the manifest at execution time so each
@@ -281,7 +307,7 @@ class ScoopManifestGenerator(
             observer = observer,
             onPhaseOutput = onPhaseOutput,
             usedAppNamesProvider = usedAppNamesProvider,
-            assistTools = listOfNotNull(assistVerifyInstallTool),
+            assistTools = listOfNotNull(assistVerifyInstallTool, saveToBucketTool),
         )
 
         val agentConfig = AIAgentConfig(
@@ -292,11 +318,10 @@ class ScoopManifestGenerator(
             maxAgentIterations = maxIterations,
         )
 
-        // When an assist verifier is wired in, the agent-level registry must also
-        // expose the tool so the assist subgraph's schema resolves at execution time.
-        val outerToolRegistry = assistVerifyInstallTool?.let { assistTool ->
-            toolRegistry + ToolRegistry { tool(assistTool) }
-        } ?: toolRegistry
+        // When assist subgraph tools are wired in, the agent-level registry must
+        // also expose them so their schemas resolve at execution time.
+        val outerToolRegistry = listOfNotNull(assistVerifyInstallTool, saveToBucketTool)
+            .fold(toolRegistry) { registry, assistTool -> registry + ToolRegistry { tool(assistTool) } }
 
         val agent: GraphAIAgent<SessionRequest, ManifestResult> = AIAgent(
             promptExecutor = promptExecutor,

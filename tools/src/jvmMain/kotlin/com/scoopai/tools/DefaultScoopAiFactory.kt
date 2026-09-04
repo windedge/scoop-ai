@@ -44,6 +44,12 @@ object DefaultScoopAiFactory {
          * Optional questionnaire callback for AskUser tool interaction.
          */
         questionnaireHandler: (suspend (List<Question>) -> String)? = null,
+        /**
+         * Optional host save callback backing the assist session's `save_to_bucket`
+         * tool. Signature: (bucket, name, overwrite) -> result JSON. When non-null
+         * the assist subgraph exposes the tool; when null (e.g. CLI) it is absent.
+         */
+        saveToBucketHandler: (suspend (bucket: String?, name: String?, overwrite: Boolean) -> String)? = null,
     ): ScoopManifestGenerator {
         val resolved = ProviderConfigResolver.resolve(
             cliProvider = config.provider,
@@ -97,6 +103,13 @@ object DefaultScoopAiFactory {
             usedAppNamesProvider = usedAppNamesProvider,
             scoopVerifier = scoopVerifier,
             assistVerifier = assistVerifier,
+            saveHandler = saveToBucketHandler?.let(::saveHandlerAdapter),
         )
     }
+
+    /** Adapts the flat host save callback (bucket, name, overwrite) to the tool's args type. */
+    private fun saveHandlerAdapter(
+        handler: suspend (bucket: String?, name: String?, overwrite: Boolean) -> String,
+    ): suspend (com.scoopai.core.agent.SaveToBucketArgs) -> String =
+        { handler(it.bucket, it.name, it.overwrite) }
 }

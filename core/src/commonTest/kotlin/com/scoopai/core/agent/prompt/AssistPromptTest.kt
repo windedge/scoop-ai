@@ -207,6 +207,87 @@ class AssistPromptTest {
     }
 
     // ---------------------------------------------------------------
+    // buildAssistPrompt / buildRepairPrompt: save_to_bucket guidance (P2)
+    // ---------------------------------------------------------------
+
+    private fun repairContext() = AssistContext(
+        manifest = """{"version":"1.0.0"}""",
+        feedback = "fix bin",
+        retryCount = 1,
+        explanatory = false,
+    )
+
+    @Test
+    fun `buildAssistPrompt with saveActive gives save_to_bucket usage guidance`() {
+        val prompt = buildAssistPrompt(assistContext(), saveActive = true)
+
+        assertTrue(
+            prompt.contains("save_to_bucket"),
+            "active prompt must expose the save_to_bucket tool, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("explicitly"),
+            "active prompt must gate save_to_bucket behind an explicit user request, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("overwrite=true"),
+            "active prompt must describe the overwrite retry, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("needsOverwrite"),
+            "active prompt must explain the already-exists signal, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt with saveActive says bucket and name default to host rules when omitted`() {
+        val prompt = buildAssistPrompt(assistContext(), saveActive = true)
+
+        assertTrue(
+            prompt.contains("optional"),
+            "save guidance must mark bucket and name as optional, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("default"),
+            "save guidance must say the host applies defaults when omitted, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt without saveActive does not mention save_to_bucket`() {
+        val prompt = buildAssistPrompt(assistContext(), installTestActive = true)
+
+        assertFalse(
+            prompt.contains("save_to_bucket"),
+            "no-handler prompt must not advertise save_to_bucket, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildRepairPrompt with saveActive forbids save_to_bucket`() {
+        val prompt = buildRepairPrompt(repairContext(), saveActive = true)
+
+        assertTrue(
+            prompt.contains("save_to_bucket"),
+            "repair prompt with a handler must explicitly ban save_to_bucket, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("Do NOT call `save_to_bucket`"),
+            "repair prompt must forbid saving mid-repair, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildRepairPrompt without saveActive does not mention save_to_bucket`() {
+        val prompt = buildRepairPrompt(repairContext())
+
+        assertFalse(
+            prompt.contains("save_to_bucket"),
+            "no-handler repair prompt must not mention save_to_bucket, got:\n$prompt",
+        )
+    }
+
+    // ---------------------------------------------------------------
     // buildGeneratePrompt: optional explanation parameter note
     // ---------------------------------------------------------------
 

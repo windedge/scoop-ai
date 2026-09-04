@@ -623,7 +623,8 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
  * Builds the prompt for the ASSIST phase (user follow-up, explanatory = true).
  *
  * The LLM receives an [AssistContext] containing the current manifest and the
- * user's instruction. It has NO tools available, only finalize_task_result.
+ * user's instruction. Besides finalize_task_result it may get tools
+ * (verify_install when [installTestActive], save_to_bucket when [saveActive]).
  * The prompt focuses the LLM on applying the user's requested modification, and
  * additionally provides a Question Escape Hatch: if the user message is a pure
  * question about the manifest (no change request), the LLM answers via the
@@ -634,13 +635,22 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
  * tool: run it only when the user explicitly asks, in its own turn, then hand the
  * fixed manifest back via `finalize_task_result` (the verify phase re-tests).
  * When false the prompt honestly states that no install test ran.
+ *
+ * When [saveActive] is true the assist subgraph exposes the `save_to_bucket`
+ * tool backed by the host's save callback: call it only when the user explicitly
+ * asks to save/bucket the manifest.
  */
-fun buildAssistPrompt(ctx: AssistContext, installTestActive: Boolean = false): String =
+fun buildAssistPrompt(
+    ctx: AssistContext,
+    installTestActive: Boolean = false,
+    saveActive: Boolean = false,
+): String =
     buildAssistKernel(
         ctx,
         opening = "You are a Scoop manifest assistant.",
         includingEscape = true,
         installTestActive = installTestActive,
+        saveActive = saveActive,
  )
 
 /**
@@ -649,10 +659,11 @@ fun buildAssistPrompt(ctx: AssistContext, installTestActive: Boolean = false): S
  * Same shared kernel as [buildAssistPrompt] but without the Question Escape Hatch;
  * the internal repair loop is never a pure-question follow-up, so it must not be
  * told about the `answered` escape-hatch parameter. It also never gets the install
- * test honesty section: the repair loop is not user-facing.
+ * test honesty section: the repair loop is not user-facing. When [saveActive] is
+ * true the schema still advertises save_to_bucket, so the prompt explicitly bans it.
  */
-fun buildRepairPrompt(ctx: AssistContext): String =
-    buildAssistKernel(ctx, opening = "You are a Scoop manifest repairer.", includingEscape = false)
+fun buildRepairPrompt(ctx: AssistContext, saveActive: Boolean = false): String =
+    buildAssistKernel(ctx, opening = "You are a Scoop manifest repairer.", includingEscape = false, saveActive = saveActive)
 
 /**
  * Shared kernel for the assist and repair prompts. The two callers differ only in
@@ -665,6 +676,7 @@ private fun buildAssistKernel(
     opening: String,
     includingEscape: Boolean,
     installTestActive: Boolean = false,
+    saveActive: Boolean = false,
 ): String = buildString {
     appendLine("⚠️ **CRITICAL: Do NOT change `version` or `url` to a different release.** The version was fixed during the analyze phase. If a listed issue cannot be fixed without changing version, LEAVE it unfixed — better to ship with a warning than to downgrade the version.")
     appendLine()
@@ -727,6 +739,20 @@ private fun buildAssistKernel(
     } else {
         // Repair loop: the verify phase owns install tests and re-runs them per round.
         appendLine("- Install testing is handled automatically by the verify phase. Do NOT call `verify_install` here.")
+    }
+    if (saveActive) {
+        if (ctx.explanatory) {
+            appendLine()
+            appendLine("## Save to Bucket")
+            appendLine("You have the `save_to_bucket` tool: it saves the current manifest into a local Scoop bucket and returns JSON (`success`, `path`, `bucket`, `name`, `error`, `needsOverwrite`).")
+            appendLine("- Call it ONLY when the user explicitly asks to save or bucket the manifest. Do NOT call it proactively.")
+            appendLine("- `bucket` and `name` are optional: omit them to let the host apply its defaults (bucket: last used, then main, then the first bucket; name: the suggested app name).")
+            appendLine("- After it returns, honestly report the outcome: state the saved path on success, or the error otherwise.")
+            appendLine("- If the result contains `needsOverwrite: true`, the target file already exists. Ask the user whether to overwrite (via the Question Escape Hatch: `finalize_task_result` with `answered=true` and the question in `explanation`); once the user confirms, call `save_to_bucket` again with `overwrite=true`.")
+        } else {
+            // Repair loop: saving mid-repair would persist an unverified manifest.
+            appendLine("- Saving to a bucket is not part of the repair loop. Do NOT call `save_to_bucket` here.")
+        }
     }
     appendLine()
     appendLine("## Name Conflict Resolution")
