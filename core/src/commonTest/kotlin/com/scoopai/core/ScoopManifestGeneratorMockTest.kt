@@ -1476,6 +1476,128 @@ class ScoopManifestGeneratorMockTest {
     }
 
     @Test
+    fun `repair round explanation is combined under the generate summary instead of overwriting it`() = runBlocking {
+        // Regression: a fresh generate whose verify keeps failing drives internal repair
+        // rounds that finalize with a repair explanation. That repair text used to
+        // overwrite the generate round's manifest summary in ManifestResult.explanation.
+        // It must now be appended under the generate summary.
+        val (researchResult, analyzeResult, manifestJson) = explanationTestFixtures()
+        val generateExplanation = "Generated a portable zip manifest keeping fd.exe on PATH."
+        val repairExplanation = "Fixed the hardcoded autoupdate URL and rebalanced the 64bit block."
+
+        val mockManifestIo = object : ManifestIo {
+            override fun validate(json: String?) = """{"valid":false,"errors":["test validation error"]}"""
+            override fun write(json: String?, path: String?) = ""
+            override fun read(path: String?) = ""
+        }
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = manifestJson, explanation = generateExplanation)
+            ) onRequestContains "GENERATE phase"
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = manifestJson, explanation = repairExplanation)
+            ) onRequestContains "manifest repairer"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 200,
+            manifestIo = mockManifestIo,
+        )
+
+        val result = generator.generate("https://github.com/sharkdp/fd")
+
+        assertTrue(result.exhausted, "verify keeps failing so the run must exhaust via the repair loop")
+        assertTrue(
+            result.explanation != null && result.explanation!!.startsWith(generateExplanation),
+            "explanation must begin with the generate manifest summary, got: ${result.explanation}",
+        )
+        assertTrue(
+            result.explanation!!.contains("Fix applied: $repairExplanation"),
+            "explanation must carry the repair fix note, got: ${result.explanation}",
+        )
+    }
+
+    @Test
+    fun `no-repair generate returns the generate explanation uncombined`() = runBlocking {
+        // The generate phase finalizes with an explanation and verify passes first try:
+        // the explanation must be returned as-is, with no "Fix applied" repair suffix.
+        val (researchResult, analyzeResult, manifestJson) = explanationTestFixtures()
+        val explanationText = "Generated a portable zip manifest keeping fd.exe on PATH."
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = manifestJson, explanation = explanationText)
+            ) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""") onCondition { text -> text.trim().startsWith("{") }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+        )
+
+        val result = generator.generate("https://github.com/sharkdp/fd")
+
+        assertEquals(explanationText, result.explanation)
+        assertTrue(!result.exhausted, "verify passes first try, so the run must not exhaust")
+        assertTrue(
+            result.explanation?.contains("Fix applied:") == false,
+            "no-repair run must not append a fix note, got: ${result.explanation}",
+        )
+    }
+
+    @Test
+    fun `assist explanation stays the user-facing reply without a generate prefix`() = runBlocking {
+        // Assist sessions never run a generate subgraph, so no generate summary is
+        // recorded and the final explanation must remain exactly the assist reply.
+        val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
+        val explanationText = "Added the requested start menu shortcut."
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = refinedManifest, explanation = explanationText)
+            ) onRequestContains "manifest assistant"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry.EMPTY,
+            maxIterations = 50,
+        )
+
+        val result = generator.assist(
+            manifestJson = initialManifest,
+            instruction = "Add start menu shortcut for app.exe",
+            suggestedAppName = "initial-app",
+        )
+
+        assertEquals(explanationText, result.explanation)
+        assertTrue(
+            result.explanation?.contains("Fix applied:") == false,
+            "assist reply must not be rewritten with a fix note, got: ${result.explanation}",
+        )
+    }
+
+    @Test
     fun `assist flows the finalize explanation into ManifestResult explanation`() = runBlocking {
         // User-driven assist (generator.assist, explanatory=true): the finalize
         // explanation must flow end-to-end into ManifestResult.explanation.

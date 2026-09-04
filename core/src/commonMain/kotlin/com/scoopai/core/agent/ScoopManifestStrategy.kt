@@ -67,6 +67,16 @@ internal fun assistPhaseName(ctx: AssistContext): String = if (ctx.explanatory) 
  * escape hatch (the user message was a question, so the manifest is echoed back
  * unmodified).
  */
+
+// Repair rounds finalize with their own explanation; combine it under the generate
+// summary when they differ, otherwise keep the single explanation as-is. An assist
+// session never runs the generate edge, so generateExplanationKey stays null.
+internal suspend fun AIAgentStorageAPI.getCombinedExplanation(generateKey: AIAgentStorageKey<String>, finalKey: AIAgentStorageKey<String>): String? {
+    val gen = get(generateKey)
+    val final = get(finalKey)
+    return if (gen != null && final != null && final != gen) "$gen\n\nFix applied: $final" else final
+}
+
 @kotlinx.serialization.Serializable
 private data class CheckedFinalize(
     val payload: FinalizePayload,
@@ -149,6 +159,7 @@ fun scoopManifestStrategy(
     val appNameConflictKey = createStorageKey<String>("app_name_conflict")
     val finalManifestKey = createStorageKey<String>("final_manifest")
     val explanationKey = createStorageKey<String>("final_explanation")
+    val generateExplanationKey = createStorageKey<String>("generate_explanation")
 
     // ── Phase timing (for progress logging) ────────────────────
     var researchStart: TimeMark? = null
@@ -329,7 +340,7 @@ fun scoopManifestStrategy(
         ManifestResult(
             manifest = extractJsonBlock(manifest)?.let { formatManifestJson(it) } ?: manifest,
             suggestedAppName = storage.get(suggestedAppNameKey),
-            explanation = storage.get(explanationKey),
+            explanation = storage.getCombinedExplanation(generateExplanationKey, explanationKey),
             issues = listOfNotNull(conflict),
         )
     }
@@ -346,7 +357,7 @@ fun scoopManifestStrategy(
             suggestedAppName = storage.get(suggestedAppNameKey),
             exhausted = true,
             issues = allIssues,
-            explanation = storage.get(explanationKey),
+            explanation = storage.getCombinedExplanation(generateExplanationKey, explanationKey),
         )
     }
 
@@ -415,7 +426,10 @@ fun scoopManifestStrategy(
         // Only write non-blank explanations: internal repair rounds do not require
         // an explanation, and a null/blank overwrite would lose the explanation from
         // the round that first produced it (architecture proposal 4.3).
-        payload.explanation?.trim()?.takeIf { it.isNotEmpty() }?.let { explanation -> storage.set(explanationKey, explanation) }
+        payload.explanation?.trim()?.takeIf { it.isNotEmpty() }?.let { explanation ->
+            storage.set(explanationKey, explanation)
+            storage.set(generateExplanationKey, explanation)
+        }
         payload.manifest          // normalize still receives a String, signature unchanged
     })
 
