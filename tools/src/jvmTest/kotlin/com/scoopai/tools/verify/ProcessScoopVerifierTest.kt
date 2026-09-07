@@ -10,6 +10,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Tag
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.Test
@@ -348,6 +349,57 @@ class ProcessScoopVerifierTest {
             isWindows = true,
         )
         assertEquals(listOf("cmd", "/c", "scoop"), command)
+    }
+
+    // -----------------------------------------------------------------------
+    // tryCreateDetailed：探测失败时返回可诊断的 reason（assist prompt 根因）
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `tryCreateDetailed returns null verifier and a non-empty reason when the probe throws`() {
+        val (verifier, reason) = ProcessScoopVerifier.tryCreateDetailed(
+            probe = { throw IOException("cannot start process") },
+        )
+
+        assertEquals(null, verifier, "a failed probe must not create a verifier")
+        assertTrue(!reason.isNullOrBlank(), "failure must produce a diagnostic reason")
+        assertTrue(
+            reason!!.contains("cannot start process"),
+            "reason must include the exception message, got: $reason",
+        )
+    }
+
+    @Test
+    fun `tryCreateDetailed returns null verifier and a non-empty reason when the probe exits non-zero`() {
+        val (verifier, reason) = ProcessScoopVerifier.tryCreateDetailed(
+            probe = { ScoopProcessResult(9009, "not found") },
+        )
+
+        assertEquals(null, verifier, "a failed probe must not create a verifier")
+        assertTrue(!reason.isNullOrBlank(), "failure must produce a diagnostic reason")
+        assertTrue(
+            reason!!.contains("9009"),
+            "reason must mention the exit code, got: $reason",
+        )
+    }
+
+    @Test
+    fun `tryCreateDetailed returns a verifier and null reason when the probe succeeds`() {
+        val (verifier, reason) = ProcessScoopVerifier.tryCreateDetailed(
+            probe = { ScoopProcessResult(0, "Current Scoop version:") },
+        )
+
+        assertTrue(verifier != null, "a successful probe must produce a verifier")
+        assertEquals(null, reason, "success must not carry a disabled reason")
+    }
+
+    @Test
+    fun `tryCreate delegates to tryCreateDetailed and succeeds when the probe succeeds`() {
+        val verifier = ProcessScoopVerifier.tryCreateDetailed(
+            probe = { ScoopProcessResult(0, "ok") },
+        ).first
+
+        assertTrue(verifier != null, "old tryCreate semantics must keep working")
     }
 
     // -----------------------------------------------------------------------

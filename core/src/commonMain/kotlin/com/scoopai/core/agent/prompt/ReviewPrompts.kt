@@ -9,6 +9,20 @@ package com.scoopai.core.agent.prompt
  */
 val REVIEW_AGENT_SYSTEM_PROMPT: String = buildReviewSystemPrompt(hasInstallTest = false)
 
+/** Marker prefixed to the manifest when the previous install test failed. */
+private const val RETEST_NOTE =
+    "[[NOTE]] The previous install test FAILED and a fix was applied since. " +
+        "You MUST run verify_install again this round to confirm the fix.\n\n"
+
+/**
+ * Wraps the manifest handed to the review agent. When [lastInstallTestFailed] is
+ * true the manifest is prefixed with a retest note so the review agent re-runs
+ * `verify_install` this round instead of trusting the earlier failed result.
+ * Otherwise the manifest passes through unchanged.
+ */
+internal fun reviewManifestWithRetestNote(manifest: String, lastInstallTestFailed: Boolean): String =
+    if (lastInstallTestFailed) RETEST_NOTE + manifest else manifest
+
 /**
  * Builds the review agent system prompt. The base body is identical to the legacy
  * [REVIEW_AGENT_SYSTEM_PROMPT]; when [hasInstallTest] is true, an install-test tool

@@ -74,4 +74,37 @@ class ReviewPromptsTest {
             "guidance must discourage calling the tool on every manifest, got:\n$prompt",
         )
     }
+
+    // -----------------------------------------------------------------------
+    // reviewManifestWithRetestNote: install-failure retest marker (P1)
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `reviewManifestWithRetestNote prefixes the retest note when the last install test failed`() {
+        val manifest = """{"version":"1.0.0","bin":["fd.exe"]}"""
+        val wrapped = reviewManifestWithRetestNote(manifest, lastInstallTestFailed = true)
+
+        assertTrue(
+            wrapped.startsWith("[[NOTE]]"),
+            "failed-install wrap must prefix the NOTE marker, got:\n$wrapped",
+        )
+        assertTrue(
+            wrapped.contains("MUST run verify_install again"),
+            "the note must mandate a verify_install rerun, got:\n$wrapped",
+        )
+        assertTrue(
+            wrapped.contains(manifest),
+            "the wrapped payload must contain the full manifest verbatim, got:\n$wrapped",
+        )
+    }
+
+    @Test
+    fun `reviewManifestWithRetestNote returns the manifest unchanged when no install failure pending`() {
+        val manifest = """{"version":"1.0.0","bin":["fd.exe"]}"""
+        assertEquals(
+            manifest,
+            reviewManifestWithRetestNote(manifest, lastInstallTestFailed = false),
+            "without a pending install failure the manifest must pass through untouched",
+        )
+    }
 }

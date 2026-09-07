@@ -90,9 +90,10 @@ object DefaultScoopAiFactory {
         // instances are created so the review agent and the assist/repair subgraph
         // each get their own verifier with an independent install budget; when
         // scoop is unavailable both stay null and the subgraphs run tool-free.
-        fun verifier() = ProcessScoopVerifier.tryCreate(cache = cache)
-        val scoopVerifier = verifier()
-        val assistVerifier = verifier()
+        // The assist probe reports the failure reason so the prompt can diagnose
+        // "install test not triggered" complaints for the user.
+        val scoopVerifier = ProcessScoopVerifier.tryCreate(cache = cache)
+        val (assistVerifier, assistUnavailableReason) = ProcessScoopVerifier.tryCreateDetailed(cache = cache)
 
         return ScoopManifestGenerator(
             promptExecutor = resolved.createExecutor(),
@@ -109,6 +110,7 @@ object DefaultScoopAiFactory {
             usedAppNamesProvider = usedAppNamesProvider,
             scoopVerifier = scoopVerifier,
             assistVerifier = assistVerifier,
+            assistTestUnavailableReason = assistUnavailableReason,
             saveHandler = saveToBucketHandler?.let(::saveHandlerAdapter),
             installHandler = installAppHandler,
         )

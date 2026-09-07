@@ -72,30 +72,43 @@ class ProcessScoopVerifier private constructor(
         }
 
         /** scoop --version 探测成功才创建；scoop 不可用时返回 null 并输出原因到 stderr */
-        fun tryCreate(cache: ScoopCacheManager? = null, scoopRoot: Path? = null): ProcessScoopVerifier? {
+        fun tryCreate(cache: ScoopCacheManager? = null, scoopRoot: Path? = null): ProcessScoopVerifier? =
+            tryCreateDetailed(cache = cache, scoopRoot = scoopRoot).first
+
+        /**
+         * tryCreate 的可诊断版本：额外返回 scoop 不可用的原因，assist prompt 需把
+         * 根因转述给用户。成功时 verifier 非 null 且 reason 为 null。probe 仅测试注入。
+         */
+        internal fun tryCreateDetailed(
+            cache: ScoopCacheManager? = null,
+            scoopRoot: Path? = null,
+            probe: (List<String>) -> ScoopProcessResult = { cmd ->
+                runBlocking { runProcess(cmd, timeoutMs = 30_000) }
+            },
+        ): Pair<ProcessScoopVerifier?, String?> {
             val resolvedHome = Path.of(System.getProperty("user.home"))
             val resolvedScoopEnv = System.getenv("SCOOP")
             val resolvedCommand = resolveScoopCommand(resolvedHome, resolvedScoopEnv)
             val cmd = resolvedCommand.joinToString(" ")
 
-            fun disabled(reason: String) =
+            fun fail(reason: String): Pair<ProcessScoopVerifier?, String?> {
                 System.err.println("scoop verification disabled: $reason. Install tests will be skipped.")
+                return null to reason
+            }
 
             val check = try {
-                runBlocking { runProcess(resolvedCommand + "--version", timeoutMs = 30_000) }
+                probe(resolvedCommand + "--version")
             } catch (e: Exception) {
-                disabled("cannot run '$cmd --version' (${e.message})")
-                return null
+                return fail("cannot run '$cmd --version' (${e.message})")
             }
             if (check.exitCode != 0) {
-                disabled("'$cmd --version' exited with ${check.exitCode}")
-                return null
+                return fail("'$cmd --version' exited with ${check.exitCode}")
             }
             return ProcessScoopVerifier(
                 commandRunner = { args -> runScoopCommand(resolvedCommand, *args.toTypedArray()) },
                 scoopRoot = scoopRoot ?: defaultScoopRoot(),
                 cache = cache,
-            )
+            ) to null
         }
 
         /** 测试缝：注入 fake commandRunner 与 scoopRoot */

@@ -18,6 +18,7 @@ import com.scoopai.core.agent.PrefetchResult
 import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.artifacts.ResumeData
 import com.scoopai.core.agent.prompt.buildReviewSystemPrompt
+import com.scoopai.core.agent.prompt.reviewManifestWithRetestNote
 import com.scoopai.core.observer.GenerationObserver
 import com.scoopai.core.agent.prompt.buildAnalyzePrompt
 import com.scoopai.core.agent.prompt.buildGeneratePrompt
@@ -59,6 +60,23 @@ internal fun koogToolResultToString(el: JSONElement?): String = when {
     el is JSONLiteral && el.isString -> el.content
     else -> el.toString()
 }
+
+/**
+ * The assist subgraph's `__ask_user__` tool, picked from the host registry when
+ * the session is an Assist session: a save without an explicit bucket ends in a
+ * needsBucket reply, and the model needs ask_user to offer the bucket choice.
+ * A Generate session's repair loop must never ask the user, so it stays null.
+ */
+internal fun assistAskUserTool(assistOnly: Boolean, tools: List<ToolBase<*, *>>): ToolBase<*, *>? =
+    if (assistOnly) tools.firstOrNull { it.name == PhaseTools.ASK_USER } else null
+
+/**
+ * Folds the assist-only tools into the agent registry. ToolRegistry.plus
+ * dedupes by tool name (first wins), so a tool already present in the base
+ * registry (e.g. ask_user) is not duplicated.
+ */
+internal fun assistToolsFold(base: ToolRegistry, assistTools: List<ToolBase<*, *>>): ToolRegistry =
+    base + ToolRegistry { tools(assistTools) }
 
 /**
  * Generates a Scoop manifest using a Koog graph strategy with three LLM phases
@@ -124,6 +142,13 @@ class ScoopManifestGenerator(
      * install budgets. When null the assist subgraph stays tool-free.
      */
     private val assistVerifier: ScoopVerifier? = null,
+    /**
+     * When [assistVerifier] is null, the reason the assist-side scoop probe
+     * failed (from ProcessScoopVerifier.tryCreateDetailed). Forwarded to the
+     * assist prompt so the model can tell the user why install testing cannot
+     * run in this session.
+     */
+    private val assistTestUnavailableReason: String? = null,
     /**
      * Host-provided save callback backing the assist subgraph's `save_to_bucket`
      * tool (architecture A: the host owns the save logic). When null the tool is
@@ -197,11 +222,16 @@ class ScoopManifestGenerator(
                         installTestActive = assistVerifier != null,
                         saveActive = saveToBucketTool != null,
                         installActive = installAppTool != null,
+                        assistTestUnavailableReason = assistTestUnavailableReason,
                     )
                 } else {
                     buildRepairPrompt(it, saveActive = saveToBucketTool != null, installActive = installAppTool != null)
                 }
             }
+
+        // Tracks whether the last review-side verify_install failed. If so, the next
+        // review round gets a retest note so the agent re-runs the install test.
+        var lastInstallTestFailed = false
 
         // The verify_install tool resolves the manifest at execution time so each
         // review round installs the manifest currently under review.
@@ -221,7 +251,11 @@ class ScoopManifestGenerator(
 
         // All assist-subgraph tools, shared by the strategy registration and the
         // agent-level registry (schemas must resolve there at execution time).
-        val wiredAssistTools = listOfNotNull(assistVerifyInstallTool, saveToBucketTool, installAppTool)
+        // __ask_user__ must be wired explicitly: the subgraph's tools whitelist
+        // replaces the agent registry, and a save without a bucket ends in a
+        // needsBucket reply that only ask_user can resolve into a user choice.
+        val askUserTool = assistAskUserTool(assistOnly, allTools)
+        val wiredAssistTools = listOfNotNull(assistVerifyInstallTool, saveToBucketTool, installAppTool, askUserTool)
 
         val reviewAgent = AIAgent(
             promptExecutor = promptExecutor,
@@ -258,6 +292,12 @@ class ScoopManifestGenerator(
                     val raw = koogToolResultToString(ctx.toolResult)
                     logger.info { "[review-tool] ${ctx.toolName} -> ${sanitizeForLog(raw, maxLen = 200)}" }
                     onToolActivity?.invoke(ToolActivity.Completed(ctx.toolName, raw))
+                    if (ctx.toolName == com.scoopai.core.agent.VerifyInstallTool.TOOL_NAME) {
+                        when {
+                            raw.contains("\"success\":false") -> lastInstallTestFailed = true
+                            raw.contains("\"success\":true") -> lastInstallTestFailed = false
+                        }
+                    }
                 }
                 onToolCallFailed { ctx ->
                     val errorMsg = sanitizeForLog(
@@ -284,7 +324,9 @@ class ScoopManifestGenerator(
         val reviewExecutor: suspend (String) -> String = { manifest ->
             pendingManifest = manifest
             @Suppress("UNCHECKED_CAST")
-            (reviewAgent as GraphAIAgent<String, String>).run(manifest)
+            (reviewAgent as GraphAIAgent<String, String>).run(
+                reviewManifestWithRetestNote(manifest, lastInstallTestFailed),
+            )
         }
         val llmParams = LlmParamsBuilder.build(modelWithoutToolChoice, thinkingLevel)
         val phaseWrite: ((String, String) -> Unit)? = artifacts?.let { writer ->
@@ -331,8 +373,9 @@ class ScoopManifestGenerator(
         )
 
         // When assist subgraph tools are wired in, the agent-level registry must
-        // also expose them so their schemas resolve at execution time.
-        val outerToolRegistry = wiredAssistTools.fold(toolRegistry) { registry, assistTool -> registry + ToolRegistry { tool(assistTool) } }
+        // also expose them so their schemas resolve at execution time. plus()
+        // dedupes by name, so ask_user (already in the registry) is not duplicated.
+        val outerToolRegistry = assistToolsFold(toolRegistry, wiredAssistTools)
 
         val agent: GraphAIAgent<SessionRequest, ManifestResult> = AIAgent(
             promptExecutor = promptExecutor,

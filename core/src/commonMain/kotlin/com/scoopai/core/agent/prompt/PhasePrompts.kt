@@ -634,7 +634,9 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
  * When [installTestActive] is true the assist subgraph exposes the `verify_install`
  * tool: run it only when the user explicitly asks, in its own turn, then hand the
  * fixed manifest back via `finalize_task_result` (the verify phase re-tests).
- * When false the prompt honestly states that no install test ran.
+ * When false the prompt honestly states that no install test ran; with a
+ * non-null [assistTestUnavailableReason] it also states why install testing is
+ * unavailable so the model can relay the root cause to the user.
  *
  * When [saveActive] is true the assist subgraph exposes the `save_to_bucket`
  * tool backed by the host's save callback: call it only when the user explicitly
@@ -649,6 +651,7 @@ fun buildAssistPrompt(
     installTestActive: Boolean = false,
     saveActive: Boolean = false,
     installActive: Boolean = false,
+    assistTestUnavailableReason: String? = null,
 ): String =
     buildAssistKernel(
         ctx,
@@ -657,6 +660,7 @@ fun buildAssistPrompt(
         installTestActive = installTestActive,
         saveActive = saveActive,
         installActive = installActive,
+        assistTestUnavailableReason = assistTestUnavailableReason,
  )
 
 /**
@@ -691,6 +695,7 @@ private fun buildAssistKernel(
     installTestActive: Boolean = false,
     saveActive: Boolean = false,
     installActive: Boolean = false,
+    assistTestUnavailableReason: String? = null,
 ): String = buildString {
     appendLine("⚠️ **CRITICAL: Do NOT change `version` or `url` to a different release.** The version was fixed during the analyze phase. If a listed issue cannot be fixed without changing version, LEAVE it unfixed — better to ship with a warning than to downgrade the version.")
     appendLine()
@@ -743,12 +748,16 @@ private fun buildAssistKernel(
             appendLine()
             appendLine("### When to call it")
             appendLine("- ONLY when the user explicitly asks for an install test. Do NOT call it proactively or for every manifest.")
+            appendLine("- Explicit install-test requests include phrasings like \"test install\", \"test install it\", \"run the install test\", or their equivalents in the user's language; such requests ALWAYS mean calling verify_install first.")
             appendLine("- Call it in its OWN separate turn: invoke `verify_install` alone, wait for its result, then decide the next step. Do NOT call it in the same turn as `finalize_task_result`.")
             appendLine("- After it returns, honestly report the outcome: if `success` is false, describe the failure (fix the manifest if you can); if `success` is true, say the install test passed.")
             appendLine("- If the test reveals a problem, fix the manifest and then call `finalize_task_result` to hand it over. The verify phase re-runs the install test automatically; do NOT run a second `verify_install` inside the assist subgraph.")
             appendLine("- If the user's message already contains install test failure details (error summary or log excerpt), do NOT call verify_install to reproduce the failure; fix the manifest directly from those details. The verify phase re-tests automatically.")
         } else {
             appendLine("No install test was performed for this manifest. Say so honestly if the user asks about installability; never claim the app was install-tested.")
+            if (assistTestUnavailableReason != null) {
+                appendLine("Install testing is unavailable in this session (reason: $assistTestUnavailableReason). If the user asks for an install test, tell them this reason and suggest checking that scoop is on PATH.")
+            }
         }
     } else {
         // Repair loop: the verify phase owns install tests and re-runs them per round.
@@ -758,9 +767,13 @@ private fun buildAssistKernel(
         if (ctx.explanatory) {
             appendLine()
             appendLine("## Save to Bucket")
-            appendLine("You have the `save_to_bucket` tool: it saves the current manifest into a local Scoop bucket and returns JSON (`success`, `path`, `bucket`, `name`, `error`, `needsOverwrite`).")
+            appendLine("You have the `save_to_bucket` tool: it saves the current manifest into a local Scoop bucket and returns JSON (`success`, `path`, `bucket`, `name`, `error`, `needsOverwrite`, `needsBucket`).")
             appendLine("- Call it ONLY when the user explicitly asks to save or bucket the manifest. Do NOT call it proactively.")
-            appendLine("- `bucket` and `name` are optional: omit them to let the host apply its defaults (bucket: last used, then main, then the first bucket; name: the suggested app name).")
+            appendLine("- If save_to_bucket returns needsBucket:true with a buckets array, call __ask_user__ with ONE single-choice question listing exactly those buckets as options; then call save_to_bucket again with the chosen bucket.")
+            appendLine("- Never complete a save without an explicit bucket: after a needsBucket result, do not retry save_to_bucket without a bucket.")
+            appendLine("- If the user did not specify a bucket, ask them first (via the Question Escape Hatch: `finalize_task_result` with `answered=true` and the question in `explanation`). Once the user confirms a bucket, pass it explicitly; if they later ask to save again, reuse the same bucket again without asking.")
+            appendLine("- If the save succeeded and the manifest did not change, call `finalize_task_result` with `answered=true`, returning the manifest verbatim in `result`; this ends the turn, no further verification.")
+            appendLine("- If the manifest was both saved AND further changed, finalize with `answered=false`; only an unchanged save may use the `answered=true` shortcut.")
             appendLine("- After it returns, honestly report the outcome: state the saved path on success, or the error otherwise.")
             appendLine("- If the result contains `needsOverwrite: true`, the target file already exists. Ask the user whether to overwrite (via the Question Escape Hatch: `finalize_task_result` with `answered=true` and the question in `explanation`); once the user confirms, call `save_to_bucket` again with `overwrite=true`.")
         } else {

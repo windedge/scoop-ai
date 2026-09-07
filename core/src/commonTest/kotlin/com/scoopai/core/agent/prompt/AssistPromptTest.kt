@@ -207,6 +207,60 @@ class AssistPromptTest {
     }
 
     // ---------------------------------------------------------------
+    // buildAssistPrompt: probe 失败根因自诊断 + 显式请求示例（装测不触发）
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `buildAssistPrompt without install test states the unavailability reason when provided`() {
+        val prompt = buildAssistPrompt(
+            assistContext(),
+            installTestActive = false,
+            assistTestUnavailableReason = "'scoop --version' exited with 9009",
+        )
+
+        assertTrue(
+            prompt.contains("Install testing is unavailable"),
+            "OFF prompt with a reason must tell the model install testing is unavailable, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("exited with 9009"),
+            "OFF prompt must include the concrete probe failure reason, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("scoop is on PATH"),
+            "unavailability line must tell the model to suggest checking PATH, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt without a reason keeps the plain no-install-test wording`() {
+        val prompt = buildAssistPrompt(assistContext(), installTestActive = false)
+
+        assertFalse(
+            prompt.contains("Install testing is unavailable"),
+            "no reason provided must not add an unavailability line, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt with installTestActive lists explicit install-test request phrasings`() {
+        val prompt = buildAssistPrompt(assistContext(), installTestActive = true)
+
+        assertTrue(
+            prompt.contains("Explicit install-test requests include phrasings like"),
+            "active prompt must give explicit request examples for flash models, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("test install it"),
+            "example phrasings must include the exact user wording, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("run the install test"),
+            "example phrasings must include the run-the-test wording, got:\n$prompt",
+        )
+    }
+
+    // ---------------------------------------------------------------
     // buildAssistPrompt / buildRepairPrompt: save_to_bucket guidance (P2)
     // ---------------------------------------------------------------
 
@@ -243,13 +297,15 @@ class AssistPromptTest {
     fun `buildAssistPrompt with saveActive says bucket and name default to host rules when omitted`() {
         val prompt = buildAssistPrompt(assistContext(), saveActive = true)
 
+        // A save without an explicit bucket no longer falls back to host defaults:
+        // the host returns needsBucket and the model asks via __ask_user__.
         assertTrue(
-            prompt.contains("optional"),
-            "save guidance must mark bucket and name as optional, got:\n$prompt",
+            prompt.contains("needsBucket"),
+            "save guidance must describe the needsBucket reply, got:\n$prompt",
         )
         assertTrue(
-            prompt.contains("default"),
-            "save guidance must say the host applies defaults when omitted, got:\n$prompt",
+            prompt.contains("__ask_user__"),
+            "save guidance must route the missing bucket through ask_user, got:\n$prompt",
         )
     }
 
@@ -260,6 +316,116 @@ class AssistPromptTest {
         assertFalse(
             prompt.contains("save_to_bucket"),
             "no-handler prompt must not advertise save_to_bucket, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt with saveActive instructs to ask the user first when bucket is unspecified`() {
+        val prompt = buildAssistPrompt(assistContext(), saveActive = true)
+
+        assertTrue(
+            prompt.contains("did not specify a bucket"),
+            "save guidance must handle the no-bucket case by asking first, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("answered=true"),
+            "the ask-first flow must go through the answered=true escape hatch, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("same bucket again"),
+            "a previously confirmed bucket must be reused without asking again, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt with saveActive skips re-verification after an unchanged save`() {
+        val prompt = buildAssistPrompt(assistContext(), saveActive = true)
+
+        assertTrue(
+            prompt.contains("save succeeded and the manifest did not change"),
+            "save guidance must define the unchanged-save outcome, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("manifest verbatim"),
+            "unchanged save must finalize with the manifest verbatim, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("no further verification"),
+            "unchanged save must be final, no re-verification, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt with saveActive marks save plus further changes as needing another round`() {
+        val prompt = buildAssistPrompt(assistContext(), saveActive = true)
+
+        assertTrue(
+            prompt.contains("both saved AND further changed"),
+            "combined save+changes must be called out explicitly, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("answered=false"),
+            "combined save+changes must not use the answered=true shortcut, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt with saveActive requires ask_user for a needsBucket result`() {
+        val prompt = buildAssistPrompt(assistContext(), saveActive = true)
+
+        assertTrue(
+            prompt.contains("needsBucket:true with a buckets array"),
+            "save guidance must tell the model to react to the needsBucket result, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("__ask_user__ with ONE single-choice question"),
+            "save guidance must require exactly one single-choice ask_user question, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("listing exactly those buckets as options"),
+            "ask_user options must be exactly the buckets array, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt with saveActive forbids retrying save without a bucket after needsBucket`() {
+        val prompt = buildAssistPrompt(assistContext(), saveActive = true)
+
+        assertTrue(
+            prompt.contains("Never complete a save without an explicit bucket"),
+            "save guidance must forbid completing a save without an explicit bucket, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("do not retry save_to_bucket without a bucket"),
+            "save guidance must forbid a bucket-less retry after needsBucket, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt with saveActive does not tell the model to rely on host bucket defaults`() {
+        val prompt = buildAssistPrompt(assistContext(), saveActive = true)
+
+        assertFalse(
+            prompt.contains("optional: omit them to let the host apply its defaults"),
+            "bucket/name must no longer be advertised as optional with host defaults, got:\n$prompt",
+        )
+        assertFalse(
+            prompt.contains("last used, then main, then the first bucket"),
+            "the host default bucket chain must be removed from the prompt, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildRepairPrompt with saveActive keeps the ban and omits the interactive save guidance`() {
+        val prompt = buildRepairPrompt(repairContext(), saveActive = true)
+
+        assertTrue(
+            prompt.contains("Do NOT call `save_to_bucket`"),
+            "repair prompt must keep the save_to_bucket ban, got:\n$prompt",
+        )
+        assertFalse(
+            prompt.contains("did not specify a bucket"),
+            "repair prompt must not contain interactive save guidance, got:\n$prompt",
         )
     }
 

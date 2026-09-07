@@ -744,6 +744,148 @@ class ScoopManifestGeneratorMockTest {
     // T-3.11: assist phase onPhaseOutput (missing invoke)
     // =========================================================================
 
+    /**
+     * PromptExecutor that records the last-message text of every LLM call and
+     * delegates matching to a wrapped MockPromptExecutor. The review agent shares
+     * the outer agent's executor, so recording here captures the review prompts.
+     */
+    private class RecordingExecutor(
+        private val delegate: ai.koog.prompt.executor.model.PromptExecutor,
+    ) : ai.koog.prompt.executor.model.PromptExecutor() {
+        val lastMessageTexts = mutableListOf<String>()
+
+        override suspend fun execute(
+            prompt: ai.koog.prompt.Prompt,
+            model: ai.koog.prompt.llm.LLModel,
+            tools: List<ai.koog.agents.core.tools.ToolDescriptor>,
+        ): ai.koog.prompt.message.Message.Assistant {
+            val last = prompt.messages.lastOrNull()
+            if (last != null) lastMessageTexts.add(last.textContent())
+            return delegate.execute(prompt, model, tools)
+        }
+
+        override fun executeStreaming(
+            prompt: ai.koog.prompt.Prompt,
+            model: ai.koog.prompt.llm.LLModel,
+            tools: List<ai.koog.agents.core.tools.ToolDescriptor>,
+        ) = delegate.executeStreaming(prompt, model, tools)
+
+        override suspend fun moderate(
+            prompt: ai.koog.prompt.Prompt,
+            model: ai.koog.prompt.llm.LLModel,
+        ) = delegate.moderate(prompt, model)
+
+        override fun close() {
+            delegate.close()
+        }
+    }
+
+    /** ScoopVerifier fake: first install fails, later ones succeed; records inputs. */
+    private class FlakyScoopVerifier : com.scoopai.core.tools.api.ScoopVerifier {
+        val receivedManifests = mutableListOf<String>()
+        private var calls = 0
+
+        override suspend fun verifyInstall(manifestJson: String, appName: String): String {
+            receivedManifests.add(manifestJson)
+            calls++
+            return if (calls == 1) {
+                """{"success":false,"app_name":"$appName","exit_code":1,"output":"installer crash"}"""
+            } else {
+                """{"success":true,"app_name":"$appName","exit_code":0,"output":"ok"}"""
+            }
+        }
+    }
+
+    @Test
+    fun `review retests install after a failed install when the review agent has verify_install`() = runBlocking {
+        val researchResult = ResearchOutput(
+            status = ResearchStatus.OK,
+            project = "sharkdp/fd",
+            version = "10.2.0",
+            windows_assets = listOf(
+                WindowsAsset(
+                    url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                    architecture = "64bit",
+                    asset_type = "zip",
+                    source = "release_api"
+                )
+            )
+        )
+        val analyzeResult = AnalyzeOutput(
+            status = AnalyzeStatus.OK,
+            strategy = "portable_zip",
+            entries = listOf(
+                AssetEntry(
+                    architecture = "64bit",
+                    url = "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip",
+                    hash = "abc123",
+                    extract_dir = "fd-v10.2.0-x86_64-pc-windows-msvc"
+                )
+            ),
+            bin = emptyList()
+        )
+        val manifestJson = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip","hash":"abc123","extract_dir":"fd-v10.2.0-x86_64-pc-windows-msvc"}},"bin":["fd.exe"]}"""
+
+        val fakeVerifier = FlakyScoopVerifier()
+        val reviewTool = com.scoopai.core.agent.VerifyInstallTool(fakeVerifier) { error("unused in mock matching") }
+
+        val approvedReview = """{"approved":true,"issues":[],"summary":"Install retest passed."}"""
+        val failureReview = """{"approved":false,"issues":[{"severity":"error","field":"install","message":"Install failed with exit code 1."}],"summary":"1 error found"}"""
+
+        val delegate = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
+            // Review round 1, LLM call 1: the user message is exactly the raw manifest.
+            mockLLMToolCall(reviewTool, com.scoopai.core.agent.VerifyInstallArgs(reason = "checking install")) onRequestEquals manifestJson
+            // Review round 2, LLM call 1: the user message carries the retest note.
+            mockLLMToolCall(reviewTool, com.scoopai.core.agent.VerifyInstallArgs(reason = "retest")) onRequestContains "[[NOTE]]"
+            // Review LLM call 2: replies to the tool-result message.
+            mockLLMAnswer(failureReview) onCondition { it.contains("\"success\":false") }
+            mockLLMAnswer(approvedReview) onCondition { it.contains("\"success\":true") }
+            mockLLMAnswer("").asDefaultResponse
+        }
+        val executor = RecordingExecutor(delegate)
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = executor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+            scoopVerifier = fakeVerifier,
+        )
+
+        val result = generator.generate("https://github.com/sharkdp/fd")
+
+        // The run must succeed through the second review round.
+        assertTrue(result.manifest.contains("fd.exe"), "run must finish with the manifest, got: $result")
+        assertEquals(2, fakeVerifier.receivedManifests.size, "verify_install must run twice: initial test plus retest")
+
+        // Round 1 saw the raw manifest; round 2 saw the NOTE-prefixed manifest.
+        assertTrue(
+            executor.lastMessageTexts.any { it.contains("[[NOTE]]") },
+            "the review agent must receive a NOTE-prefixed manifest after a failed install",
+        )
+        val noteIdx = executor.lastMessageTexts.indexOfFirst { it.contains("[[NOTE]]") }
+        assertTrue(
+            executor.lastMessageTexts.subList(0, noteIdx).none { it.contains("[[NOTE]]") },
+            "the NOTE must first appear in the second review round, got: ${executor.lastMessageTexts}",
+        )
+        assertEquals(
+            manifestJson,
+            executor.lastMessageTexts[noteIdx - 1],
+            "the round-1 review prompt must be exactly the raw manifest",
+        )
+
+        // The verifier installs the RAW manifest; the NOTE is review-prompt only.
+        assertTrue(
+            fakeVerifier.receivedManifests.none { it.contains("[[NOTE]]") },
+            "verify_install must receive the raw manifest without the NOTE marker",
+        )
+        // Final explanation comes from the generate round, not from any review reply.
+        assertNotNull(result.explanation, "a successful generate round must leave an explanation")
+    }
+
     @Test
     fun `repair phase output is written to artifacts when verify fails`() = runBlocking {
         val dir = createTempDir()
@@ -1841,7 +1983,10 @@ class ScoopManifestGeneratorMockTest {
             // Review round 2 (last message = fake verifier output): always report the failure.
             mockLLMAnswer(reviewErrorJson) onCondition { it.contains("verify-stub-install-failed") }
             // Review round 1 (last message = bare manifest): model calls verify_install.
-            mockLLMToolCall(mockToolRef, com.scoopai.core.agent.VerifyInstallArgs("checking installability")) onCondition { it.trim().startsWith("{") }
+            // The NOTE-prefixed retest rounds are matched separately below.
+            mockLLMToolCall(mockToolRef, com.scoopai.core.agent.VerifyInstallArgs("checking installability")) onCondition { it.contains("\"bin\"") && !it.contains("[[NOTE]]") }
+            // Retest rounds after a failed install: the user message carries the NOTE.
+            mockLLMToolCall(mockToolRef, com.scoopai.core.agent.VerifyInstallArgs("retesting after repair")) onRequestContains "[[NOTE]]"
             // Repair loop finalizes with the same manifest; review keeps failing.
             mockLLMToolCall(lenientFinishTool, FinalizePayload(manifest = manifestJson)) onRequestContains "manifest repairer"
             mockLLMAnswer("").asDefaultResponse
@@ -1886,8 +2031,11 @@ class ScoopManifestGeneratorMockTest {
                 it.contains("verify-stub-install-failed") && reviewRounds++ == 0
             }
             mockLLMAnswer(reviewApprovedJson) onCondition { it.contains("verify-stub-install-failed") }
-            // Review round 1: model calls verify_install with a stated reason.
-            mockLLMToolCall(mockToolRef, com.scoopai.core.agent.VerifyInstallArgs("checking installability")) onCondition { it.trim().startsWith("{") }
+            // Review round 1 (last message = bare manifest): model calls verify_install.
+            // The NOTE-prefixed retest round is matched separately below.
+            mockLLMToolCall(mockToolRef, com.scoopai.core.agent.VerifyInstallArgs("checking installability")) onCondition { it.contains("\"bin\"") && !it.contains("[[NOTE]]") }
+            // Retest round after a failed install: the user message carries the NOTE.
+            mockLLMToolCall(mockToolRef, com.scoopai.core.agent.VerifyInstallArgs("retesting after repair")) onRequestContains "[[NOTE]]"
             mockLLMToolCall(lenientFinishTool, FinalizePayload(manifest = manifestJson)) onRequestContains "manifest repairer"
             mockLLMAnswer("").asDefaultResponse
         }
