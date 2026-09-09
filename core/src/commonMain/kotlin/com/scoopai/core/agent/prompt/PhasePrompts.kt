@@ -776,6 +776,15 @@ private fun buildAssistKernel(
             appendLine("- If the manifest was both saved AND further changed, finalize with `answered=false`; only an unchanged save may use the `answered=true` shortcut.")
             appendLine("- After it returns, honestly report the outcome: state the saved path on success, or the error otherwise.")
             appendLine("- If the result contains `needsOverwrite: true`, the target file already exists. Ask the user whether to overwrite (via the Question Escape Hatch: `finalize_task_result` with `answered=true` and the question in `explanation`); once the user confirms, call `save_to_bucket` again with `overwrite=true`.")
+            appendLine("- If the user reports that an installed app fails at runtime (crash on launch, missing features, wrong behavior), treat it as a manifest fix request: fix the manifest, call save_to_bucket again with the SAME bucket and overwrite=true, then reinstall the app from the bucket, and report the outcome.")
+            appendLine("- In that fix-save-reinstall flow, the overwrite gate comes first: if the first re-save replies `needsOverwrite: true`, run the user confirmation flow above and only then save; never pass `overwrite=true` on the first re-save to bypass the confirmation. Only after the user has confirmed may later re-saves in the same loop pass `overwrite=true` directly.")
+            appendLine("- This fix-save-reinstall loop may repeat up to two times before you report the remaining problem honestly.")
+            appendLine("- If the reinstall step reports the app is already installed, do NOT retry the loop blindly: tell the user the fixed manifest is saved and takes effect only after the app is reinstalled (the Scooper host reinstalls automatically; on the CLI ask the user to run `scoop update --force`).")
+            appendLine("- Runtime failures often stem from wrong bin paths, missing extract_dir, or incorrect shortcut targets; check those first when the install itself succeeded.")
+            if (installActive) {
+                appendLine("- For the reinstall step above, call `install_app` with the same bucket and name the manifest was saved under.")
+                appendLine("- If install_app reports the app as already installed, do not retry; ask the user to uninstall it first, or explain that the fix requires a manual reinstall.")
+            }
         } else {
             // Repair loop: saving mid-repair would persist an unverified manifest.
             appendLine("- Saving to a bucket is not part of the repair loop. Do NOT call `save_to_bucket` here.")

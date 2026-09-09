@@ -416,6 +416,80 @@ class AssistPromptTest {
     }
 
     @Test
+    fun `buildAssistPrompt with saveActive treats runtime failure reports as a fix-save-reinstall request`() {
+        val prompt = buildAssistPrompt(assistContext(), saveActive = true)
+
+        assertTrue(
+            prompt.contains("treat it as a manifest fix request"),
+            "save guidance must treat runtime failure reports as manifest fix requests, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("fix-save-reinstall loop"),
+            "save guidance must bound the fix-save-reinstall loop, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("SAME bucket and overwrite=true"),
+            "the fix-save-reinstall flow must reuse the same bucket with overwrite, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("then reinstall the app from the bucket"),
+            "the fix-save-reinstall flow must end in a reinstall, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("the overwrite gate comes first"),
+            "the fix-save-reinstall flow must run the needsOverwrite confirmation before any overwrite, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("never pass `overwrite=true` on the first re-save to bypass the confirmation"),
+            "the first re-save must not bypass the overwrite confirmation, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("already installed"),
+            "save guidance must handle already-installed reports without blind retries, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt with saveActive and installActive wires the reinstall to install_app`() {
+        val prompt = buildAssistPrompt(assistContext(), saveActive = true, installActive = true)
+
+        assertTrue(
+            prompt.contains("For the reinstall step above, call `install_app`"),
+            "with an install handler the reinstall step must name install_app, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("same bucket and name the manifest was saved under"),
+            "the reinstall must reuse the save bucket and name, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("If install_app reports the app as already installed, do not retry"),
+            "install_app must not be retried when the app is already installed, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("ask the user to uninstall it first"),
+            "the already-installed guidance must tell the user to uninstall first, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt with saveActive lists common runtime failure root causes`() {
+        val prompt = buildAssistPrompt(assistContext(), saveActive = true)
+
+        assertTrue(
+            prompt.contains("wrong bin paths"),
+            "save guidance must list wrong bin paths as a common runtime failure cause, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("missing extract_dir"),
+            "save guidance must list missing extract_dir as a common runtime failure cause, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("incorrect shortcut targets"),
+            "save guidance must list incorrect shortcut targets as a common runtime failure cause, got:\n$prompt",
+        )
+    }
+
+    @Test
     fun `buildRepairPrompt with saveActive keeps the ban and omits the interactive save guidance`() {
         val prompt = buildRepairPrompt(repairContext(), saveActive = true)
 
