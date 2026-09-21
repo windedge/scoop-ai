@@ -244,7 +244,7 @@ class ScoopManifestStrategyTest {
     fun `repair loop exhausted after max retries marks result exhausted with issues`() = runBlocking {
         // Given: research + analyze + generate produce valid data, but the deterministic
         // verify node always fails validation (failingManifestIo). The repair loop runs
-        // up to maxRetries=3 times and then gives up.
+        // up to maxRetries=5 times and then gives up.
         val researchResult = ResearchOutput(
             status = ResearchStatus.OK,
             project = "sharkdp/fd",
@@ -277,7 +277,7 @@ class ScoopManifestStrategyTest {
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
             mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
-            // Assist/repair subgraph is invoked up to 3 times (retryCount 1..3), each time verify still fails.
+            // Assist/repair subgraph is invoked up to 5 times (retryCount 1..5), each time verify still fails.
             mockLLMToolCall(refineFinishTool, manifestJson) onRequestContains "manifest repairer"
             mockLLMAnswer("").asDefaultResponse
         }

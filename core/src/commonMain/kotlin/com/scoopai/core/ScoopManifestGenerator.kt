@@ -13,6 +13,7 @@ import ai.koog.prompt.llm.LLModel
 import ai.koog.serialization.JSONElement
 import ai.koog.serialization.JSONLiteral
 import com.scoopai.core.agent.AnalyzeOutput
+import com.scoopai.core.agent.BinaryImage
 import com.scoopai.core.agent.PhaseTools
 import com.scoopai.core.agent.PrefetchResult
 import com.scoopai.core.agent.ResearchOutput
@@ -161,10 +162,12 @@ class ScoopManifestGenerator(
      * Host-provided install callback backing the assist subgraph's `install_app`
      * tool (architecture A: the host owns the install logic). When null the tool
      * is not registered and the prompts omit the install guidance (CLI has no
-     * host). Only an Assist session wires the tool; a Generate session's repair
-     * loop must not install mid-repair.
+     * host). A null bucket tells the host to direct-install the current manifest
+     * from its local file (no bucket); a non-null bucket installs the manifest
+     * previously saved to that bucket. Only an Assist session wires the tool; a
+     * Generate session's repair loop must not install mid-repair.
      */
-    private val installHandler: (suspend (bucket: String, name: String) -> String)? = null,
+    private val installHandler: (suspend (bucket: String?, name: String) -> String)? = null,
 ) {
     /**
      * Model with [LLMCapability.ToolChoice] stripped so that Koog uses its
@@ -183,6 +186,7 @@ class ScoopManifestGenerator(
     suspend fun runSession(
         request: SessionRequest,
         resumeData: ResumeData? = null,
+        images: List<BinaryImage> = emptyList(),
     ): ManifestResult {
         val startTime = TimeSource.Monotonic.markNow()
         observer.reset()
@@ -362,6 +366,8 @@ class ScoopManifestGenerator(
             onPhaseOutput = onPhaseOutput,
             usedAppNamesProvider = usedAppNamesProvider,
             assistTools = wiredAssistTools,
+            assistImages = images,
+            agentModel = modelWithoutToolChoice,
         )
 
         val agentConfig = AIAgentConfig(
@@ -471,6 +477,7 @@ class ScoopManifestGenerator(
         history: List<String> = emptyList(),
         evidence: String? = null,
         suggestedAppName: String? = null,
+        images: List<BinaryImage> = emptyList(),
     ): ManifestResult = runSession(
         request = SessionRequest.Assist(
             currentManifest = manifestJson,
@@ -479,6 +486,7 @@ class ScoopManifestGenerator(
             evidence = evidence,
             suggestedAppName = suggestedAppName,
         ),
+        images = images,
     )
 
 }

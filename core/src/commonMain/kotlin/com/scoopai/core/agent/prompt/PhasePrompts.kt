@@ -644,7 +644,8 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
  *
  * When [installActive] is true the assist subgraph also exposes the `install_app`
  * tool backed by the host's install callback: call it only when the user
- * explicitly asks to install, and only after the manifest was saved to a bucket.
+ * explicitly asks to install, either from the saved bucket manifest or directly
+ * from the current unsaved manifest (bucket omitted).
  */
 fun buildAssistPrompt(
     ctx: AssistContext,
@@ -794,10 +795,10 @@ private fun buildAssistKernel(
         if (ctx.explanatory) {
             appendLine()
             appendLine("## Install App")
-            appendLine("You have the `install_app` tool: it installs the app from its saved bucket manifest and returns JSON (`success`, `app`, `bucket`, `message`, `error`).")
+            appendLine("You have the `install_app` tool: it installs the app and returns JSON (`success`, `app`, `bucket`, `message`, `error`).")
             appendLine("- Call it ONLY when the user explicitly asks to install the app. Do NOT call it proactively.")
-            appendLine("- Precondition: the manifest must already be saved to a bucket. If the user asks to install but has not saved the manifest yet, call `save_to_bucket` first, then install.")
-            appendLine("- `bucket` and `name` are required: use the bucket and name the manifest was saved under.")
+            appendLine("- Preferred path: if the manifest is not saved yet, call `save_to_bucket` first, then call `install_app` with the bucket and name the manifest was saved under.")
+            appendLine("- Direct path: when the user explicitly asks to install right away without saving (e.g. \"just install it\", \"don't save to a bucket yet\"), call `install_app` with only `name` (omit `bucket`). The current manifest is installed directly from its local file; the app then has no bucket affiliation and can be saved to a bucket later.")
             appendLine("- After it returns, honestly report the outcome, including when the app is already installed.")
         } else {
             // Repair loop: installing mid-repair would act on an unverified manifest.

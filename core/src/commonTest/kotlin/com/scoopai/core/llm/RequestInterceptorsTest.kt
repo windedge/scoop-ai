@@ -110,6 +110,31 @@ class RequestInterceptorsTest {
     }
 
     // ---------------------------------------------------------------
+    // Regression: a request with a large base64 image part (assist
+    // sessions attach user screenshots) must survive stripToolChoice
+    // byte-for-byte and quickly, since the interceptor re-encodes the
+    // whole JSON body on every call.
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `stripToolChoice preserves large base64 image_url part intact and fast`() {
+        // ~2 MB fake base64 payload (not necessarily valid padding; only
+        // byte-level preservation matters here).
+        val base64 = "A".repeat(2 * 1024 * 1024)
+        val input = """{"model":"deepseek-v4-flash","tool_choice":"required","messages":[{"role":"user","content":[{"type":"text","text":"fix this manifest"},{"type":"image_url","image_url":{"url":"data:image/png;base64,$base64"}}]}]}"""
+
+        val start = System.nanoTime()
+        val result = stripToolChoice(input)
+        val elapsedMs = (System.nanoTime() - start) / 1_000_000
+
+        assertTrue(!result.contains("tool_choice"), "tool_choice must be removed, got length ${result.length}")
+        assertTrue(result.contains("""{"type":"image_url","image_url":{"url":"data:image/png;base64,$base64"}}"""),
+            "the full image_url part including base64 payload must be preserved verbatim")
+        assertTrue(result.contains(""""text":"fix this manifest"""), "sibling text part must be preserved")
+        assertTrue(elapsedMs < 5_000, "stripToolChoice on a ~2MB image body must stay well under 5s, took ${elapsedMs}ms")
+    }
+
+    // ---------------------------------------------------------------
     // InterceptingHttpClient composition
     // ---------------------------------------------------------------
 

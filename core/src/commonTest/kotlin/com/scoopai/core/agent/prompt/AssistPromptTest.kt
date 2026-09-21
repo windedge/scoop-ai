@@ -554,12 +554,16 @@ class AssistPromptTest {
     }
 
     @Test
-    fun `buildAssistPrompt with installActive says bucket and name are required`() {
+    fun `buildAssistPrompt with installActive offers the direct no-bucket install path`() {
         val prompt = buildAssistPrompt(assistContext(), installActive = true)
 
         assertTrue(
-            prompt.contains("required"),
-            "install guidance must mark bucket and name as required, got:\n$prompt",
+            prompt.contains("omit `bucket`)"),
+            "install guidance must offer the direct no-bucket install path, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("save_to_bucket"),
+            "install guidance must still recommend saving to a bucket first, got:\n$prompt",
         )
     }
 

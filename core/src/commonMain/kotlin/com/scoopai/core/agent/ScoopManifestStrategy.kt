@@ -4,8 +4,12 @@ import ai.koog.agents.core.agent.entity.createStorageKey
 import ai.koog.agents.core.dsl.builder.node
 import ai.koog.agents.core.dsl.builder.strategy
 import ai.koog.agents.core.tools.ToolBase
+import ai.koog.agents.core.dsl.builder.subgraph
 import ai.koog.agents.ext.agent.subgraphWithTask
 import ai.koog.prompt.params.LLMParams
+import ai.koog.prompt.llm.LLMCapability
+import ai.koog.prompt.llm.LLModel
+import ai.koog.serialization.typeToken
 import com.scoopai.core.AssistContext
 import com.scoopai.core.ManifestResult
 import com.scoopai.core.SessionRequest
@@ -83,6 +87,17 @@ internal suspend fun AIAgentStorageAPI.getCombinedExplanation(generateKey: AIAge
 }
 
 /**
+ * Builds the assist subgraph model: null when there are no images (inherit the
+ * agent model unchanged) or when no agent model was provided; otherwise a copy
+ * of [agentModel] with [LLMCapability.Vision.Image] appended so the
+ * OpenAI-compatible client encodes image parts.
+ */
+internal fun assistModelWithVision(agentModel: LLModel?, images: List<BinaryImage>): LLModel? {
+    if (images.isEmpty()) return null
+    return agentModel?.copy(capabilities = agentModel.capabilities.orEmpty() + LLMCapability.Vision.Image)
+}
+
+/**
  * Creates a graph strategy for generating Scoop manifests.
  *
  * Flow (v4 — prefetch + 3-phase + edge-based assist/repair loop):
@@ -114,6 +129,7 @@ internal suspend fun AIAgentStorageAPI.getCombinedExplanation(generateKey: AIAge
  * @param gitHubApi GitHub API for prefetching project data before LLM phases.
  * @param archiveInspector Archive inspector for prefetching persist/search data before LLM phases.
  */
+@OptIn(ai.koog.agents.core.annotation.InternalAgentsApi::class)
 fun scoopManifestStrategy(
     researchTools: List<ToolBase<*, *>> = emptyList(),
     analyzeTools: List<ToolBase<*, *>> = emptyList(),
@@ -147,11 +163,23 @@ fun scoopManifestStrategy(
      * also be registered there. Empty (the default) keeps the subgraph tool-free.
      */
     assistTools: List<ToolBase<*, *>> = emptyList(),
+    /**
+     * User-supplied images attached to the first assist LLM call (explanatory=true only).
+     * When non-empty, the subgraph model gains [LLMCapability.Vision.Image] so the
+     * OpenAI-compatible client will encode image parts.
+     */
+    assistImages: List<BinaryImage> = emptyList(),
+    /**
+     * The agent-level model (without ToolChoice). Required when [assistImages] is
+     * non-empty so the subgraph can build a Vision-capable model from it. When
+     * null, the subgraph inherits the agent model unchanged.
+     */
+    agentModel: LLModel? = null,
 ) = strategy<SessionRequest, ManifestResult>(SCOOP_MANIFEST_STRATEGY_NAME) {
 
     // ── Storage keys ───────────────────────────────────────────
     val retryCountKey = createStorageKey<Int>("assist_retry_count")
-    val maxRetries = 3
+    val maxRetries = 5
     val researchDataKey = createStorageKey<ResearchOutput>("research_data")
     val analyzeDataKey = createStorageKey<AnalyzeOutput>("analyze_data")
     val suggestedAppNameKey = createStorageKey<String>("suggested_app_name")
@@ -291,18 +319,41 @@ fun scoopManifestStrategy(
     // ── Assist subgraph (LLM, optional tools, lightweight fix loop) ──
     // Same lenient finish tool as generate; the tools advertise only the schema
     // and resolve by name against the agent-level registry at execution time.
-    val assist by subgraphWithTask<AssistContext, FinalizePayload, FinalizePayload>(
-        tools = assistTools,
-        finishTool = LenientStringFinishTool(),
+    //
+    // When assistImages is non-empty, we use a custom subgraph (not subgraphWithTask)
+    // so the first LLM call can attach image parts to the user message. The attach
+    // is gated by shouldAttach: only the user follow-up (explanatory=true) round
+    // gets images; the internal repair loop stays text-only.
+    val assist by subgraph<AssistContext, FinalizePayload>(
+        name = "assist",
+        toolSelectionStrategy = ai.koog.agents.core.agent.entity.ToolSelectionStrategy.Tools(
+            assistTools.map { it.descriptor }
+        ),
+        llmModel = assistModelWithVision(agentModel, assistImages),
         llmParams = llmParams,
-    ) { input ->
-        assistPhaseNameForEvents = assistPhaseName(input)
-        assistIsUserFollowUp = input.explanatory
-        onPhase?.invoke(assistPhaseNameForEvents)
-        observer.enterPhase(assistPhaseNameForEvents)
-        logger.info { PhaseProgressLogger.starting(assistPhaseNameForEvents) }
-        assistStart = TimeSource.Monotonic.markNow()
-        assistPromptBuilder?.invoke(input) ?: ""
+    ) {
+        setupAssistSubgraphWithTask(
+            finishTool = LenientStringFinishTool(),
+            inputType = typeToken<AssistContext>(),
+            outputTransformedType = typeToken<FinalizePayload>(),
+            parallelTools = false,
+            images = assistImages,
+            shouldAttach = { it.explanatory },
+            enableTextOnlyAnswer = true,
+        ) { input ->
+            assistPhaseNameForEvents = assistPhaseName(input)
+            assistIsUserFollowUp = input.explanatory
+            onPhase?.invoke(assistPhaseNameForEvents)
+            observer.enterPhase(assistPhaseNameForEvents)
+            logger.info { PhaseProgressLogger.starting(assistPhaseNameForEvents) }
+            assistStart = TimeSource.Monotonic.markNow()
+            val base = assistPromptBuilder?.invoke(input) ?: ""
+            if (assistImages.isNotEmpty() && input.explanatory) {
+                base + "\n\n[${assistImages.size} user image(s) attached to this message]"
+            } else {
+                base
+            }
+        }
     }
 
     // ── Normalize node (deterministic: post-process + normalize) ──
@@ -323,8 +374,12 @@ fun scoopManifestStrategy(
         observer.enterPhase("verify")
         logger.info { PhaseProgressLogger.starting("verify") }
         verifyStart = TimeSource.Monotonic.markNow()
+        // Authoritative hashes from the analyze/research outputs let the verifier
+        // deterministically repair LLM hash transcription errors before the
+        // structural validation runs (empty for assist sessions: no phase outputs).
+        val expectedHashes = expectedHashesFromOutputs(storage.get(analyzeDataKey), storage.get(researchDataKey))
         try {
-            validateManifest(manifest, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries, usedAppNamesProvider, suggestedAppNameKey, appNameConflictKey) { storage.set(finalManifestKey, it) }
+            validateManifest(manifest, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries, usedAppNamesProvider, suggestedAppNameKey, appNameConflictKey, expectedHashes) { storage.set(finalManifestKey, it) }
         } finally {
             val elapsed = verifyStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
             observer.exitPhase("verify", elapsed)
@@ -365,10 +420,16 @@ fun scoopManifestStrategy(
     // generate → normalize edge and never reaches checkAnswered (finalManifestKey is
     // only written on the verify pass for a generate session).
     val checkAnswered by node<FinalizePayload, CheckedFinalize>("checkAnswered") { payload ->
-        val isPureAnswer = assistIsUserFollowUp &&
-            payload.answered == true &&
+        val answeredManifest = payload.answered == true &&
             normalizeIfValid(payload.manifest) == normalizeIfValid(storage.get(finalManifestKey) ?: "") &&
             normalizeIfValid(payload.manifest).isNotEmpty()
+        // A blank manifest with a non-blank explanation is the assist subgraph's
+        // text-only escape: the model replied in plain text without calling the
+        // finish tool, so there is nothing to normalize or verify.
+        val textOnlyAnswer = assistIsUserFollowUp &&
+            payload.manifest.isBlank() &&
+            !payload.explanation.isNullOrBlank()
+        val isPureAnswer = assistIsUserFollowUp && (answeredManifest || textOnlyAnswer)
         CheckedFinalize(payload = payload, isPureAnswer = isPureAnswer)
     }
 
@@ -540,8 +601,21 @@ internal suspend fun validateManifest(
     usedAppNamesProvider: (suspend () -> Set<String>)? = null,
     suggestedAppNameKey: AIAgentStorageKey<String>? = null,
     appNameConflictKey: AIAgentStorageKey<String>? = null,
+    expectedHashes: Map<String, String> = emptyMap(),
     finalManifestSetter: suspend (String) -> Unit,
 ): AssistContext? {
+    // Deterministic hash autofix: a mangled (e.g. character-dropped) hash cannot
+    // be recovered by the model in the repair loop, so replace it with the hash
+    // of the same asset from the analyze/research outputs and re-run validation
+    // on the fixed manifest. The retry counter is only incremented by the pass
+    // below, so this repair does not consume a repair round.
+    if (expectedHashes.isNotEmpty()) {
+        val fixed = autoFixInvalidHashes(manifest, expectedHashes)
+        if (fixed != null) {
+            logger.info { "[verify] Auto-fixed invalid hash(es) from phase output hashes" }
+            return validateManifest(fixed, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries, usedAppNamesProvider, suggestedAppNameKey, appNameConflictKey, expectedHashes, finalManifestSetter)
+        }
+    }
     finalManifestSetter(manifest)
     val errors = mutableListOf<String>()
 

@@ -52,10 +52,12 @@ object DefaultScoopAiFactory {
         saveToBucketHandler: (suspend (bucket: String?, name: String?, overwrite: Boolean) -> String)? = null,
         /**
          * Optional host install callback backing the assist session's `install_app`
-         * tool. Signature: (bucket, name) -> result JSON. When non-null the assist
-         * subgraph exposes the tool; when null (e.g. CLI) it is absent.
+         * tool. Signature: (bucket, name) -> result JSON where a null bucket means
+         * direct-install the current manifest without saving it to a bucket. When
+         * non-null the assist subgraph exposes the tool; when null (e.g. CLI) it
+         * is absent.
          */
-        installAppHandler: (suspend (bucket: String, name: String) -> String)? = null,
+        installAppHandler: (suspend (bucket: String?, name: String) -> String)? = null,
     ): ScoopManifestGenerator {
         val resolved = ProviderConfigResolver.resolve(
             cliProvider = config.provider,

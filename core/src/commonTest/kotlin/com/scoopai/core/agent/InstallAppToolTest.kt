@@ -12,9 +12,10 @@ import kotlin.test.assertTrue
 /**
  * Unit tests for [InstallAppTool]: the SimpleTool wrapper that forwards
  * `install_app` calls to the host-provided install callback (architecture A:
- * the engine owns no install logic, the host does). Unlike save_to_bucket,
- * both parameters are required: the model installs a manifest that was
- * already saved under a concrete bucket and name.
+ * the engine owns no install logic, the host does). [InstallAppArgs.bucket]
+ * is optional: bucket+name installs from the saved bucket manifest, while a
+ * null/blank bucket direct-installs the current manifest without saving it
+ * to a bucket.
  */
 class InstallAppToolTest {
 
@@ -31,33 +32,29 @@ class InstallAppToolTest {
     }
 
     @Test
-    fun `tool descriptor requires bucket and name with no optional parameters`() {
+    fun `tool descriptor requires only name, bucket is optional`() {
         val tool = InstallAppTool { _, _ -> """{"success":true}""" }
 
         val descriptor = tool.descriptor
-        assertEquals(2, descriptor.requiredParameters.size, "bucket and name are required, nothing else")
-        assertTrue(
-            descriptor.requiredParameters.any { it.name == "bucket" },
-            "descriptor must expose the required bucket parameter",
-        )
+        assertEquals(1, descriptor.requiredParameters.size, "only name is required")
         assertTrue(
             descriptor.requiredParameters.any { it.name == "name" },
             "descriptor must expose the required name parameter",
         )
         assertTrue(
-            descriptor.optionalParameters.isEmpty(),
-            "install has no defaults: no parameter may be optional",
+            descriptor.optionalParameters.any { it.name == "bucket" },
+            "bucket must be optional so the model can omit it for direct install",
         )
     }
 
     // -----------------------------------------------------------------------
-    // Execute: handler forwarding
+    // Execute: handler forwarding and bucket normalization
     // -----------------------------------------------------------------------
 
     @Test
     fun `execute forwards bucket and name to the host handler and returns its JSON verbatim`() = runBlocking {
         var calls = 0
-        var lastBucket: String? = null
+        var lastBucket: String? = "sentinel"
         var lastName: String? = null
         val handlerJson = """{"success":true,"app":"fd","bucket":"main"}"""
         val tool = InstallAppTool { bucket, name ->
@@ -75,12 +72,67 @@ class InstallAppToolTest {
         assertEquals(handlerJson, result, "tool result must be the handler JSON verbatim")
     }
 
+    @Test
+    fun `execute normalizes empty bucket to null for direct install`() = runBlocking {
+        var lastBucket: String? = "sentinel"
+        val tool = InstallAppTool { bucket, _ ->
+            lastBucket = bucket
+            """{"success":true}"""
+        }
+
+        tool.execute(InstallAppArgs(bucket = "", name = "fd"))
+
+        assertEquals(null, lastBucket, "empty-string bucket must reach the handler as null")
+    }
+
+    @Test
+    fun `execute normalizes whitespace-only bucket to null`() = runBlocking {
+        var lastBucket: String? = "sentinel"
+        val tool = InstallAppTool { bucket, _ ->
+            lastBucket = bucket
+            """{"success":true}"""
+        }
+
+        tool.execute(InstallAppArgs(bucket = "   ", name = "fd"))
+
+        assertEquals(null, lastBucket, "whitespace-only bucket must reach the handler as null")
+    }
+
+    @Test
+    fun `execute passes missing bucket through as null`() = runBlocking {
+        var lastBucket: String? = "sentinel"
+        val tool = InstallAppTool { bucket, _ ->
+            lastBucket = bucket
+            """{"success":true}"""
+        }
+
+        tool.execute(InstallAppArgs(name = "fd"))
+
+        assertEquals(null, lastBucket, "omitted bucket must reach the handler as null")
+    }
+
+    // -----------------------------------------------------------------------
+    // normalizeInstallBucket
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `normalizeInstallBucket keeps and trims non-blank values`() {
+        assertEquals("extras", InstallAppTool.normalizeInstallBucket("  extras  "))
+    }
+
+    @Test
+    fun `normalizeInstallBucket maps null and blank inputs to null`() {
+        assertEquals(null, InstallAppTool.normalizeInstallBucket(null))
+        assertEquals(null, InstallAppTool.normalizeInstallBucket(""))
+        assertEquals(null, InstallAppTool.normalizeInstallBucket(" \t "))
+    }
+
     // -----------------------------------------------------------------------
     // Args serialization
     // -----------------------------------------------------------------------
 
     @Test
-    fun `InstallAppArgs round-trips all fields`() {
+    fun `InstallAppArgs round-trips with a bucket`() {
         val json = Json.encodeToString(InstallAppArgs(bucket = "extras", name = "app"))
         val decoded = Json.decodeFromString<InstallAppArgs>(json)
 
@@ -88,7 +140,29 @@ class InstallAppToolTest {
     }
 
     @Test
-    fun `InstallAppArgs rejects missing fields because install has no defaults`() {
+    fun `InstallAppArgs omits bucket by default and round-trips without it`() {
+        val json = Json.encodeToString(InstallAppArgs(name = "app"))
+
+        assertTrue(!json.contains("bucket"), "default bucket must not be encoded: $json")
+        assertEquals(InstallAppArgs(bucket = null, name = "app"), Json.decodeFromString<InstallAppArgs>(json))
+    }
+
+    @Test
+    fun `InstallAppArgs accepts explicit null bucket from the model`() {
+        val decoded = Json.decodeFromString<InstallAppArgs>("""{"bucket":null,"name":"fd"}""")
+
+        assertEquals(InstallAppArgs(bucket = null, name = "fd"), decoded)
+    }
+
+    @Test
+    fun `InstallAppArgs keeps legacy required-bucket JSON decodable`() {
+        val decoded = Json.decodeFromString<InstallAppArgs>("""{"bucket":"main","name":"fd"}""")
+
+        assertEquals(InstallAppArgs(bucket = "main", name = "fd"), decoded)
+    }
+
+    @Test
+    fun `InstallAppArgs still rejects missing name`() {
         assertFailsWith<SerializationException> {
             Json.decodeFromString<InstallAppArgs>("{}")
         }

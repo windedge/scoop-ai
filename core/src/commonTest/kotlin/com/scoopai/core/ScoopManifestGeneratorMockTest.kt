@@ -1303,7 +1303,7 @@ class ScoopManifestGeneratorMockTest {
 
         val promptExecutor = getMockExecutor {
             mockLLMToolCall(lenientFinishTool, FinalizePayload(refinedManifest)) onRequestContains "manifest assistant"
-            // After verify fails, internal repair rounds (explanatory=false) run up to maxRetries=3 times.
+            // After verify fails, internal repair rounds (explanatory=false) run up to maxRetries=5 times.
             mockLLMToolCall(lenientFinishTool, FinalizePayload(refinedManifest)) onRequestContains "manifest repairer"
             mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""").asDefaultResponse
         }
@@ -1314,7 +1314,7 @@ class ScoopManifestGeneratorMockTest {
             promptExecutor = promptExecutor,
             model = model,
             toolRegistry = ToolRegistry.EMPTY,
-            maxIterations = 50,
+            maxIterations = 200,
         )
 
         val result = generator.assist(
@@ -1817,6 +1817,82 @@ class ScoopManifestGeneratorMockTest {
         assertTrue(result.issues.isEmpty())
         // phases: only assist, no verify (escape bypasses normalize/verify)
         assertEquals(listOf("assist"), phases)
+    }
+
+    @Test
+    fun `text-only answer without finalize is recovered with the assistant text as explanation`() = runBlocking {
+        // Regression for the "Sorry, I could not produce an answer." bug: the model
+        // replies with a plain text answer instead of calling finalize_task_result.
+        // The text-only escape inside the assist subgraph must surface that text as
+        // the explanation with the input manifest unchanged.
+        val inputManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val answerText = "This app is built with Rust and uses the winsfs library."
+
+        val phases = mutableListOf<String>()
+        val promptExecutor = getMockExecutor {
+            mockLLMAnswer(answerText) onRequestContains "manifest assistant"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry.EMPTY,
+            maxIterations = 50,
+            onPhase = { phases.add(it) },
+        )
+
+        val result = generator.assist(
+            manifestJson = inputManifest,
+            instruction = "What tech stack is this app built with?",
+            suggestedAppName = "initial-app",
+        )
+
+        assertTrue(result.answered, "text-only answer must be recovered as an answered result")
+        assertEquals(answerText, result.explanation, "the assistant text must become the explanation")
+        assertEquals(formatManifestJson(inputManifest), result.manifest)
+        assertEquals(listOf("assist"), phases)
+    }
+
+    @Test
+    fun `text-only response during internal repair round is still a failure`() = runBlocking {
+        // Guard: the text-only escape must stay disabled for the internal repair loop
+        // (explanatory=false). Verify fails (stub ManifestIo), so the generate session
+        // enters the repair loop; the repair round answers with plain text instead of
+        // finalizing. The escape must not fire, so the run fails instead of returning
+        // an answered result.
+        val (researchResult, analyzeResult, manifestJson) = explanationTestFixtures()
+
+        val mockManifestIo = object : ManifestIo {
+            override fun validate(json: String?) = """{"valid":false,"errors":["test validation error"]}"""
+            override fun write(json: String?, path: String?) = ""
+            override fun read(path: String?) = ""
+        }
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = manifestJson)
+            ) onRequestContains "GENERATE phase"
+            mockLLMAnswer("Sure, let me check the manifest.") onRequestContains "manifest repairer"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 200,
+            manifestIo = mockManifestIo,
+        )
+
+        val error = runCatching {
+            generator.generate("https://github.com/sharkdp/fd")
+        }.exceptionOrNull()
+
+        assertNotNull(error, "a text-only repair round must fail, not produce an answered result")
     }
 
     @Test
@@ -2373,7 +2449,7 @@ class ScoopManifestGeneratorMockTest {
         val installJson = """{"success":true,"app":"initial-app","bucket":"main-bucket-x"}"""
 
         // The handler is the host implementation; the engine must not add install logic.
-        val installHandler: suspend (bucket: String, name: String) -> String = { bucket, name ->
+        val installHandler: suspend (bucket: String?, name: String) -> String = { bucket, name ->
             installCalls++
             lastBucket = bucket
             lastName = name
