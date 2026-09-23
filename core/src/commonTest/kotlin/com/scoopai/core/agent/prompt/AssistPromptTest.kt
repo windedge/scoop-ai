@@ -602,6 +602,70 @@ class AssistPromptTest {
     }
 
     // ---------------------------------------------------------------
+    // buildAssistPrompt / buildRepairPrompt: read_manifest_reference guidance
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `buildAssistPrompt with readRefActive gives read_manifest_reference usage guidance`() {
+        val prompt = buildAssistPrompt(assistContext(), readRefActive = true)
+
+        assertTrue(
+            prompt.contains("read_manifest_reference"),
+            "active prompt must expose the read_manifest_reference tool, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("bucket"),
+            "read guidance must explain the bucket parameter, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("name"),
+            "read guidance must explain the name parameter, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("@bucket/app"),
+            "read guidance must explain the @bucket/app reference syntax, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("reference") || prompt.contains("base for edits"),
+            "read guidance must state what the content is used for, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt without readRefActive does not mention read_manifest_reference`() {
+        val prompt = buildAssistPrompt(assistContext(), installTestActive = true)
+
+        assertFalse(
+            prompt.contains("read_manifest_reference"),
+            "no-handler prompt must not advertise read_manifest_reference, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildRepairPrompt with readRefActive forbids read_manifest_reference`() {
+        val prompt = buildRepairPrompt(repairContext(), readRefActive = true)
+
+        assertTrue(
+            prompt.contains("read_manifest_reference"),
+            "repair prompt with a handler must explicitly ban read_manifest_reference, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("Do NOT call `read_manifest_reference`"),
+            "repair prompt must forbid reading references mid-repair, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildRepairPrompt without readRefActive does not mention read_manifest_reference`() {
+        val prompt = buildRepairPrompt(repairContext())
+
+        assertFalse(
+            prompt.contains("read_manifest_reference"),
+            "no-handler repair prompt must not mention read_manifest_reference, got:\n$prompt",
+        )
+    }
+
+    // ---------------------------------------------------------------
     // buildGeneratePrompt: optional explanation parameter note
     // ---------------------------------------------------------------
 

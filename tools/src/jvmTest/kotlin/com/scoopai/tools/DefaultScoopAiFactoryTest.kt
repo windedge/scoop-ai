@@ -92,6 +92,23 @@ class DefaultScoopAiFactoryTest {
     }
 
     // ---------------------------------------------------------------
+    // readManifestRefHandler wiring
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `createGenerator accepts readManifestRefHandler and constructs successfully`() {
+        val generator = DefaultScoopAiFactory.createGenerator(
+            config = ScoopAiConfig(
+                provider = "deepseek",
+                apiKey = "sk-fake",
+                nonInteractive = true,
+            ),
+            readManifestRefHandler = { _, _ -> "{\"success\":false,\"error\":\"nope\"}" },
+        )
+        assertNotNull(generator)
+    }
+
+    // ---------------------------------------------------------------
     // nonInteractive wiring
     // ---------------------------------------------------------------
 

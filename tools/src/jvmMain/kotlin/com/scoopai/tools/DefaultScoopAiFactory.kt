@@ -58,6 +58,13 @@ object DefaultScoopAiFactory {
          * is absent.
          */
         installAppHandler: (suspend (bucket: String?, name: String) -> String)? = null,
+        /**
+         * Optional host read callback backing the assist session's
+         * `read_manifest_reference` tool. Signature: (bucket, name) -> result
+         * JSON. When non-null the assist subgraph exposes the tool; when null
+         * (e.g. CLI) it is absent.
+         */
+        readManifestRefHandler: (suspend (bucket: String, name: String) -> String)? = null,
     ): ScoopManifestGenerator {
         val resolved = ProviderConfigResolver.resolve(
             cliProvider = config.provider,
@@ -115,6 +122,7 @@ object DefaultScoopAiFactory {
             assistTestUnavailableReason = assistUnavailableReason,
             saveHandler = saveToBucketHandler?.let(::saveHandlerAdapter),
             installHandler = installAppHandler,
+            readManifestRefHandler = readManifestRefHandler,
         )
     }
 

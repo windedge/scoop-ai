@@ -646,6 +646,12 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
  * tool backed by the host's install callback: call it only when the user
  * explicitly asks to install, either from the saved bucket manifest or directly
  * from the current unsaved manifest (bucket omitted).
+ *
+ * When [readRefActive] is true the assist subgraph also exposes the
+ * `read_manifest_reference` tool backed by the host's local-manifest read
+ * callback: call it when the user references an existing manifest via the
+ * `@bucket/app` syntax (or explicitly asks to read one), and use the returned
+ * content as a base for edits or as a style reference.
  */
 fun buildAssistPrompt(
     ctx: AssistContext,
@@ -653,6 +659,7 @@ fun buildAssistPrompt(
     saveActive: Boolean = false,
     installActive: Boolean = false,
     assistTestUnavailableReason: String? = null,
+    readRefActive: Boolean = false,
 ): String =
     buildAssistKernel(
         ctx,
@@ -662,6 +669,7 @@ fun buildAssistPrompt(
         saveActive = saveActive,
         installActive = installActive,
         assistTestUnavailableReason = assistTestUnavailableReason,
+        readRefActive = readRefActive,
  )
 
 /**
@@ -674,13 +682,19 @@ fun buildAssistPrompt(
  * true the schema still advertises save_to_bucket, so the prompt explicitly bans it.
  * The same applies to [installActive] and the install_app tool.
  */
-fun buildRepairPrompt(ctx: AssistContext, saveActive: Boolean = false, installActive: Boolean = false): String =
+fun buildRepairPrompt(
+    ctx: AssistContext,
+    saveActive: Boolean = false,
+    installActive: Boolean = false,
+    readRefActive: Boolean = false,
+): String =
     buildAssistKernel(
         ctx,
         opening = "You are a Scoop manifest repairer.",
         includingEscape = false,
         saveActive = saveActive,
         installActive = installActive,
+        readRefActive = readRefActive,
     )
 
 /**
@@ -697,6 +711,7 @@ private fun buildAssistKernel(
     saveActive: Boolean = false,
     installActive: Boolean = false,
     assistTestUnavailableReason: String? = null,
+    readRefActive: Boolean = false,
 ): String = buildString {
     appendLine("⚠️ **CRITICAL: Do NOT change `version` or `url` to a different release.** The version was fixed during the analyze phase. If a listed issue cannot be fixed without changing version, LEAVE it unfixed — better to ship with a warning than to downgrade the version.")
     appendLine()
@@ -803,6 +818,20 @@ private fun buildAssistKernel(
         } else {
             // Repair loop: installing mid-repair would act on an unverified manifest.
             appendLine("- Installing the app is not part of the repair loop. Do NOT call `install_app` here.")
+        }
+    }
+    if (readRefActive) {
+        if (ctx.explanatory) {
+            appendLine()
+            appendLine("## Read Manifest Reference")
+            appendLine("You have the `read_manifest_reference` tool: it reads the raw JSON of an existing manifest from a local Scoop bucket and returns it with metadata (bucket, name, path).")
+            appendLine("- Call it when the user references an existing manifest with the `@bucket/app` syntax, or explicitly asks you to read a local manifest. `@main/golang` means bucket=`main`, name=`golang`; pass those as the two tool parameters (trimmed).")
+            appendLine("- Call it when the referenced manifest is the modification target or a reference worth consulting; do not call it proactively for manifests nobody mentioned.")
+            appendLine("- Use the returned content as the base for the requested edits, or as a style/pattern reference; never claim you read a manifest you did not actually read.")
+            appendLine("- If the result reports `success: false`, the manifest does not exist or cannot be read: tell the user, do not guess its content, and suggest checking the bucket/app spelling.")
+        } else {
+            // Repair loop: reading references mid-repair is out of scope.
+            appendLine("- Reading existing manifests is not part of the repair loop. Do NOT call `read_manifest_reference` here.")
         }
     }
     appendLine()

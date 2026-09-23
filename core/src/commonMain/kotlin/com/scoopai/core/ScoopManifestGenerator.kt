@@ -42,6 +42,7 @@ import com.scoopai.core.agent.VerifyInstallTool
 import com.scoopai.core.agent.SaveToBucketArgs
 import com.scoopai.core.agent.SaveToBucketTool
 import com.scoopai.core.agent.InstallAppTool
+import com.scoopai.core.agent.ReadManifestRefTool
 import ai.koog.agents.core.tools.ToolBase
 import ai.koog.agents.core.dsl.builder.strategy
 import ai.koog.agents.ext.agent.subgraphWithTask
@@ -168,6 +169,17 @@ class ScoopManifestGenerator(
      * Generate session's repair loop must not install mid-repair.
      */
     private val installHandler: (suspend (bucket: String?, name: String) -> String)? = null,
+    /**
+     * Host-provided read callback backing the assist subgraph's
+     * `read_manifest_reference` tool (architecture A: the host owns the local
+     * bucket lookup). When null the tool is not registered and the prompts omit
+     * the reference-read guidance (CLI has no host). Backs the user's
+     * `@bucket/app` reference syntax: the model reads the referenced manifest's
+     * raw JSON to use it as a base for edits or as a style reference. Only an
+     * Assist session wires the tool; a Generate session's repair loop must not
+     * read references mid-repair.
+     */
+    private val readManifestRefHandler: (suspend (bucket: String, name: String) -> String)? = null,
 ) {
     /**
      * Model with [LLMCapability.ToolChoice] stripped so that Koog uses its
@@ -218,6 +230,7 @@ class ScoopManifestGenerator(
         val assistOnly = request is SessionRequest.Assist
         val saveToBucketTool = if (assistOnly) saveHandler?.let(::SaveToBucketTool) else null
         val installAppTool = if (assistOnly) installHandler?.let(::InstallAppTool) else null
+        val readManifestRefTool = if (assistOnly) readManifestRefHandler?.let(::ReadManifestRefTool) else null
         val assistPrompt: suspend (AssistContext) -> String =
             {
                 if (it.explanatory) {
@@ -227,9 +240,15 @@ class ScoopManifestGenerator(
                         saveActive = saveToBucketTool != null,
                         installActive = installAppTool != null,
                         assistTestUnavailableReason = assistTestUnavailableReason,
+                        readRefActive = readManifestRefTool != null,
                     )
                 } else {
-                    buildRepairPrompt(it, saveActive = saveToBucketTool != null, installActive = installAppTool != null)
+                    buildRepairPrompt(
+                        it,
+                        saveActive = saveToBucketTool != null,
+                        installActive = installAppTool != null,
+                        readRefActive = readManifestRefTool != null,
+                    )
                 }
             }
 
@@ -259,7 +278,8 @@ class ScoopManifestGenerator(
         // replaces the agent registry, and a save without a bucket ends in a
         // needsBucket reply that only ask_user can resolve into a user choice.
         val askUserTool = assistAskUserTool(assistOnly, allTools)
-        val wiredAssistTools = listOfNotNull(assistVerifyInstallTool, saveToBucketTool, installAppTool, askUserTool)
+        val wiredAssistTools =
+            listOfNotNull(assistVerifyInstallTool, saveToBucketTool, installAppTool, readManifestRefTool, askUserTool)
 
         val reviewAgent = AIAgent(
             promptExecutor = promptExecutor,

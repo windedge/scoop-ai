@@ -2530,6 +2530,218 @@ class ScoopManifestGeneratorMockTest {
         )
     }
 
+    // =========================================================================
+    // readManifestRefHandler: the assist subgraph gets a read_manifest_reference
+    // tool backed by the host callback, and prompts only mention it when the
+    // handler exists.
+    // =========================================================================
+
+    @Test
+    fun `assist session with readManifestRefHandler can call read_manifest_reference and still finalize`() = runBlocking {
+        val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
+        var readCalls = 0
+        var lastBucket: String? = null
+        var lastName: String? = null
+        val readJson = """{"bucket":"main","name":"golang","path":"main/golang.json","content":"{\"bin\":[\"go.exe\"]}"}"""
+
+        // The handler is the host implementation; the engine must not add lookup logic.
+        val readHandler: suspend (bucket: String, name: String) -> String = { bucket, name ->
+            readCalls++
+            lastBucket = bucket
+            lastName = name
+            readJson
+        }
+        val mockReadToolRef = com.scoopai.core.agent.ReadManifestRefTool(readHandler)
+
+        val promptExecutor = getMockExecutor {
+            // Assist subgraph turn 1: model calls read_manifest_reference (prompt advertises it).
+            mockLLMToolCall(
+                mockReadToolRef,
+                com.scoopai.core.agent.ReadManifestRefArgs(bucket = "main", name = "golang"),
+            ) onCondition { it.contains("manifest assistant") }
+            // Assist subgraph turn 2: the read result is the last message; model finalizes.
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(manifest = refinedManifest, explanation = "Done.")) onCondition { it.contains("main/golang.json") }
+            // Review agent approves the refined manifest (last message = manifest JSON).
+            mockLLMAnswer(reviewApprovedJson) onCondition { text -> text.trim().startsWith("{") && !text.contains("main/golang.json") }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+            readManifestRefHandler = readHandler,
+        )
+
+        val result = generator.assist(
+            manifestJson = initialManifest,
+            instruction = "Copy the bin layout from @main/golang into this manifest",
+            suggestedAppName = "initial-app",
+        )
+
+        assertEquals(1, readCalls, "assist subgraph must invoke read_manifest_reference exactly once")
+        assertEquals("main", lastBucket, "model-provided bucket must reach the host handler")
+        assertEquals("golang", lastName, "model-provided name must reach the host handler")
+        assertTrue(!result.exhausted, "assist must pass after the read round")
+        assertTrue(result.manifest.contains("shortcuts"), "assist must still return the refined manifest")
+    }
+
+    @Test
+    fun `assist session without readManifestRefHandler never mentions read_manifest_reference in any prompt`() = runBlocking {
+        val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
+        val prompts = mutableListOf<String>()
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(manifest = refinedManifest)) onCondition { text ->
+                prompts.add(text)
+                text.contains("manifest assistant")
+            }
+            mockLLMAnswer(reviewApprovedJson) onCondition { text ->
+                prompts.add(text)
+                text.trim().startsWith("{")
+            }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+            // readManifestRefHandler defaults to null: no host, no tool, no prompt section.
+        )
+
+        val result = generator.assist(
+            manifestJson = initialManifest,
+            instruction = "Add start menu shortcut for app.exe",
+            suggestedAppName = "initial-app",
+        )
+
+        assertTrue(!result.exhausted, "no-handler assist must pass")
+        assertTrue(
+            prompts.none { it.contains("read_manifest_reference") },
+            "without a host handler no prompt may mention read_manifest_reference, got ${prompts.size} prompts",
+        )
+    }
+
+    // =========================================================================
+    // Empty-manifest assist (reference-first conversation): the host may start
+    // an Assist session with currentManifest="" (e.g. the user opens with an
+    // @bucket/app reference or pure chat). The engine must still:
+    // - accept a model-produced manifest through normalize/verify (no prior
+    //   research/analyze data, expectedHashes empty, name-conflict check runs),
+    // - keep the answered/text-only escapes working against a blank baseline,
+    // - never misroute a blank finalize into the answeredManifest shortcut.
+    // =========================================================================
+
+    @Test
+    fun `assist with empty current manifest accepts a model produced manifest end to end`() = runBlocking {
+        val newManifest = """{"version":"1.2.3","description":"Brand new app","url":"https://example.com/new.zip","bin":["new.exe"]}"""
+        val phases = mutableListOf<String>()
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = newManifest, explanation = "Created the manifest."),
+            ) onRequestContains "manifest assistant"
+            mockLLMAnswer(reviewApprovedJson) onCondition { text -> text.trim().startsWith("{") }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+            onPhase = { phases.add(it) },
+        )
+
+        val result = generator.assist(
+            manifestJson = "",
+            instruction = "Based on @main/golang, write a manifest for my new app",
+            suggestedAppName = "my-new-app",
+        )
+
+        assertTrue(!result.exhausted, "a clean verify pass must not exhaust, issues: ${result.issues}")
+        assertTrue(!result.answered, "a produced manifest is a change result, not a pure answer")
+        assertEquals(
+            formatManifestJson(normalizeManifest(newManifest)),
+            result.manifest,
+            "the model-produced manifest must flow through normalize/verify into the result",
+        )
+        assertEquals("my-new-app", result.suggestedAppName)
+        assertEquals("Created the manifest.", result.explanation)
+        assertEquals(listOf("assist", "verify"), phases, "empty-manifest assist runs assist then verify")
+    }
+
+    @Test
+    fun `assist with empty current manifest treats an answered blank finalize as a pure answer`() = runBlocking {
+        // Guard for the answeredManifest branch: with finalManifestKey="",
+        // normalizeIfValid("")="" on both sides, so the isNotEmpty guard must keep
+        // the blank finalize out of the answeredManifest shortcut; the textOnly
+        // escape (blank manifest + explanation) is what makes it a pure answer.
+        val explanationText = "The @main/golang manifest uses a flat bin layout."
+
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = "", explanation = explanationText, answered = true),
+            ) onRequestContains "manifest assistant"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+        )
+
+        val result = generator.assist(
+            manifestJson = "",
+            instruction = "What bin layout does @main/golang use?",
+            suggestedAppName = "golang",
+        )
+
+        assertTrue(result.answered, "a blank finalize with an explanation must be a pure answer")
+        assertEquals(explanationText, result.explanation)
+        assertEquals("", result.manifest, "buildFinalResult must output the blank baseline verbatim")
+        assertTrue(result.issues.isEmpty(), "a pure answer must not surface issues")
+    }
+
+    @Test
+    fun `assist with empty current manifest recovers a text only answer`() = runBlocking {
+        // The text-only answer escape must also work when the session started
+        // with a blank manifest: the model replies in plain text (no finalize),
+        // and the reply becomes the explanation with answered=true.
+        val answerText = "@main/golang keeps bin as a plain string; I can do the same for your app."
+
+        val promptExecutor = getMockExecutor {
+            mockLLMAnswer(answerText) onRequestContains "manifest assistant"
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+        )
+
+        val result = generator.assist(
+            manifestJson = "",
+            instruction = "Should I use a string or a list for bin?",
+            suggestedAppName = "my-new-app",
+        )
+
+        assertTrue(result.answered, "a text-only reply must be recovered as an answered result")
+        assertEquals(answerText, result.explanation)
+        assertEquals("", result.manifest)
+    }
+
     // ---------------------------------------------------------------------
     // koogToolResultToString: tool event result conversion
 
