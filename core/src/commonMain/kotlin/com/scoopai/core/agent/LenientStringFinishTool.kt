@@ -8,6 +8,7 @@ import ai.koog.agents.core.tools.annotations.InternalAgentToolsApi
 import ai.koog.agents.ext.agent.SubgraphWithTaskUtils
 import ai.koog.serialization.JSONElement
 import ai.koog.serialization.JSONLiteral
+import ai.koog.serialization.JSONArray
 import ai.koog.serialization.JSONNull
 import ai.koog.serialization.JSONObject
 import ai.koog.serialization.JSONSerializer
@@ -17,8 +18,9 @@ import kotlinx.serialization.Serializable
 
 /**
  * Final artifact carrier for the generate/assist/repair subgraphs: the manifest JSON
- * plus an optional natural-language explanation and an optional escape-hatch flag
- * (architecture proposal 4.2 + answer escape hatch).
+ * plus an optional natural-language explanation, an optional escape-hatch flag
+ * (architecture proposal 4.2 + answer escape hatch), and an optional list of
+ * phase activities (what changed and why, for host-side step summaries).
  *
  * The explanation is the AI's conversational reply for the user instruction;
  * it is optional so old-format calls that only pass `result` keep working and
@@ -28,12 +30,17 @@ import kotlinx.serialization.Serializable
  * question about the manifest (no change request); see the escape hatch in
  * [com.scoopai.core.agent.prompt.buildAssistPrompt]. Old two-parameter encodings
  * that omit `answered` decode to null (backward compatible).
+ *
+ * The optional [activities] list carries 3-6 short sentences naming each concrete
+ * transformation applied to the manifest and why. Encodings without it decode to
+ * null (backward compatible); it never enters the manifest itself.
  */
 @Serializable
 public data class FinalizePayload(
     val manifest: String,
     val explanation: String? = null,
     val answered: Boolean? = null,
+    val activities: List<String>? = null,
 )
 
 /**
@@ -78,6 +85,11 @@ public data class FinalizePayload(
  *   object/array/string/number/null all decode to null (symmetric with
  *   [FinalizePayload.explanation] tolerance, so a malformed value cannot silently
  *   switch a change request into a pure-answer escape).
+ * - `activities` (optional): a JSON array of short sentences, each naming one
+ *   concrete transformation applied to the manifest and why. Only an array whose
+ *   elements are all string literals is accepted; string/object/array-with-
+ *   non-strings/null/missing all decode to a null [FinalizePayload.activities]
+ *   (symmetric with [extractOptionalText] tolerance).
  *
  * The optional second parameter (instead of a `{"manifest": ..., "explanation": ...}`
  * wrapper) keeps the `result` contract unchanged and never lets the explanation
@@ -113,6 +125,12 @@ public class LenientStringFinishTool : Tool<FinalizePayload, FinalizePayload>(
                 name = "answered",
                 description = "Set true only when the user message is a pure question; keep result identical to the input manifest",
                 type = ToolParameterType.Boolean,
+            ),
+            ToolParameterDescriptor(
+                name = "activities",
+                description = "Optional. 3-6 short sentences, each naming one concrete transformation applied to the manifest " +
+                    "and why (e.g. Appended #/dl.7z for the NSIS installer, Added autoupdate.hash from checksums.txt).",
+                type = ToolParameterType.List(ToolParameterType.String),
             )
         ),
     ),
@@ -140,6 +158,9 @@ public class LenientStringFinishTool : Tool<FinalizePayload, FinalizePayload>(
         entries["result"] = JSONLiteral(payload.manifest, isString = true)
         payload.explanation?.let { entries["explanation"] = JSONLiteral(it, isString = true) }
         payload.answered?.let { entries["answered"] = JSONLiteral(it.toString(), isString = false) }
+        payload.activities?.let { activities ->
+            entries["activities"] = JSONArray(activities.map { JSONLiteral(it, isString = true) })
+        }
         return JSONObject(entries)
     }
 
@@ -162,6 +183,7 @@ public class LenientStringFinishTool : Tool<FinalizePayload, FinalizePayload>(
                 manifest = extractResultValue(raw.entries["result"]),
                 explanation = extractOptionalText(raw.entries["explanation"]),
                 answered = extractOptionalBool(raw.entries["answered"]),
+                activities = extractOptionalStringList(raw.entries["activities"]),
             )
         }
 
@@ -196,6 +218,18 @@ public class LenientStringFinishTool : Tool<FinalizePayload, FinalizePayload>(
                 else -> null
             }
             else -> null
+        }
+
+        /** Only a JSON array whose elements are all string literals decodes to a List<String>.
+         *  Missing / JSON null / string / object / array-with-non-string-elements all decode
+         *  to null (symmetric with [extractOptionalText] tolerance, so a malformed value can
+         *  never leak into the host's step summaries). */
+        fun extractOptionalStringList(value: JSONElement?): List<String>? {
+            if (value !is JSONArray) return null
+            val items = value.elements.map { element ->
+                (element as? JSONLiteral)?.takeIf { it.isString }?.content ?: return null
+            }
+            return items
         }
     }
 }

@@ -29,6 +29,15 @@ class ResearchPrefetchPromptTest {
     }
 
     @Test
+    fun `buildGeneratorSystemPrompt bans em and en dashes`() {
+        val prompt = buildGeneratorSystemPrompt()
+        assertTrue(
+            prompt.contains("never use em dashes"),
+            "generator system prompt must carry the em/en dash style constraint, got:\n$prompt",
+        )
+    }
+
+    @Test
     fun `buildResearchPrompt with non-GitHub prefetch uses original prompt`() {
         val prefetch = PrefetchResult(isGitHub = false, originalUrl = "https://example.com/tool")
         val prompt = buildResearchPrompt(prefetch, null)

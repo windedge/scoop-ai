@@ -482,7 +482,9 @@ fun scoopManifestStrategy(
         val elapsed = generateStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
         observer.exitPhase("generate", elapsed)
         logger.info { PhaseProgressLogger.completed("generate", elapsed, llmCalls = observer.lastCompletedLlmCallCount()) }
-        onPhaseOutput?.invoke("generate", payload.manifest)
+        // _meta.activities rides only the onPhaseOutput channel; normalize still
+        // receives the clean manifest (payload.manifest) below.
+        onPhaseOutput?.invoke("generate", withPhaseMeta(payload.manifest, payload.activities))
         // Only write non-blank explanations: internal repair rounds do not require
         // an explanation, and a null/blank overwrite would lose the explanation from
         // the round that first produced it (architecture proposal 4.3).
@@ -501,7 +503,8 @@ fun scoopManifestStrategy(
         val elapsed = assistStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
         observer.exitPhase(assistPhaseNameForEvents, elapsed)
         logger.info { PhaseProgressLogger.completed(assistPhaseNameForEvents, elapsed, llmCalls = observer.lastCompletedLlmCallCount()) }
-        onPhaseOutput?.invoke(assistPhaseNameForEvents, payload.manifest)
+        // Same _meta-only channel rule as the generate edge.
+        onPhaseOutput?.invoke(assistPhaseNameForEvents, withPhaseMeta(payload.manifest, payload.activities))
         // Same non-blank-only rule as the generate edge: a repair round without a
         // usable explanation must not erase the last valid one, while a user assist
         // with a new explanation overwrites it.

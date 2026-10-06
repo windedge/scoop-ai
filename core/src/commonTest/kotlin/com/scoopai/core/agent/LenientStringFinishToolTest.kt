@@ -11,6 +11,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * Tests for the finalize two-parameter protocol (architecture proposal 4.2):
@@ -329,5 +330,140 @@ class LenientStringFinishToolTest {
         val decoded = json.decodeFromString(FinalizePayload.serializer(), """{"manifest":"{}"}""")
 
         assertEquals(FinalizePayload(manifest = "{}", explanation = null), decoded)
+    }
+
+    // ---------------------------------------------------------------
+    // activities (four-parameter protocol)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `activities list decodes from raw tool call arguments`() {
+        val arguments =
+            """{"result":${json.encodeToString(kotlinx.serialization.serializer<String>(), manifestJson)},""" +
+                """"activities":["Appended #/dl.7z for the NSIS installer","Added autoupdate.hash from checksums.txt"]}"""
+
+        val payload = decodeArgs(arguments)
+
+        assertEquals(manifestJson, payload.manifest)
+        assertEquals(
+            listOf("Appended #/dl.7z for the NSIS installer", "Added autoupdate.hash from checksums.txt"),
+            payload.activities,
+        )
+    }
+
+    @Test
+    fun `activities round-trips through encode and decode args`() {
+        val payload = FinalizePayload(
+            manifest = manifestJson,
+            explanation = "Used portable zip strategy.",
+            activities = listOf("Set bin to fd.exe", "Kept skeleton autoupdate"),
+        )
+
+        val encoded = tool.encodeArgs(payload, serializer)
+        val decoded = tool.decodeArgs(encoded, serializer)
+
+        assertEquals(payload, decoded)
+    }
+
+    @Test
+    fun `activities omitted (old three-parameter encoding) decodes to null`() {
+        val arguments =
+            """{"result":${json.encodeToString(kotlinx.serialization.serializer<String>(), manifestJson)},"explanation":"Short."}"""
+
+        val payload = decodeArgs(arguments)
+
+        assertNull(payload.activities, "old encodings without activities must decode to null")
+    }
+
+    @Test
+    fun `explicit null activities decodes to null`() {
+        val arguments =
+            """{"result":${json.encodeToString(kotlinx.serialization.serializer<String>(), manifestJson)},"activities":null}"""
+
+        assertNull(decodeArgs(arguments).activities)
+    }
+
+    @Test
+    fun `activities as json string decodes to null`() {
+        val arguments =
+            """{"result":${json.encodeToString(kotlinx.serialization.serializer<String>(), manifestJson)},""" +
+                """"activities":"Appended #/dl.7z for the NSIS installer"}"""
+
+        assertNull(decodeArgs(arguments).activities, "string activities must decode to null, not a single-element list")
+    }
+
+    @Test
+    fun `activities with non-string elements decode to null`() {
+        val arguments =
+            """{"result":${json.encodeToString(kotlinx.serialization.serializer<String>(), manifestJson)},""" +
+                """"activities":["Appended #/dl.7z for the NSIS installer",42]}"""
+
+        assertNull(decodeArgs(arguments).activities, "an array with a non-string element must decode to null")
+    }
+
+    @Test
+    fun `activities as json object decodes to null`() {
+        val arguments =
+            """{"result":${json.encodeToString(kotlinx.serialization.serializer<String>(), manifestJson)},""" +
+                """"activities":{"change":"Appended #/dl.7z for the NSIS installer"}}"""
+
+        assertNull(decodeArgs(arguments).activities)
+    }
+
+    @Test
+    fun `empty activities array decodes to an empty list`() {
+        val arguments =
+            """{"result":${json.encodeToString(kotlinx.serialization.serializer<String>(), manifestJson)},"activities":[]}"""
+
+        assertEquals(emptyList(), decodeArgs(arguments).activities)
+    }
+
+    @Test
+    fun `encodeArgs writes the activities array entry`() {
+        val encoded = tool.encodeArgs(
+            FinalizePayload(manifest = manifestJson, activities = listOf("one", "two")),
+            serializer,
+        )
+
+        assertTrue(
+            encoded.entries.containsKey("activities"),
+            "non-null activities must be written to the wire format",
+        )
+        val decoded = tool.decodeArgs(encoded, serializer)
+        assertEquals(listOf("one", "two"), decoded.activities)
+    }
+
+    @Test
+    fun `encodeArgs omits activities entry when null`() {
+        val encoded = tool.encodeArgs(FinalizePayload(manifest = manifestJson), serializer)
+
+        assertNull(
+            encoded.entries["activities"],
+            "null activities must not be written to the wire format",
+        )
+    }
+
+    @Test
+    fun `finalize payload serializes and deserializes with activities`() {
+        val payload = FinalizePayload(
+            manifest = manifestJson,
+            explanation = null,
+            activities = listOf("Appended #/dl.7z for the NSIS installer"),
+        )
+
+        val encoded = json.encodeToString(FinalizePayload.serializer(), payload)
+        val decoded = json.decodeFromString(FinalizePayload.serializer(), encoded)
+
+        assertEquals(payload, decoded)
+    }
+
+    @Test
+    fun `finalize payload deserializes without activities field`() {
+        val decoded = json.decodeFromString(
+            FinalizePayload.serializer(),
+            """{"manifest":"{}","explanation":"Short."}""",
+        )
+
+        assertNull(decoded.activities, "old payload JSON without activities must decode to null")
     }
 }

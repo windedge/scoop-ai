@@ -21,6 +21,10 @@ import ai.koog.serialization.typeToken
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -1293,6 +1297,174 @@ class ScoopManifestGeneratorMockTest {
         assertEquals(expectedManifest, result.manifest)
         assertEquals("initial-app", result.suggestedAppName)
         assertTrue(phaseOutputs.any { it.first == "assist" })
+    }
+
+    // =========================================================================
+    // Phase activities: _meta.activities injected into the onPhaseOutput channel
+    // =========================================================================
+
+    @Test
+    fun `generate onPhaseOutput injects _meta activities into the forwarded manifest`() = runBlocking {
+        val (researchResult, analyzeResult, manifestJson) = explanationTestFixtures()
+        val activities = listOf("Appended #/dl.7z for the NSIS installer", "Added autoupdate.hash from checksums.txt")
+
+        var generateOutput: Pair<String, String>? = null
+        var normalizedReceived: String? = null
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(
+                lenientFinishTool,
+                FinalizePayload(manifest = manifestJson, activities = activities),
+            ) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""") onCondition { text -> text.trim().startsWith("{") }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+            phaseOutputListener = { p, out -> if (p == "generate") generateOutput = p to out },
+            manifestIo = object : ManifestIo {
+                override fun validate(json: String?): String {
+                    normalizedReceived = json
+                    return """{"valid":true,"errors":[]}"""
+                }
+                override fun write(json: String?, path: String?) = ""
+                override fun read(path: String?) = ""
+            },
+        )
+
+        generator.generate("https://github.com/sharkdp/fd")
+
+        assertNotNull(generateOutput, "generate phase output must be forwarded")
+        val forwarded = Json.parseToJsonElement(generateOutput.second).jsonObject
+        val meta = forwarded["_meta"]!!.jsonObject
+        val forwardedActivities = meta["activities"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertEquals(activities, forwardedActivities, "forwarded generate output must carry _meta.activities")
+        assertNotNull(forwarded["version"], "forwarded output must still be the manifest")
+        // normalize/verify must receive the clean manifest, _meta only rides the event channel
+        assertNotNull(normalizedReceived)
+        assertNull(
+            Json.parseToJsonElement(normalizedReceived!!).jsonObject["_meta"],
+            "normalize/verify must receive the manifest without _meta",
+        )
+    }
+
+    @Test
+    fun `generate onPhaseOutput with null activities forwards the manifest without _meta`() = runBlocking {
+        val (researchResult, analyzeResult, manifestJson) = explanationTestFixtures()
+
+        var generateOutput: Pair<String, String>? = null
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "RESEARCH phase"
+            mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(manifest = manifestJson)) onRequestContains "GENERATE phase"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""") onCondition { text -> text.trim().startsWith("{") }
+            mockLLMAnswer("").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry {},
+            maxIterations = 50,
+            phaseOutputListener = { p, out -> if (p == "generate") generateOutput = p to out },
+        )
+
+        generator.generate("https://github.com/sharkdp/fd")
+
+        assertNotNull(generateOutput, "generate phase output must be forwarded")
+        assertNull(
+            Json.parseToJsonElement(generateOutput.second).jsonObject["_meta"],
+            "null activities must not inject a _meta key",
+        )
+    }
+
+    @Test
+    fun `assist onPhaseOutput injects _meta activities into the forwarded manifest`() = runBlocking {
+        val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"shortcuts":[["app.exe","Initial App"]]}"""
+        val activities = listOf("Added the shortcuts entry for app.exe")
+
+        var assistOutput: Pair<String, String>? = null
+        var normalizedReceived: String? = null
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(refinedManifest, activities = activities)) onRequestContains "manifest assistant"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry.EMPTY,
+            maxIterations = 50,
+            phaseOutputListener = { p, out -> if (p == "assist") assistOutput = p to out },
+            manifestIo = object : ManifestIo {
+                override fun validate(json: String?): String {
+                    normalizedReceived = json
+                    return """{"valid":true,"errors":[]}"""
+                }
+                override fun write(json: String?, path: String?) = ""
+                override fun read(path: String?) = ""
+            },
+        )
+
+        generator.assist(
+            manifestJson = initialManifest,
+            instruction = "Add start menu shortcut for app.exe",
+            suggestedAppName = "initial-app",
+        )
+
+        assertNotNull(assistOutput, "assist phase output must be forwarded")
+        val forwarded = Json.parseToJsonElement(assistOutput.second).jsonObject
+        val meta = forwarded["_meta"]!!.jsonObject
+        val forwardedActivities = meta["activities"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertEquals(activities, forwardedActivities, "forwarded assist output must carry _meta.activities")
+        // normalize/verify must receive the clean manifest, _meta only rides the event channel
+        assertNotNull(normalizedReceived)
+        assertNull(
+            Json.parseToJsonElement(normalizedReceived!!).jsonObject["_meta"],
+            "normalize/verify must receive the manifest without _meta",
+        )
+    }
+
+    @Test
+    fun `repair onPhaseOutput injects _meta activities into the forwarded manifest`() = runBlocking {
+        val initialManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        // Refined manifest with a hardcoded autoupdate version placeholder issue -> verify fails, repair runs
+        val refinedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"],"autoupdate":{"url":"https://example.com/1.0.0/app.zip"}}"""
+        val fixedManifest = """{"version":"1.0.0","description":"Initial app","url":"https://example.com/app.zip","bin":["app.exe"]}"""
+        val activities = listOf("Removed the hardcoded version from the autoupdate url")
+
+        var repairOutput: Pair<String, String>? = null
+        val promptExecutor = getMockExecutor {
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(refinedManifest)) onRequestContains "manifest assistant"
+            mockLLMToolCall(lenientFinishTool, FinalizePayload(fixedManifest, activities = activities)) onRequestContains "manifest repairer"
+            mockLLMAnswer("""{"approved":true,"issues":[],"summary":"Looks good."}""").asDefaultResponse
+        }
+
+        val generator = ScoopManifestGenerator(
+            promptExecutor = promptExecutor,
+            model = ai.koog.prompt.executor.clients.deepseek.DeepSeekModels.DeepSeekV4Flash,
+            toolRegistry = ToolRegistry.EMPTY,
+            maxIterations = 50,
+            phaseOutputListener = { p, out -> if (p == "repair") repairOutput = p to out },
+        )
+
+        generator.assist(
+            manifestJson = initialManifest,
+            instruction = "Add autoupdate",
+            suggestedAppName = "initial-app",
+        )
+
+        assertNotNull(repairOutput, "repair phase output must be forwarded when verify fails")
+        val forwarded = Json.parseToJsonElement(repairOutput.second).jsonObject
+        val meta = forwarded["_meta"]!!.jsonObject
+        val forwardedActivities = meta["activities"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertEquals(activities, forwardedActivities, "forwarded repair output must carry _meta.activities")
     }
 
     @Test

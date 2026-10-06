@@ -4,9 +4,13 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.add
 
 /** Shared Json instance for pretty-printing manifests with Scoop-bucket 4-space indentation. */
 internal val manifestPrettyJson: Json = Json {
@@ -71,4 +75,29 @@ internal fun formatManifestJson(raw: String): String {
     } catch (_: Exception) {
         raw
     }
+}
+
+/**
+ * Injects a top-level `"_meta": {"activities": [...]}` entry into a manifest JSON
+ * string before it is forwarded over the [com.scoopai.core.ScoopManifestGenerator]
+ * phase output channel (generate/assist/repair rounds).
+ *
+ * Returns the input unchanged when [activities] is null/empty or when [manifestJson]
+ * cannot be parsed as a JSON object, so a mangled manifest is never forwarded and
+ * the normalize/verify path always receives clean JSON.
+ */
+internal fun withPhaseMeta(manifestJson: String, activities: List<String>?): String {
+    if (activities.isNullOrEmpty()) return manifestJson
+    val obj = try {
+        Json.parseToJsonElement(manifestJson).jsonObject
+    } catch (_: Exception) {
+        return manifestJson
+    }
+    val meta = buildJsonObject {
+        putJsonArray("activities") {
+            activities.forEach { add(it) }
+        }
+    }
+    val merged = JsonObject(obj + ("_meta" to meta))
+    return merged.toString()
 }

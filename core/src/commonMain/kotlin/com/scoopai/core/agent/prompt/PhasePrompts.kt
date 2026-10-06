@@ -9,6 +9,19 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 /**
+ * Shared system prompt injected once at the agent level. Koog keeps the agent
+ * config prompt (including this system message) in every subgraph's LLM context,
+ * so all phases (research/analyze/generate/assist/repair) inherit it.
+ */
+fun buildGeneratorSystemPrompt(): String =
+    "You are a Scoop manifest generator. You generate and assist Scoop bucket manifests for Windows software. " +
+        "Style: never use em dashes (" + EM_DASH + ") or en dashes (" + EN_DASH + "). " +
+        "Use commas, colons, parentheses or plain hyphens (-) instead."
+
+internal const val EM_DASH: String = "\u2014"
+internal const val EN_DASH: String = "\u2013"
+
+/**
  * Builds the prompt for the Research phase.
  *
  * @param prefetch Pre-collected project data. The original URL is accessed via [prefetch.originalUrl].
@@ -26,6 +39,8 @@ fun buildResearchPrompt(prefetch: PrefetchResult, outputPath: String? = null, us
     }
 
     val basePrompt = """You are now in the RESEARCH phase. Your task is to gather information about the project using research tools (fetchRepoInfo, fetchLatestRelease, fetchAllReleases, fetchWebPage, etc).
+
+Before each tool call, write one short sentence stating what you are about to fetch or inspect, and why.
 
 $task
 
@@ -223,6 +238,8 @@ fun buildAnalyzePrompt(research: ResearchOutput, userPrompt: String? = null): St
     val researchJson = kotlinx.serialization.json.Json.encodeToString(ResearchOutput.serializer(), research)
     val userReq = if (!userPrompt.isNullOrBlank()) "\n\n## Additional User Requirements\n$userPrompt" else ""
     return """You are now in the ANALYSIS phase. Your task is to compute hashes and inspect archive contents using the analysis tools (computeSha256FromUrl, listArchiveContents, findExecutables, detectInstallerType).
+
+Before each tool call, write one short sentence stating what you are about to fetch or inspect, and why.
 
 ⚠️ CRITICAL: Do NOT compute hashes for assets that already have a hash from GitHub API. The `windows_assets` JSON from the research phase already includes a `hash` field when available. If hash is present, use it directly — skip computeSha256FromUrl for that asset.
 
@@ -582,9 +599,11 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
 
    `explanation` is an independent short string parameter: at most 3 short sentences, about 60 words total, written in the same language as the user's input. Spend 1-2 sentences on the packaging strategy and at most 1 sentence on any non-obvious choice. Do NOT recap extract_dir / bin / shortcuts / persist field-by-field; the manifest is displayed in the UI, so the reader can see those fields directly. It must never be placed inside `result`.
 
-   CORRECT (result is a string with escaped inner quotes, explanation is a separate string parameter):
+   `activities` is an optional list of strings: 3-6 short sentences, each naming one concrete transformation you applied to the manifest and why (e.g. "Appended #/dl.7z for the NSIS installer", "Added autoupdate.hash from checksums.txt"). Only list transformations you actually made, in order. It must never be placed inside `result`.
+
+   CORRECT (result is a string with escaped inner quotes, explanation and activities are separate parameters):
    ```
-   finalize_task_result(result="{\"version\":\"8.6.1\",\"description\":\"...\",\"url\":\"...\",\"hash\":\"...\",\"innosetup\":true,...}", explanation="Used a portable zip with a 64bit url, kept the exe on PATH and added a Start Menu shortcut.")
+   finalize_task_result(result="{\"version\":\"8.6.1\",\"description\":\"...\",\"url\":\"...\",\"hash\":\"...\",\"innosetup\":true,...}", explanation="Used a portable zip with a 64bit url, kept the exe on PATH and added a Start Menu shortcut.", activities=["Appended #/dl.7z for the NSIS installer", "Added autoupdate.hash from checksums.txt"])
    ```
 
    WRONG (these fail because result must be a string, not an object):
@@ -751,6 +770,7 @@ private fun buildAssistKernel(
         appendLine("- When calling `finalize_task_result`, also pass the optional `explanation` parameter: directly answer the user's specific request by stating which fields were added, removed, or modified and why, in the same language as the user's instruction.")
         appendLine("  Keep it at most 3 short sentences, about 60 words total; the manifest is displayed in the UI, so do not recap the changed fields one by one.")
     }
+    appendLine("- When you modified the manifest, also pass the optional `activities` parameter: a list of 3-6 short sentences, each naming one concrete change you made and why (e.g. \"Removed the %APPDATA% persist path because Scoop forbids absolute user paths\", \"Added shortcuts because you asked for a Start Menu entry\"). Only list changes you actually made, in order; omit the parameter when the manifest is returned unchanged.")
     if (includingEscape) {
         appendLine()
         appendLine("## Question Escape Hatch")

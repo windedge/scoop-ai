@@ -10,6 +10,8 @@ import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.model.PromptExecutor
 import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.llm.LLModel
+import ai.koog.prompt.message.Message
+import ai.koog.prompt.message.MessagePart
 import ai.koog.serialization.JSONElement
 import ai.koog.serialization.JSONLiteral
 import com.scoopai.core.agent.AnalyzeOutput
@@ -18,6 +20,7 @@ import com.scoopai.core.agent.PhaseTools
 import com.scoopai.core.agent.PrefetchResult
 import com.scoopai.core.agent.ResearchOutput
 import com.scoopai.core.artifacts.ResumeData
+import com.scoopai.core.agent.prompt.buildGeneratorSystemPrompt
 import com.scoopai.core.agent.prompt.buildReviewSystemPrompt
 import com.scoopai.core.agent.prompt.reviewManifestWithRetestNote
 import com.scoopai.core.observer.GenerationObserver
@@ -61,6 +64,24 @@ internal fun koogToolResultToString(el: JSONElement?): String = when {
     el == null -> "null"
     el is JSONLiteral && el.isString -> el.content
     else -> el.toString()
+}
+
+/** Caps the tool-call intent text attached to Started/Completed/Failed events. */
+private const val TOOL_INTENT_MAX_LENGTH = 200
+
+/**
+ * Extracts the model's self-declared tool-call intent from a completed LLM
+ * response. Only mixed responses (text parts alongside at least one tool call)
+ * carry an intent; a pure text response is a final answer or review verdict,
+ * never a pending tool intent. Text is trimmed and capped at
+ * [TOOL_INTENT_MAX_LENGTH] chars. Null when there is nothing to report.
+ */
+internal fun extractToolCallIntent(response: Message.Assistant?): String? {
+    val parts = response?.parts ?: return null
+    if (parts.none { it is MessagePart.Tool.Call }) return null
+    val text = parts.filterIsInstance<MessagePart.Text>().joinToString(" ") { it.text }.trim()
+    if (text.isEmpty()) return null
+    return text.take(TOOL_INTENT_MAX_LENGTH)
 }
 
 /**
@@ -256,6 +277,13 @@ class ScoopManifestGenerator(
         // review round gets a retest note so the agent re-runs the install test.
         var lastInstallTestFailed = false
 
+        // Model's self-declared intent for the current LLM response batch,
+        // captured in onLLMCallCompleted and attached to every Started and
+        // Completed event of the batch's tool calls. One response can carry
+        // multiple tool calls, so the intent stays pending until the next
+        // onLLMCallCompleted overwrites it; events read it without clearing.
+        var pendingToolIntent: String? = null
+
         // The verify_install tool resolves the manifest at execution time so each
         // review round installs the manifest currently under review.
         var pendingManifest: String? = null
@@ -303,6 +331,7 @@ class ScoopManifestGenerator(
                     tokenAccumulator.input += inputTokens
                     tokenAccumulator.output += outputTokens
                     observer.recordLlmCall(inputTokens, outputTokens)
+                    pendingToolIntent = extractToolCallIntent(ctx.response)
                 }
                 // Mirror the outer agent's tool wiring so hosts see review-phase
                 // verify_install activity too. With an empty registry nothing fires.
@@ -310,12 +339,12 @@ class ScoopManifestGenerator(
                     observer.recordToolCall()
                     val args = sanitizeForLog(ctx.toolArgs.toString())
                     logger.info { "[review-tool] ${ctx.toolName}($args)" }
-                    onToolActivity?.invoke(ToolActivity.Started(ctx.toolName, args))
+                    onToolActivity?.invoke(ToolActivity.Started(ctx.toolName, args, intent = pendingToolIntent))
                 }
                 onToolCallCompleted { ctx ->
                     val raw = koogToolResultToString(ctx.toolResult)
                     logger.info { "[review-tool] ${ctx.toolName} -> ${sanitizeForLog(raw, maxLen = 200)}" }
-                    onToolActivity?.invoke(ToolActivity.Completed(ctx.toolName, raw))
+                    onToolActivity?.invoke(ToolActivity.Completed(ctx.toolName, raw, intent = pendingToolIntent))
                     if (ctx.toolName == com.scoopai.core.agent.VerifyInstallTool.TOOL_NAME) {
                         when {
                             raw.contains("\"success\":false") -> lastInstallTestFailed = true
@@ -329,7 +358,7 @@ class ScoopManifestGenerator(
                         maxLen = 200,
                     )
                     logger.warn { "[review-tool] ${ctx.toolName} failed: $errorMsg" }
-                    onToolActivity?.invoke(ToolActivity.Failed(ctx.toolName, errorMsg))
+                    onToolActivity?.invoke(ToolActivity.Failed(ctx.toolName, errorMsg, intent = pendingToolIntent))
                 }
                 onToolValidationFailed { ctx ->
                     // Validation failures never reach Completed/Failed handlers; emit
@@ -392,7 +421,7 @@ class ScoopManifestGenerator(
 
         val agentConfig = AIAgentConfig(
             prompt = prompt("chat") {
-                system("You are a Scoop manifest generator. You generate and assist Scoop bucket manifests for Windows software.")
+                system(buildGeneratorSystemPrompt())
             },
             model = modelWithoutToolChoice,
             maxAgentIterations = maxIterations,
@@ -414,17 +443,17 @@ class ScoopManifestGenerator(
                     observer.recordToolCall()
                     val args = sanitizeForLog(ctx.toolArgs.toString())
                     logger.info { "[tool] ${ctx.toolName}($args)" }
-                    onToolActivity?.invoke(ToolActivity.Started(ctx.toolName, args))
+                    onToolActivity?.invoke(ToolActivity.Started(ctx.toolName, args, intent = pendingToolIntent))
                 }
                 onToolCallCompleted { ctx ->
                     val raw = koogToolResultToString(ctx.toolResult)
                     logger.info { "[tool] ${ctx.toolName} -> ${sanitizeForLog(raw, maxLen = 200)}" }
-                    onToolActivity?.invoke(ToolActivity.Completed(ctx.toolName, raw))
+                    onToolActivity?.invoke(ToolActivity.Completed(ctx.toolName, raw, intent = pendingToolIntent))
                 }
                 onToolCallFailed { ctx ->
                     val errorMsg = sanitizeForLog(ctx.message.ifBlank { ctx.error?.message ?: "unknown tool error" }, maxLen = 200)
                     logger.warn { "[tool] ${ctx.toolName} failed: $errorMsg" }
-                    onToolActivity?.invoke(ToolActivity.Failed(ctx.toolName, errorMsg))
+                    onToolActivity?.invoke(ToolActivity.Failed(ctx.toolName, errorMsg, intent = pendingToolIntent))
                 }
                 onLLMCallCompleted { ctx ->
                     val inputTokens = ctx.response?.metaInfo?.inputTokensCount?.toLong() ?: 0L
@@ -433,6 +462,7 @@ class ScoopManifestGenerator(
                     tokenAccumulator.input += inputTokens
                     tokenAccumulator.output += outputTokens
                     logLlmResponse(ctx.response, tokenAccumulator)
+                    pendingToolIntent = extractToolCallIntent(ctx.response)
                 }
                 onAgentCompleted {
                     logger.info { "[agent] Agent completed." }

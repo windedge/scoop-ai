@@ -79,4 +79,32 @@ class RepairPromptTest {
             "repair prompt must say the verify phase owns install testing, got:\n$prompt",
         )
     }
+
+    // ---------------------------------------------------------------
+    // repair rounds also report activities (what changed and why)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `buildRepairPrompt requires the optional activities parameter for changes`() {
+        val prompt = buildRepairPrompt(repairContext())
+
+        assertTrue(
+            prompt.contains("activities"),
+            "repair prompt must mention the optional activities parameter, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("3-6 short sentences"),
+            "repair activities guidance must cap the list at 3-6 short sentences, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildRepairPrompt still omits the explanation guidance when explanatory is false`() {
+        val prompt = buildRepairPrompt(repairContext())
+
+        assertFalse(
+            prompt.contains("explanation"),
+            "activities must not re-introduce explanation guidance in repair rounds, got:\n$prompt",
+        )
+    }
 }

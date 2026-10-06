@@ -22,6 +22,20 @@ class AssistPromptTest {
     )
 
     @Test
+    fun `buildGeneratorSystemPrompt carries the shared em dash style constraint`() {
+        val prompt = buildGeneratorSystemPrompt()
+
+        assertTrue(
+            prompt.contains("never use em dashes"),
+            "generator system prompt must ban em/en dashes for all phases, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("You are a Scoop manifest generator."),
+            "generator system prompt must keep the identity line, got:\n$prompt",
+        )
+    }
+
+    @Test
     fun `buildAssistPrompt uses the assistant identity and mentions the explanation parameter`() {
         val prompt = buildAssistPrompt(assistContext())
 
@@ -42,6 +56,40 @@ class AssistPromptTest {
         assertTrue(
             prompt.contains("added") && prompt.contains("removed") && prompt.contains("modified"),
             "explanation guidance must require stating which fields were added/removed/modified, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt requires the optional activities parameter for changes`() {
+        val prompt = buildAssistPrompt(assistContext())
+
+        assertTrue(
+            prompt.contains("activities"),
+            "assist prompt must mention the optional activities parameter, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("3-6 short sentences"),
+            "assist activities guidance must cap the list at 3-6 short sentences, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt activities guidance names change and why`() {
+        val prompt = buildAssistPrompt(assistContext())
+
+        assertTrue(
+            prompt.contains("change you made and why"),
+            "assist activities guidance must require stating each change and why, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt activities guidance includes the persist path example`() {
+        val prompt = buildAssistPrompt(assistContext())
+
+        assertTrue(
+            prompt.contains("Removed the %APPDATA% persist path because Scoop forbids absolute user paths"),
+            "assist activities guidance must show the concrete example sentence, got:\n$prompt",
         )
     }
 
@@ -751,6 +799,64 @@ class AssistPromptTest {
         assertTrue(
             prompt.contains("Do NOT recap") && prompt.contains("field-by-field"),
             "generate prompt must forbid recapping extract_dir/bin/shortcuts/persist field-by-field, got:\n$prompt",
+        )
+    }
+
+    // ---------------------------------------------------------------
+    // buildGeneratePrompt: optional activities parameter (phase activities)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `buildGeneratePrompt mentions the optional activities parameter`() {
+        val prompt = buildGeneratePrompt(skeleton = "{}", analyze = minimalAnalyze(), outputPath = null)
+
+        assertTrue(
+            prompt.contains("activities"),
+            "generate prompt must mention the optional activities parameter, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildGeneratePrompt caps activities at 3 to 6 short sentences`() {
+        val prompt = buildGeneratePrompt(skeleton = "{}", analyze = minimalAnalyze(), outputPath = null)
+
+        assertTrue(
+            prompt.contains("3-6 short sentences"),
+            "activities guidance must cap the list at 3-6 short sentences, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildGeneratePrompt requires each activity to name a concrete transformation and why`() {
+        val prompt = buildGeneratePrompt(skeleton = "{}", analyze = minimalAnalyze(), outputPath = null)
+
+        assertTrue(
+            prompt.contains("concrete transformation"),
+            "activities guidance must require one concrete transformation per sentence, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildGeneratePrompt forbids placing activities inside result`() {
+        val prompt = buildGeneratePrompt(skeleton = "{}", analyze = minimalAnalyze(), outputPath = null)
+
+        assertTrue(
+            prompt.lowercase().contains("never") && prompt.lowercase().contains("result"),
+            "activities guidance must forbid leaking into result, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildGeneratePrompt CORRECT example shows activities with concrete transformations`() {
+        val prompt = buildGeneratePrompt(skeleton = "{}", analyze = minimalAnalyze(), outputPath = null)
+
+        assertTrue(
+            prompt.contains("Appended #/dl.7z for the NSIS installer"),
+            "CORRECT example must show a concrete activity sentence, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("Added autoupdate.hash from checksums.txt"),
+            "CORRECT example must show the autoupdate.hash activity sentence, got:\n$prompt",
         )
     }
 }
