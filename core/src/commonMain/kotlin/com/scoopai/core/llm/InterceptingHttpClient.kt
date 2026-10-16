@@ -47,7 +47,7 @@ public class InterceptingHttpClient(
     private val interceptors: List<(String) -> String> = emptyList(),
     private val responseRewriter: ((String) -> String)? = null,
     private val onResponse: ((String) -> Unit)? = null,
-    private val retryConfig: HttpRetryConfig = HttpRetryConfig.DEFAULT,
+    public val retryConfig: HttpRetryConfig = HttpRetryConfig.DEFAULT,
 ) : KoogHttpClient by delegate {
 
     override val clientName: String = delegate.clientName

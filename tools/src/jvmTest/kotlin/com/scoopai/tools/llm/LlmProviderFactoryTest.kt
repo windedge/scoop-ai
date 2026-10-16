@@ -1,7 +1,9 @@
 package com.scoopai.tools.llm
 
+import ai.koog.http.client.KoogHttpClient
 import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.llm.LLMProvider
+import com.scoopai.core.llm.InterceptingHttpClient
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -149,6 +151,31 @@ class LlmProviderFactoryTest {
             LlmProviderFactory.create("openai-compatible", "key", baseUrl = null)
         }
         assertTrue(e.message?.contains("--base-url") == true)
+    }
+
+    @Test
+    fun `factory retry config tolerates about one minute of gateway outage`() {
+        val config = HTTP_RETRY_CONFIG
+        assertEquals(5, config.maxRetries)
+        assertEquals(1000L, config.initialDelayMs)
+        assertEquals(30_000L, config.maxDelayMs)
+        assertEquals(2.0, config.backoffFactor)
+    }
+
+    @Test
+    fun `factory wires the retry config into InterceptingHttpClient`() {
+        val noop = object : KoogHttpClient {
+            override val clientName = "test"
+            override fun close() {}
+            override suspend fun <R : Any> get(path: String, responseType: kotlin.reflect.KClass<R>, parameters: Map<String, String>, headers: Map<String, String>): R = throw UnsupportedOperationException()
+            override suspend fun <T : Any, R : Any> post(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, responseType: kotlin.reflect.KClass<R>, parameters: Map<String, String>, headers: Map<String, String>): R = throw UnsupportedOperationException()
+            override fun <T : Any, R : Any, O : Any> sse(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, dataFilter: (String?) -> Boolean, decodeStreamingResponse: (String) -> R, processStreamingChunk: (R) -> O?, parameters: Map<String, String>, headers: Map<String, String>): kotlinx.coroutines.flow.Flow<O> = throw UnsupportedOperationException()
+            override fun <T : Any> lines(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, parameters: Map<String, String>, headers: Map<String, String>): kotlinx.coroutines.flow.Flow<String> = throw UnsupportedOperationException()
+        }
+
+        val client = LlmProviderFactory.interceptingHttpClient(delegate = noop)
+        assertTrue(client is InterceptingHttpClient)
+        assertEquals(HTTP_RETRY_CONFIG, client.retryConfig)
     }
 
     @Test

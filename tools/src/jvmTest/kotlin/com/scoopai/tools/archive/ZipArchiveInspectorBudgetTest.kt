@@ -23,7 +23,7 @@ class ZipArchiveInspectorBudgetTest {
             assertTrue(budget.tryAcquire("searchTextInArchive", 8), "Call ${it + 1} should succeed")
         }
         val result = inspector.searchTextInArchive(
-            url = "http://invalid.local/test.zip",
+            url = "http://127.0.0.1:1/test.zip",
             patterns = "test",
         )
         assertTrue(result.contains("budget"), "Should mention budget: $result")
@@ -36,7 +36,7 @@ class ZipArchiveInspectorBudgetTest {
         val inspector = ZipArchiveInspector(cache) // no budget
         // Should not crash with NullPointerException
         val result = inspector.searchTextInArchive(
-            url = "http://invalid.local/test.zip",
+            url = "http://127.0.0.1:1/test.zip",
             patterns = "test",
         )
         // Should return an error JSON (not a crash)

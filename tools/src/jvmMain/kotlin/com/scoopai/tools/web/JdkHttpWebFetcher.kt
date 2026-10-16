@@ -12,6 +12,7 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.time.Duration
 
 @LLMDescription("Web fetching tools for reading web pages and APIs")
 class JdkHttpWebFetcher(
@@ -127,10 +128,12 @@ class JdkHttpWebFetcher(
         return try {
             val client = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.NORMAL)
+                .connectTimeout(Duration.ofSeconds(30))
                 .build()
             val request = HttpRequest.newBuilder()
                 .uri(URI.create(urlNotNull))
                 .header("User-Agent", "scoop-ai/0.1.0")
+                .timeout(Duration.ofSeconds(60))
                 .method("HEAD", HttpRequest.BodyPublishers.noBody())
                 .build()
             val response = client.send(request, HttpResponse.BodyHandlers.ofString())

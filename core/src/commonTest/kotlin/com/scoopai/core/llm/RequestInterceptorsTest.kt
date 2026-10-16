@@ -225,6 +225,35 @@ class RequestInterceptorsTest {
     }
 
     @Test
+    fun `InterceptingHttpClient makes six attempts with tolerant retry config`() = kotlinx.coroutines.runBlocking {
+        var attempts = 0
+        val mockClient = object : ai.koog.http.client.KoogHttpClient {
+            override val clientName = "test"
+            override fun close() {}
+            override suspend fun <R : Any> get(path: String, responseType: kotlin.reflect.KClass<R>, parameters: Map<String, String>, headers: Map<String, String>): R = throw UnsupportedOperationException()
+            override suspend fun <T : Any, R : Any> post(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, responseType: kotlin.reflect.KClass<R>, parameters: Map<String, String>, headers: Map<String, String>): R {
+                attempts++
+                if (attempts < 6) {
+                    throw IllegalStateException("Status code: 502. Bad Gateway")
+                }
+                @Suppress("UNCHECKED_CAST")
+                return "recovered" as R
+            }
+            override fun <T : Any, R : Any, O : Any> sse(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, dataFilter: (String?) -> Boolean, decodeStreamingResponse: (String) -> R, processStreamingChunk: (R) -> O?, parameters: Map<String, String>, headers: Map<String, String>): kotlinx.coroutines.flow.Flow<O> = throw UnsupportedOperationException()
+            override fun <T : Any> lines(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, parameters: Map<String, String>, headers: Map<String, String>): kotlinx.coroutines.flow.Flow<String> = throw UnsupportedOperationException()
+        }
+
+        val client = InterceptingHttpClient(
+            delegate = mockClient,
+            retryConfig = HttpRetryConfig(maxRetries = 5, initialDelayMs = 5L, maxDelayMs = 20L),
+        )
+
+        val result = client.post("test", "{}", String::class, String::class, emptyMap(), emptyMap())
+        assertEquals("recovered", result)
+        assertEquals(6, attempts) // 1 initial + 5 retries
+    }
+
+    @Test
     fun `InterceptingHttpClient fails when 429 attempts exceed maxRetries`() = kotlinx.coroutines.runBlocking {
         var attempts = 0
         val mockClient = object : ai.koog.http.client.KoogHttpClient {

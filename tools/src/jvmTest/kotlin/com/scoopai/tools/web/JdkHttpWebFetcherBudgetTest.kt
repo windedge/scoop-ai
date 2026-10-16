@@ -20,7 +20,7 @@ class JdkHttpWebFetcherBudgetTest {
             assertTrue(budget.tryAcquire("fetchWebPage", 10), "Call ${it + 1} should succeed")
         }
         // Now the budget is exhausted - fetchWebPage should return immediate message without HTTP call
-        val result = fetcher.fetchWebPage("http://invalid.local/test")
+        val result = fetcher.fetchWebPage("http://127.0.0.1:1/test")
         assertTrue(result.contains("budget"), "Should mention budget: $result")
         assertTrue(result.contains("fetchWebPage"), "Should mention tool name: $result")
     }
@@ -30,7 +30,7 @@ class JdkHttpWebFetcherBudgetTest {
         val fetcher = JdkHttpWebFetcher() // no budget
         // This will try to actually fetch, but we just want to verify the method doesn't crash
         // with NullPointerException on the budget check
-        val result = fetcher.fetchWebPage("http://invalid.local/test")
+        val result = fetcher.fetchWebPage("http://127.0.0.1:1/test")
         // Should return an error JSON (not a crash)
         assertTrue(result.contains("error") || result.isNotEmpty())
     }
@@ -47,7 +47,7 @@ class JdkHttpWebFetcherBudgetTest {
         repeat(6) {
             assertTrue(budget.tryAcquire("resolveRedirect", 6), "Call ${it + 1} should succeed")
         }
-        val result = fetcher.resolveRedirect("http://invalid.local/test")
+        val result = fetcher.resolveRedirect("http://127.0.0.1:1/test")
         assertTrue(result.contains("budget"), "Should mention budget: $result")
         assertTrue(result.contains("resolveRedirect"), "Should mention tool name: $result")
     }

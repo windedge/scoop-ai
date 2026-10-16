@@ -8,6 +8,7 @@ import java.net.http.HttpResponse
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.time.Duration
 import java.security.MessageDigest
 
 private val logger = KotlinLogging.logger {}
@@ -29,6 +30,7 @@ class ScoopCacheManager(
     private val maxDownloadBytes: Long = 1L * 1024 * 1024 * 1024, // 1GB
     private val httpClient: HttpClient = HttpClient.newBuilder()
         .followRedirects(HttpClient.Redirect.NORMAL)
+        .connectTimeout(Duration.ofSeconds(30))
         .build(),
     customCacheDir: Path? = null,
 ) {
@@ -188,6 +190,7 @@ class ScoopCacheManager(
             .uri(URI.create(url))
             .header("User-Agent", "scoop-ai/0.1.0")
             .header("Range", "bytes=0-${maxBytes - 1}")
+            .timeout(Duration.ofSeconds(60))
             .GET()
             .build()
         val response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray())
@@ -216,6 +219,7 @@ class ScoopCacheManager(
         return try {
             val headRequest = HttpRequest.newBuilder()
                 .uri(URI.create(url))
+                .timeout(Duration.ofSeconds(60))
                 .method("HEAD", HttpRequest.BodyPublishers.noBody())
                 .header("User-Agent", "scoop-ai/0.1.0")
                 .build()
@@ -246,6 +250,7 @@ class ScoopCacheManager(
             val request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("User-Agent", "scoop-ai/0.1.0")
+                .timeout(Duration.ofSeconds(120))
                 .GET()
                 .build()
 

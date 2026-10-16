@@ -19,6 +19,7 @@ import ai.koog.prompt.executor.ollama.client.OllamaClient
 import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.llm.LLMProvider
 import ai.koog.prompt.llm.LLModel
+import com.scoopai.core.llm.HttpRetryConfig
 import com.scoopai.core.llm.InterceptingHttpClient
 import com.scoopai.core.llm.malformedFunctionCallRetryHint
 import com.scoopai.core.llm.normalizeMissingCreated
@@ -27,6 +28,23 @@ import com.scoopai.core.llm.stripToolChoice
 
 @OptIn(kotlin.time.ExperimentalTime::class)
 object LlmProviderFactory {
+
+    /**
+     * Wrap a base client with the shared retry policy so agents can survive
+     * gateway outage windows (transient 5xx/429) without failing the run.
+     */
+    internal fun interceptingHttpClient(
+        delegate: KoogHttpClient,
+        interceptors: List<(String) -> String> = emptyList(),
+        responseRewriter: ((String) -> String)? = null,
+        onResponse: ((String) -> Unit)? = null,
+    ): InterceptingHttpClient = InterceptingHttpClient(
+        delegate = delegate,
+        interceptors = interceptors,
+        responseRewriter = responseRewriter,
+        onResponse = onResponse,
+        retryConfig = HTTP_RETRY_CONFIG,
+    )
 
     /**
      * Create a PromptExecutor for the given provider.
@@ -39,14 +57,14 @@ object LlmProviderFactory {
             val settings = DeepSeekClientSettings()
             val baseClient = javaHttpClient(apiKey, settings, "DeepSeekLLMClient")
             MultiLLMPromptExecutor(
-                DeepSeekLLMClient(settings = settings, httpClient = InterceptingHttpClient(delegate = baseClient))
+                DeepSeekLLMClient(settings = settings, httpClient = interceptingHttpClient(delegate = baseClient))
             )
         }
         "openai" -> {
             val settings = OpenAIClientSettings()
             val baseClient = javaHttpClient(apiKey, settings, "OpenAILLMClient")
             MultiLLMPromptExecutor(
-                OpenAILLMClient(settings = settings, httpClient = InterceptingHttpClient(delegate = baseClient))
+                OpenAILLMClient(settings = settings, httpClient = interceptingHttpClient(delegate = baseClient))
             )
         }
         "anthropic" -> MultiLLMPromptExecutor(AnthropicLLMClient(apiKey = apiKey))
@@ -55,7 +73,7 @@ object LlmProviderFactory {
             val settings = OpenRouterClientSettings()
             val baseClient = javaHttpClient(apiKey, settings, "OpenRouterLLMClient")
             MultiLLMPromptExecutor(
-                OpenRouterLLMClient(settings = settings, httpClient = InterceptingHttpClient(delegate = baseClient))
+                OpenRouterLLMClient(settings = settings, httpClient = interceptingHttpClient(delegate = baseClient))
             )
         }
         "openai-compatible" -> {
@@ -103,7 +121,7 @@ object LlmProviderFactory {
                         baseUrl = resolvedBaseUrl,
                         chatCompletionsPath = "v1/chat/completions",
                     ),
-                    httpClient = InterceptingHttpClient(
+                    httpClient = interceptingHttpClient(
                         delegate = baseHttpClient,
                         interceptors = interceptors,
                         responseRewriter = responseRewriter,
@@ -201,6 +219,10 @@ object LlmProviderFactory {
         LLMCapability.OpenAIEndpoint.Completions,
     )
 }
+
+// 5 retries with capped backoff (1s + 2s + 4s + 8s + 16s = 31s of waiting)
+// so long-running agents survive gateway outage windows.
+internal val HTTP_RETRY_CONFIG = HttpRetryConfig(maxRetries = 5, maxDelayMs = 30_000)
 
 /**
  * Normalize an OpenAI-compatible base URL so clients can safely append
