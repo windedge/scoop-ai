@@ -302,4 +302,130 @@ class HashAutoFixTest {
         assertNull(ctx)
         assertEquals(0, storage.get(retryKey))
     }
+
+    // ---------------------------------------------------------------
+    // assist name-conflict exemption (referenced-manifest in-place update)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `assist conflict matching the referenced base name is exempted`() = runBlocking {
+        val retryKey = createStorageKey<Int>("t_retry")
+        val finalKey = createStorageKey<String>("t_final")
+        val conflictKey = createStorageKey<String>("t_conflict")
+        val suggestedKey = createStorageKey<String>("t_suggested")
+        val baseNameKey = createStorageKey<String>("t_assist_base")
+        val storage = testStorage()
+        storage.set(retryKey, 1)
+        storage.set(suggestedKey, "fd")
+        storage.set(baseNameKey, "fd")
+        val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"$goodHash64"}"""
+        val ctx = validateManifest(
+            manifest = manifest,
+            manifestIo = recordingManifestIo,
+            reviewExecutor = null,
+            retryCountKey = retryKey,
+            storage = storage,
+            maxRetries = 3,
+            usedAppNamesProvider = { setOf("fd", "micro") },
+            suggestedAppNameKey = suggestedKey,
+            appNameConflictKey = conflictKey,
+            assistBaseNameKey = baseNameKey,
+            expectedHashes = emptyMap(),
+            finalManifestSetter = { storage.set(finalKey, it) },
+        )
+        assertNull(ctx, "name-identical in-place assist must pass verify")
+        assertNull(storage.get(conflictKey), "no conflict notice for the referenced name itself")
+    }
+
+    @Test
+    fun `assist conflict exemption is case-insensitive on the base name`() = runBlocking {
+        val retryKey = createStorageKey<Int>("t_retry")
+        val finalKey = createStorageKey<String>("t_final")
+        val conflictKey = createStorageKey<String>("t_conflict")
+        val suggestedKey = createStorageKey<String>("t_suggested")
+        val baseNameKey = createStorageKey<String>("t_assist_base")
+        val storage = testStorage()
+        storage.set(retryKey, 1)
+        storage.set(suggestedKey, "FD")
+        storage.set(baseNameKey, "fd")
+        val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"$goodHash64"}"""
+        val ctx = validateManifest(
+            manifest = manifest,
+            manifestIo = recordingManifestIo,
+            reviewExecutor = null,
+            retryCountKey = retryKey,
+            storage = storage,
+            maxRetries = 3,
+            // Same case as the suggested name, so only the ignoreCase base-name comparison can exempt it.
+            usedAppNamesProvider = { setOf("FD") },
+            suggestedAppNameKey = suggestedKey,
+            appNameConflictKey = conflictKey,
+            assistBaseNameKey = baseNameKey,
+            expectedHashes = emptyMap(),
+            finalManifestSetter = { storage.set(finalKey, it) },
+        )
+        assertNull(ctx)
+        assertNull(
+            storage.get(conflictKey),
+            "a case-only difference from the assist base name must be exempted, not reported",
+        )
+    }
+
+    @Test
+    fun `assist conflict against a different name is still reported and generate stays conflict-reporting`() = runBlocking {
+        val retryKey = createStorageKey<Int>("t_retry")
+        val finalKey = createStorageKey<String>("t_final")
+        val conflictKey = createStorageKey<String>("t_conflict")
+        val suggestedKey = createStorageKey<String>("t_suggested")
+        val baseNameKey = createStorageKey<String>("t_assist_base")
+        val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"$goodHash64"}"""
+
+        // Assist session that renamed the app away from the referenced base name.
+        val assistStorage = testStorage()
+        assistStorage.set(retryKey, 1)
+        assistStorage.set(suggestedKey, "micro")
+        assistStorage.set(baseNameKey, "fd")
+        val assistCtx = validateManifest(
+            manifest = manifest,
+            manifestIo = recordingManifestIo,
+            reviewExecutor = null,
+            retryCountKey = retryKey,
+            storage = assistStorage,
+            maxRetries = 3,
+            usedAppNamesProvider = { setOf("fd", "micro") },
+            suggestedAppNameKey = suggestedKey,
+            appNameConflictKey = conflictKey,
+            assistBaseNameKey = baseNameKey,
+            expectedHashes = emptyMap(),
+            finalManifestSetter = { assistStorage.set(finalKey, it) },
+        )
+        assertNull(assistCtx, "conflict is a non-blocking notice, verify still passes")
+        assertTrue(
+            assistStorage.get(conflictKey)?.contains("micro") == true,
+            "a real conflict (name differs from the reference) must still be recorded",
+        )
+
+        // Generate session without an assist base name keeps reporting the conflict.
+        val generateStorage = testStorage()
+        generateStorage.set(retryKey, 0)
+        generateStorage.set(suggestedKey, "fd")
+        val generateCtx = validateManifest(
+            manifest = manifest,
+            manifestIo = recordingManifestIo,
+            reviewExecutor = null,
+            retryCountKey = retryKey,
+            storage = generateStorage,
+            maxRetries = 3,
+            usedAppNamesProvider = { setOf("fd") },
+            suggestedAppNameKey = suggestedKey,
+            appNameConflictKey = conflictKey,
+            expectedHashes = emptyMap(),
+            finalManifestSetter = { generateStorage.set(finalKey, it) },
+        )
+        assertNull(generateCtx, "conflict is a non-blocking notice, verify still passes")
+        assertTrue(
+            generateStorage.get(conflictKey)?.contains("fd") == true,
+            "generate path must keep reporting the conflict",
+        )
+    }
 }

@@ -184,6 +184,9 @@ fun scoopManifestStrategy(
     val analyzeDataKey = createStorageKey<AnalyzeOutput>("analyze_data")
     val suggestedAppNameKey = createStorageKey<String>("suggested_app_name")
     val appNameConflictKey = createStorageKey<String>("app_name_conflict")
+    // Base name the assist session started from (the referenced @bucket/app for in-place
+    // updates): the verify conflict check exempts a conflict against it.
+    val assistBaseNameKey = createStorageKey<String>("assist_base_name")
     val finalManifestKey = createStorageKey<String>("final_manifest")
     val explanationKey = createStorageKey<String>("final_explanation")
     val generateExplanationKey = createStorageKey<String>("generate_explanation")
@@ -216,6 +219,8 @@ fun scoopManifestStrategy(
             is SessionRequest.Assist -> {
                 storage.set(retryCountKey, 1)
                 request.suggestedAppName?.let { storage.set(suggestedAppNameKey, it) }
+                // Doubles as the reference base: an in-place update keeps that name on purpose.
+                request.suggestedAppName?.let { storage.set(assistBaseNameKey, it) }
                 storage.set(finalManifestKey, request.currentManifest)
                 request
             }
@@ -379,7 +384,7 @@ fun scoopManifestStrategy(
         // structural validation runs (empty for assist sessions: no phase outputs).
         val expectedHashes = expectedHashesFromOutputs(storage.get(analyzeDataKey), storage.get(researchDataKey))
         try {
-            validateManifest(manifest, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries, usedAppNamesProvider, suggestedAppNameKey, appNameConflictKey, expectedHashes) { storage.set(finalManifestKey, it) }
+            validateManifest(manifest, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries, usedAppNamesProvider, suggestedAppNameKey, appNameConflictKey, assistBaseNameKey, expectedHashes) { storage.set(finalManifestKey, it) }
         } finally {
             val elapsed = verifyStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
             observer.exitPhase("verify", elapsed)
@@ -604,6 +609,7 @@ internal suspend fun validateManifest(
     usedAppNamesProvider: (suspend () -> Set<String>)? = null,
     suggestedAppNameKey: AIAgentStorageKey<String>? = null,
     appNameConflictKey: AIAgentStorageKey<String>? = null,
+    assistBaseNameKey: AIAgentStorageKey<String>? = null,
     expectedHashes: Map<String, String> = emptyMap(),
     finalManifestSetter: suspend (String) -> Unit,
 ): AssistContext? {
@@ -616,7 +622,7 @@ internal suspend fun validateManifest(
         val fixed = autoFixInvalidHashes(manifest, expectedHashes)
         if (fixed != null) {
             logger.info { "[verify] Auto-fixed invalid hash(es) from phase output hashes" }
-            return validateManifest(fixed, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries, usedAppNamesProvider, suggestedAppNameKey, appNameConflictKey, expectedHashes, finalManifestSetter)
+            return validateManifest(fixed, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries, usedAppNamesProvider, suggestedAppNameKey, appNameConflictKey, assistBaseNameKey, expectedHashes, finalManifestSetter)
         }
     }
     finalManifestSetter(manifest)
@@ -665,11 +671,17 @@ internal suspend fun validateManifest(
             val usedNames = usedAppNamesProvider()
             if (usedNames.isNotEmpty()) {
                 val conflictMsg = checkAppNameConflict(suggestedName, usedNames)
-                if (conflictMsg != null) {
+                // An assist session keeps the referenced name on purpose (in-place update):
+                // a conflict against that base is expected, a renamed app still conflicts.
+                val exempt = assistBaseNameKey != null &&
+                    suggestedName.equals(storage.get(assistBaseNameKey), ignoreCase = true)
+                if (conflictMsg != null && !exempt) {
                     if (appNameConflictKey != null) {
                         storage.set(appNameConflictKey, conflictMsg)
                     }
                     logger.info { "[verify] App name conflict detected (non-blocking notice): $suggestedName" }
+                } else if (conflictMsg != null) {
+                    logger.info { "[verify] App name equals the assist reference base; conflict exempted: $suggestedName" }
                 }
             }
         } catch (e: Exception) {
