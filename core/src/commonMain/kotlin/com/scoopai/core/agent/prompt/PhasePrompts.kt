@@ -5,6 +5,7 @@ import com.scoopai.core.agent.AnalyzeOutput
 import com.scoopai.core.agent.PrefetchResult
 import com.scoopai.core.agent.ReferenceManifests
 import com.scoopai.core.agent.ResearchOutput
+import com.scoopai.core.agent.tools.ToolCallBudget
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -108,7 +109,7 @@ $task
 
    - **After `fetchLatestRelease` returns Windows assets, you have everything needed for `version`, `url`, and `hash`.** Do not call `fetchWebPage` to verify hashes — the `assets[].hash` field is the official GitHub-provided SHA256.
    - `fetchWebPage` is for **non-GitHub projects only** (where there is no API), or for finding the `checkver` pattern on the official site when GitHub releases are absent.
-   - fetchWebPage has a hard budget of 5 calls per session. Repeated calls to the same URL are auto-rejected.
+   - fetchWebPage has a hard budget of ${ToolCallBudget.FETCH_WEB_PAGE_LIMIT} calls per session. Repeated calls to the same URL are auto-rejected.
 
 ### description quality rules (CRITICAL MANDATE — follow Scoop manifest standards):
 - **Rule 1: Always prioritize GitHub About description**: If `repoInfo.description` (or `fetchRepoInfo.description`) is present, you MUST use it directly as the primary base (simply strip leading/trailing emoji like `🐳 `). Do NOT discard the official title/definition in favor of concatenating random feature sentences from README.
@@ -855,6 +856,19 @@ private fun buildAssistKernel(
         }
     }
     appendLine()
+    appendLine("## Verify Facts with Read-only Network Tools")
+    appendLine("You have these read-only network tools for fact checking:")
+    appendLine("- `parseGitHubUrl`: extract owner and repo from a GitHub URL")
+    appendLine("- `fetchRepoInfo`: repository description, license, homepage, stars")
+    appendLine("- `fetchLatestRelease`: latest release tag, assets and their hashes")
+    appendLine("- `fetchAllReleases`: recent releases (stable vs pre-release channels)")
+    appendLine("- `listReleaseAssets`: assets of one specific release")
+    appendLine("- `fetchFileContent`: read a file from the repository (LICENSE, README, etc.)")
+    appendLine("- `fetchWebPage`: fetch a web page as plain text (budget: ${ToolCallBudget.FETCH_WEB_PAGE_LIMIT} calls)")
+    appendLine("- `fetchJson`: fetch a URL and return the raw JSON")
+    appendLine("- `resolveRedirect`: follow redirects and return the final URL (budget: ${ToolCallBudget.RESOLVE_REDIRECT_LIMIT} calls)")
+    appendLine("When the user asks about a fact you can look up (repository description, license, latest version, release assets, homepage), call the matching tool; do not rely on memory for facts you can verify. Also use them to check a proposed edit before applying it (confirm a license identifier or a newer release first). These tools are read-only: they never download for hashing and never modify local files. When you state a verified fact, cite the source (repository or page URL) in your reply. Do not call them for questions the current manifest and evidence already answer, and do not call other research tools (computeSha256FromUrl, listArchiveContents, searchTextInArchive); they are not available here.")
+    appendLine()
     appendLine("## Name Conflict Resolution")
     appendLine("If the issue mentions an app name conflict with an existing Scoop bucket manifest, you MUST:")
     appendLine("1. Choose a new, unique name (e.g. prefix with the repo name or GitHub owner).")
@@ -867,5 +881,5 @@ private fun buildAssistKernel(
     appendLine("- GUI-only apps may legitimately omit `bin` and keep only `shortcuts`; do not add a `bin` field just because a review issue mentions a missing bin.")
     appendLine()
     appendLine("## Attempt")
-    append("${ctx.retryCount} / 3")
+    append("attempt ${ctx.retryCount}")
 }

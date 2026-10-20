@@ -72,4 +72,20 @@ object PhaseTools {
         REVIEW_MANIFEST,
         ASK_USER,
     )
+
+    /**
+     * Read-only tools for the assist subgraph. Download/hash/archive tools are excluded:
+     * they need a download confirmation channel the assist flow does not have.
+     */
+    val ASSIST_NETWORK_TOOL_NAMES: Set<String> = setOf(
+        PARSE_GITHUB_URL,
+        FETCH_REPO_INFO,
+        FETCH_LATEST_RELEASE,
+        FETCH_ALL_RELEASES,
+        LIST_RELEASE_ASSETS,
+        FETCH_FILE_CONTENT,
+        FETCH_WEB_PAGE,
+        FETCH_JSON,
+        RESOLVE_REDIRECT,
+    )
 }

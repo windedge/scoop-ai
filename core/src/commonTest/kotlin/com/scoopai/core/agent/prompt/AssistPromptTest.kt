@@ -714,6 +714,66 @@ class AssistPromptTest {
     }
 
     // ---------------------------------------------------------------
+    // buildAssistPrompt: read-only network verification tools
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `buildAssistPrompt lists the read-only network tools for verification`() {
+        val prompt = buildAssistPrompt(assistContext())
+
+        for (tool in listOf(
+            "parseGitHubUrl",
+            "fetchRepoInfo",
+            "fetchLatestRelease",
+            "fetchAllReleases",
+            "listReleaseAssets",
+            "fetchFileContent",
+            "fetchWebPage",
+            "fetchJson",
+            "resolveRedirect",
+        )) {
+            assertTrue(
+                prompt.contains(tool),
+                "assist prompt must document the network tool $tool, got:\n$prompt",
+            )
+        }
+    }
+
+    @Test
+    fun `buildAssistPrompt requires verifying facts with tools instead of memory`() {
+        val prompt = buildAssistPrompt(assistContext())
+
+        assertTrue(
+            prompt.contains("do not rely on memory"),
+            "assist prompt must tell the model to verify facts with tools, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildAssistPrompt requires citing the source of verified claims`() {
+        val prompt = buildAssistPrompt(assistContext())
+
+        assertTrue(
+            prompt.contains("cite the source"),
+            "assist prompt must require source citations, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `buildRepairPrompt keeps the verification guidance for fact checks`() {
+        val prompt = buildRepairPrompt(repairContext())
+
+        assertTrue(
+            prompt.contains("fetchRepoInfo"),
+            "repair prompt must keep the network tool list, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("cite the source"),
+            "repair prompt must keep the citation requirement, got:\n$prompt",
+        )
+    }
+
+    // ---------------------------------------------------------------
     // buildGeneratePrompt: optional explanation parameter note
     // ---------------------------------------------------------------
 

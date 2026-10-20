@@ -102,6 +102,13 @@ internal fun assistToolsFold(base: ToolRegistry, assistTools: List<ToolBase<*, *
     base + ToolRegistry { tools(assistTools) }
 
 /**
+ * Read-only network tools for the assist subgraph (Chat with AI). Gated on the session:
+ * the Generate repair loop must stay network-free.
+ */
+internal fun assistNetworkTools(assistOnly: Boolean, tools: List<ToolBase<*, *>>): List<ToolBase<*, *>> =
+    if (assistOnly) tools.filter { it.name in PhaseTools.ASSIST_NETWORK_TOOL_NAMES } else emptyList()
+
+/**
  * Generates a Scoop manifest using a Koog graph strategy with three LLM phases
  * (research → analyze → generate) and a deterministic verify + optional assist loop.
  *
@@ -307,7 +314,8 @@ class ScoopManifestGenerator(
         // needsBucket reply that only ask_user can resolve into a user choice.
         val askUserTool = assistAskUserTool(assistOnly, allTools)
         val wiredAssistTools =
-            listOfNotNull(assistVerifyInstallTool, saveToBucketTool, installAppTool, readManifestRefTool, askUserTool)
+            listOfNotNull(assistVerifyInstallTool, saveToBucketTool, installAppTool, readManifestRefTool, askUserTool) +
+                assistNetworkTools(assistOnly, allTools)
 
         val reviewAgent = AIAgent(
             promptExecutor = promptExecutor,

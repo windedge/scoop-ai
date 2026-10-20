@@ -1,6 +1,7 @@
 package com.scoopai.core.agent.prompt
 
 import com.scoopai.core.agent.PrefetchResult
+import com.scoopai.core.agent.tools.ToolCallBudget
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.test.assertFalse
@@ -49,5 +50,20 @@ class ResearchPrefetchPromptTest {
         val prefetch = PrefetchResult(isGitHub = false, originalUrl = "https://github.com/owner/repo")
         val prompt = buildResearchPrompt(prefetch, null)
         assertFalse(prompt.contains("PRE-COLLECTED DATA"), "Should not contain prefetch section")
+    }
+
+    @Test
+    fun `buildResearchPrompt states the real fetchWebPage budget of 10 calls`() {
+        val prefetch = PrefetchResult(isGitHub = false, originalUrl = "https://github.com/owner/repo")
+        val prompt = buildResearchPrompt(prefetch, null)
+
+        assertTrue(
+            prompt.contains("hard budget of ${ToolCallBudget.FETCH_WEB_PAGE_LIMIT} calls"),
+            "research prompt must match the code budget FETCH_WEB_PAGE_LIMIT=${ToolCallBudget.FETCH_WEB_PAGE_LIMIT}, got:\n$prompt",
+        )
+        assertFalse(
+            prompt.contains("hard budget of 5 calls"),
+            "stale budget of 5 must be gone",
+        )
     }
 }
