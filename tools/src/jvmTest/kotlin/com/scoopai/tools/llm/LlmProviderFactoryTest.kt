@@ -4,6 +4,7 @@ import ai.koog.http.client.KoogHttpClient
 import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.llm.LLMProvider
 import com.scoopai.core.llm.InterceptingHttpClient
+import com.scoopai.tools.config.ApiKeyResolver
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -191,5 +192,96 @@ class LlmProviderFactoryTest {
                 modelName = modelName,
             )
         }
+    }
+
+    // ---------------------------------------------------------------
+    // customBaseUrl tests
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `deepseek custom base url drops the trailing v1 suffix`() {
+        assertEquals(
+            "https://gateway.example.com",
+            resolveBaseUrl("deepseek", "https://gateway.example.com/v1"),
+        )
+    }
+
+    @Test
+    fun `openai custom base url drops the trailing v1 suffix`() {
+        assertEquals(
+            "https://gateway.example.com",
+            resolveBaseUrl("openai", " https://gateway.example.com/v1/ "),
+        )
+    }
+
+    @Test
+    fun `anthropic custom base url drops the trailing v1 suffix`() {
+        assertEquals(
+            "https://gateway.example.com",
+            resolveBaseUrl("anthropic", "https://gateway.example.com/v1"),
+        )
+    }
+
+    @Test
+    fun `openrouter custom base url keeps the v1 suffix`() {
+        // Stripping would turn "https://openrouter.ai/api/v1" into
+        // "https://openrouter.ai/api", which breaks the official path layout.
+        assertEquals(
+            "https://openrouter.ai/api/v1",
+            resolveBaseUrl("openrouter", "https://openrouter.ai/api/v1"),
+        )
+        assertEquals(
+            "https://gateway.example.com/api/v1",
+            resolveBaseUrl("openrouter", "https://gateway.example.com/api/v1/"),
+        )
+    }
+
+    @Test
+    fun `ollama custom base url only drops the trailing slash`() {
+        assertEquals(
+            "http://127.0.0.1:11434",
+            resolveBaseUrl("ollama", "http://127.0.0.1:11434/"),
+        )
+        assertEquals(
+            "http://127.0.0.1:11434/v1",
+            resolveBaseUrl("ollama", "http://127.0.0.1:11434/v1"),
+        )
+    }
+
+    @Test
+    fun `provider without custom base url falls back to the endpoint default`() {
+        assertEquals("https://api.deepseek.com", resolveBaseUrl("deepseek", null))
+        assertEquals("https://api.openai.com", resolveBaseUrl("openai", null))
+        assertEquals("https://api.anthropic.com", resolveBaseUrl("anthropic", null))
+        assertEquals("http://localhost:11434", resolveBaseUrl("ollama", null))
+        assertEquals("https://openrouter.ai", resolveBaseUrl("openrouter", null))
+    }
+
+    @Test
+    fun `openai-compatible keeps its mandatory base url check`() {
+        val e = assertFailsWith<Exception> {
+            LlmProviderFactory.create("openai-compatible", "key", baseUrl = null)
+        }
+        assertTrue(e.message?.contains("--base-url") == true)
+    }
+
+    // ---------------------------------------------------------------
+    // shared error message
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `factory and key resolver report an unsupported provider with the same message`() {
+        val factoryError = assertFailsWith<Exception> {
+            LlmProviderFactory.create("bogus-provider", "key")
+        }
+        val resolverError = assertFailsWith<Exception> {
+            ApiKeyResolver.resolve("bogus-provider")
+        }
+        assertEquals(factoryError.message, resolverError.message)
+        assertEquals(
+            "Unsupported provider: bogus-provider. " +
+                "Supported: deepseek, openai, anthropic, ollama, openrouter, openai-compatible",
+            factoryError.message,
+        )
     }
 }

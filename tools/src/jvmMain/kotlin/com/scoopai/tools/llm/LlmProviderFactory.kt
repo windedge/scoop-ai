@@ -2,6 +2,7 @@ package com.scoopai.tools.llm
 
 import ai.koog.http.client.KoogHttpClient
 import ai.koog.http.client.java.JavaKoogHttpClient
+import ai.koog.prompt.executor.clients.anthropic.AnthropicClientSettings
 import ai.koog.prompt.executor.clients.anthropic.AnthropicLLMClient
 import ai.koog.prompt.executor.clients.deepseek.DeepSeekClientSettings
 import ai.koog.prompt.executor.clients.deepseek.DeepSeekLLMClient
@@ -25,6 +26,7 @@ import com.scoopai.core.llm.malformedFunctionCallRetryHint
 import com.scoopai.core.llm.normalizeMissingCreated
 import com.scoopai.core.llm.reasoningFallbackToContent
 import com.scoopai.core.llm.stripToolChoice
+import kotlinx.serialization.json.Json
 
 @OptIn(kotlin.time.ExperimentalTime::class)
 object LlmProviderFactory {
@@ -47,6 +49,39 @@ object LlmProviderFactory {
     )
 
     /**
+     * HTTP client factory that applies the shared retry policy.
+     *
+     * Anthropic and Ollama build their HTTP client through their own secondary
+     * constructors, so the retry wrapper has to live in the factory layer: the
+     * clients hand over their private Json configuration and their protocol
+     * headers, and we only decorate the client they would have created. This
+     * keeps the engine free of any knowledge about the provider internals.
+     */
+    private val retryingHttpClientFactory = object : KoogHttpClient.Factory {
+        override fun create(
+            clientName: String,
+            baseUrl: String,
+            headers: Map<String, String>,
+            queryParameters: Map<String, String>,
+            requestTimeoutMillis: Long,
+            connectTimeoutMillis: Long,
+            socketTimeoutMillis: Long,
+            json: Json,
+        ): KoogHttpClient = interceptingHttpClient(
+            delegate = JavaKoogHttpClient.Factory().create(
+                clientName = clientName,
+                baseUrl = baseUrl,
+                headers = headers,
+                queryParameters = queryParameters,
+                requestTimeoutMillis = requestTimeoutMillis,
+                connectTimeoutMillis = connectTimeoutMillis,
+                socketTimeoutMillis = socketTimeoutMillis,
+                json = json,
+            )
+        )
+    }
+
+    /**
      * Create a PromptExecutor for the given provider.
      *
      * OpenAI-family clients always use the explicit Java HTTP factory so SPI
@@ -54,23 +89,37 @@ object LlmProviderFactory {
      */
     fun create(provider: String, apiKey: String, baseUrl: String? = null, modelName: String? = null): PromptExecutor = when (provider) {
         "deepseek" -> {
-            val settings = DeepSeekClientSettings()
+            val settings = DeepSeekClientSettings(baseUrl = resolveBaseUrl("deepseek", baseUrl))
             val baseClient = javaHttpClient(apiKey, settings, "DeepSeekLLMClient")
             MultiLLMPromptExecutor(
                 DeepSeekLLMClient(settings = settings, httpClient = interceptingHttpClient(delegate = baseClient))
             )
         }
         "openai" -> {
-            val settings = OpenAIClientSettings()
+            val settings = OpenAIClientSettings(baseUrl = resolveBaseUrl("openai", baseUrl))
             val baseClient = javaHttpClient(apiKey, settings, "OpenAILLMClient")
             MultiLLMPromptExecutor(
                 OpenAILLMClient(settings = settings, httpClient = interceptingHttpClient(delegate = baseClient))
             )
         }
-        "anthropic" -> MultiLLMPromptExecutor(AnthropicLLMClient(apiKey = apiKey))
-        "ollama" -> MultiLLMPromptExecutor(OllamaClient())
+        "anthropic" -> {
+            val settings = AnthropicClientSettings(baseUrl = resolveBaseUrl("anthropic", baseUrl))
+            MultiLLMPromptExecutor(
+                AnthropicLLMClient(
+                    apiKey = apiKey,
+                    settings = settings,
+                    httpClientFactory = retryingHttpClientFactory,
+                )
+            )
+        }
+        "ollama" -> MultiLLMPromptExecutor(
+            OllamaClient(
+                httpClientFactory = retryingHttpClientFactory,
+                baseUrl = resolveBaseUrl("ollama", baseUrl),
+            )
+        )
         "openrouter" -> {
-            val settings = OpenRouterClientSettings()
+            val settings = OpenRouterClientSettings(baseUrl = resolveBaseUrl("openrouter", baseUrl))
             val baseClient = javaHttpClient(apiKey, settings, "OpenRouterLLMClient")
             MultiLLMPromptExecutor(
                 OpenRouterLLMClient(settings = settings, httpClient = interceptingHttpClient(delegate = baseClient))
@@ -130,7 +179,7 @@ object LlmProviderFactory {
                 )
             )
         }
-        else -> error("Unsupported provider: $provider. Supported: deepseek, openai, anthropic, ollama, openrouter, openai-compatible")
+        else -> error(ProviderEndpoints.unsupportedProviderMessage(provider))
     }
 
     fun defaultModel(provider: String, modelName: String? = null, baseUrl: String? = null): LLModel = when {
@@ -223,6 +272,23 @@ object LlmProviderFactory {
 // 5 retries with capped backoff (1s + 2s + 4s + 8s + 16s = 31s of waiting)
 // so long-running agents survive gateway outage windows.
 internal val HTTP_RETRY_CONFIG = HttpRetryConfig(maxRetries = 5, maxDelayMs = 30_000)
+
+/**
+ * Resolve the base URL a provider client should talk to.
+ *
+ * A user supplied base URL wins over the provider default. A trailing `/v1` is
+ * stripped only for providers that append their own versioned path (see
+ * [ProviderEndpoints.Endpoint.stripV1Suffix]); OpenRouter and Ollama keep the
+ * URL exactly as typed, because stripping would break their path layout.
+ */
+internal fun resolveBaseUrl(provider: String, baseUrl: String?): String {
+    val endpoint = ProviderEndpoints.forProvider(provider)
+        ?: error(ProviderEndpoints.unsupportedProviderMessage(provider))
+    val raw = baseUrl?.trim()?.takeIf { it.isNotEmpty() }
+        ?: return endpoint.defaultBaseUrl
+        ?: error("Base URL is required for provider $provider")
+    return if (endpoint.stripV1Suffix) normalizeBaseUrl(raw) else raw.trimEnd('/')
+}
 
 /**
  * Normalize an OpenAI-compatible base URL so clients can safely append
