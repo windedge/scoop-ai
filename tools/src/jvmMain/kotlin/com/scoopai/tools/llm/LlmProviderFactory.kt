@@ -21,11 +21,8 @@ import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.llm.LLMProvider
 import ai.koog.prompt.llm.LLModel
 import com.scoopai.core.llm.HttpRetryConfig
+import com.scoopai.core.llm.KoogCompat
 import com.scoopai.core.llm.InterceptingHttpClient
-import com.scoopai.core.llm.malformedFunctionCallRetryHint
-import com.scoopai.core.llm.normalizeMissingCreated
-import com.scoopai.core.llm.reasoningFallbackToContent
-import com.scoopai.core.llm.stripToolChoice
 import kotlinx.serialization.json.Json
 
 @OptIn(kotlin.time.ExperimentalTime::class)
@@ -34,16 +31,13 @@ object LlmProviderFactory {
     /**
      * Wrap a base client with the shared retry policy so agents can survive
      * gateway outage windows (transient 5xx/429) without failing the run.
+     * No workaround chain: native provider clients only need retries.
      */
-    internal fun interceptingHttpClient(
+    internal fun retryingHttpClient(
         delegate: KoogHttpClient,
-        interceptors: List<(String) -> String> = emptyList(),
-        responseRewriter: ((String) -> String)? = null,
         onResponse: ((String) -> Unit)? = null,
-    ): InterceptingHttpClient = InterceptingHttpClient(
+    ): InterceptingHttpClient = KoogCompat.decorateHttpClient(
         delegate = delegate,
-        interceptors = interceptors,
-        responseRewriter = responseRewriter,
         onResponse = onResponse,
         retryConfig = HTTP_RETRY_CONFIG,
     )
@@ -67,7 +61,7 @@ object LlmProviderFactory {
             connectTimeoutMillis: Long,
             socketTimeoutMillis: Long,
             json: Json,
-        ): KoogHttpClient = interceptingHttpClient(
+        ): KoogHttpClient = retryingHttpClient(
             delegate = JavaKoogHttpClient.Factory().create(
                 clientName = clientName,
                 baseUrl = baseUrl,
@@ -92,14 +86,14 @@ object LlmProviderFactory {
             val settings = DeepSeekClientSettings(baseUrl = resolveBaseUrl("deepseek", baseUrl))
             val baseClient = javaHttpClient(apiKey, settings, "DeepSeekLLMClient")
             MultiLLMPromptExecutor(
-                DeepSeekLLMClient(settings = settings, httpClient = interceptingHttpClient(delegate = baseClient))
+                DeepSeekLLMClient(settings = settings, httpClient = retryingHttpClient(delegate = baseClient))
             )
         }
         "openai" -> {
             val settings = OpenAIClientSettings(baseUrl = resolveBaseUrl("openai", baseUrl))
             val baseClient = javaHttpClient(apiKey, settings, "OpenAILLMClient")
             MultiLLMPromptExecutor(
-                OpenAILLMClient(settings = settings, httpClient = interceptingHttpClient(delegate = baseClient))
+                OpenAILLMClient(settings = settings, httpClient = retryingHttpClient(delegate = baseClient))
             )
         }
         "anthropic" -> {
@@ -122,11 +116,12 @@ object LlmProviderFactory {
             val settings = OpenRouterClientSettings(baseUrl = resolveBaseUrl("openrouter", baseUrl))
             val baseClient = javaHttpClient(apiKey, settings, "OpenRouterLLMClient")
             MultiLLMPromptExecutor(
-                OpenRouterLLMClient(settings = settings, httpClient = interceptingHttpClient(delegate = baseClient))
+                OpenRouterLLMClient(settings = settings, httpClient = retryingHttpClient(delegate = baseClient))
             )
         }
         "openai-compatible" -> {
-            val rawBaseUrl = baseUrl ?: error("--base-url is required for openai-compatible provider")
+            val rawBaseUrl = baseUrl
+                ?: error(com.scoopai.tools.config.OPENAI_COMPATIBLE_BASE_URL_REQUIRED)
             // Clients append "v1/chat/completions"; strip user-supplied /v1 to avoid double path (404).
             val resolvedBaseUrl = normalizeBaseUrl(rawBaseUrl)
             // Always OpenAILLMClient: proxy responses follow OpenAI schema (no systemFingerprint).
@@ -140,41 +135,27 @@ object LlmProviderFactory {
                 clientName = "OpenAICompatibleLLMClient",
             )
             val debugHttp = isDebugHttpEnabled()
-            val interceptors = buildList {
-                // fixDoubleEncoding removed: Koog 1.1.1 (#2096) fixed the
-                // double-encoding of tool call arguments at the source.
-                // Koog's setToolChoiceRequired() has no gating, so strip
-                // tool_choice unconditionally for every model name.
-                add(::stripToolChoice)
-                if (debugHttp) add(::logRequestBody)
-            }
-            val responseLogger: ((String) -> Unit)? = if (debugHttp) {
-                { body -> System.err.println("[SCOOP_AI_DEBUG_HTTP] response: ${body.take(2000)}") }
-            } else {
-                null
-            }
-            // Some OpenAI-compatible gateways omit the required `created` field.
-            // Reasoning-only responses (content blank, no tool_calls, reasoning in an
-            // auxiliary key) are mapped to content first, then `malformed_function_call`
-            // empty turns get a text retry hint injected (so Koog can re-prompt), then
-            // `created` is filled.
-            val responseRewriter = { raw: String ->
-                normalizeMissingCreated(
-                    malformedFunctionCallRetryHint(reasoningFallbackToContent(raw)),
-                    0L,
-                )
-            }
+            // Assemble the full OpenAI-compatible workaround chain in KoogCompat:
+            // stripToolChoice on the request side; the three response rewriters
+            // (reasoning fallback -> malformed hint -> created fill) on the
+            // response side; debug logging rides along as extra interceptors
+            // and onResponse observer.
             MultiLLMPromptExecutor(
                 OpenAILLMClient(
                     settings = OpenAIClientSettings(
                         baseUrl = resolvedBaseUrl,
                         chatCompletionsPath = "v1/chat/completions",
                     ),
-                    httpClient = interceptingHttpClient(
+                    httpClient = KoogCompat.decorateHttpClient(
                         delegate = baseHttpClient,
-                        interceptors = interceptors,
-                        responseRewriter = responseRewriter,
-                        onResponse = responseLogger,
+                        openaiCompatibleOnly = true,
+                        extraRequestInterceptors = if (debugHttp) listOf(::logRequestBody) else emptyList(),
+                        onResponse = if (debugHttp) {
+                            { body -> System.err.println("[SCOOP_AI_DEBUG_HTTP] response: ${body.take(2000)}") }
+                        } else {
+                            null
+                        },
+                        retryConfig = HTTP_RETRY_CONFIG,
                     ),
                 )
             )

@@ -3,14 +3,15 @@ package com.scoopai.tools.config
 import com.scoopai.tools.llm.ProviderEndpoints
 
 /**
- * Resolves API keys for LLM providers from CLI arguments, environment variables,
- * or provider-specific defaults.
+ * Backward-compatible object facade over [resolveProviderConfig].
  *
- * This is the **single source of truth** for API key resolution.
- * Extracted from [Main.kt][com.scoopai.cli.Main] and
- * [ScoopManifestConfig][com.scoopai.tools.core.config.ScoopManifestConfig]
- * to centralize provider → key mapping.
+ * The resolution logic now lives in [resolveProviderConfig]; this facade only
+ * exists because `ScoopManifestConfig.resolveApiKey` documents a public
+ * delegation target. Kept while hosts still reference it.
+ *
+ * @see resolveProviderConfig
  */
+@Deprecated("Use resolveProviderConfig instead", ReplaceWith("resolveProviderConfig(flagApiKey = cliKey, env = env)"))
 object ApiKeyResolver {
 
     /**

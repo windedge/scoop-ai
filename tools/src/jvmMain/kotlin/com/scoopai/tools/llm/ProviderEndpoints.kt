@@ -173,6 +173,14 @@ public object ProviderEndpoints {
     }
 
     /**
+     * Single shared message for the mandatory openai-compatible base URL.
+     * The config resolution chain and the CLI re-export it so every layer
+     * reports exactly the same text for the same configuration error.
+     */
+    public const val OPENAI_COMPATIBLE_BASE_URL_REQUIRED: String =
+        "--base-url or SCOOP_AI_BASE_URL is required when using openai-compatible provider."
+
+    /**
      * Shared error message for an unsupported provider, listing every
      * supported provider id.
      */

@@ -174,7 +174,7 @@ class LlmProviderFactoryTest {
             override fun <T : Any> lines(path: String, requestBody: T, requestBodyType: kotlin.reflect.KClass<T>, parameters: Map<String, String>, headers: Map<String, String>): kotlinx.coroutines.flow.Flow<String> = throw UnsupportedOperationException()
         }
 
-        val client = LlmProviderFactory.interceptingHttpClient(delegate = noop)
+        val client = LlmProviderFactory.retryingHttpClient(delegate = noop)
         assertTrue(client is InterceptingHttpClient)
         assertEquals(HTTP_RETRY_CONFIG, client.retryConfig)
     }

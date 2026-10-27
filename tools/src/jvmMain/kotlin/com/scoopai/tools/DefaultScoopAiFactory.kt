@@ -1,12 +1,17 @@
 package com.scoopai.tools
 
 import com.scoopai.core.tools.api.ScoopVerifier
+import com.scoopai.core.AssistHost
 import com.scoopai.core.ScoopManifestGenerator
+import com.scoopai.core.SessionCallbacks
 import com.scoopai.core.artifacts.SensitiveArtifactWriter
 import com.scoopai.tools.archive.ZipArchiveInspector
 import com.scoopai.tools.cache.ScoopCacheManager
-import com.scoopai.tools.config.ProviderConfigResolver
+import com.scoopai.tools.config.OPENAI_COMPATIBLE_BASE_URL_REQUIRED
+import com.scoopai.tools.config.OPENAI_COMPATIBLE_PROVIDER
+import com.scoopai.tools.config.ResolvedProviderConfig
 import com.scoopai.tools.config.UsedAppNameScanner
+import com.scoopai.tools.config.resolveProviderConfig
 import com.scoopai.tools.github.JdkHttpGitHubApi
 import com.scoopai.tools.interaction.Question
 import com.scoopai.tools.manifest.FileManifestIo
@@ -22,9 +27,25 @@ object DefaultScoopAiFactory {
 
     fun createGenerator(
         config: ScoopAiConfig,
+        /**
+         * Aggregate engine callbacks (phase start, phase output, tool activity).
+         * The preferred form; flat callback parameters below are merged with it.
+         */
+        callbacks: SessionCallbacks? = null,
+        /**
+         * Aggregate assist host capabilities (save / install / read-reference
+         * tools). The preferred form; flat host handlers below are merged with it.
+         */
+        host: AssistHost? = null,
         onPhase: ((String) -> Unit)? = null,
         artifacts: SensitiveArtifactWriter? = null,
         usedAppNamesProvider: (suspend () -> Set<String>)? = UsedAppNameScanner::scanDefault,
+        /**
+         * Already resolved provider config. Callers that resolved earlier
+         * (e.g. the CLI composition root) pass it here so one run resolves
+         * exactly once; when null the factory resolves from [config].
+         */
+        resolved: ResolvedProviderConfig? = null,
         /**
          * In-memory listener for raw, un-masked phase output JSON (research /
          * analyze / generate / assist / repair). Forwarded to
@@ -66,15 +87,15 @@ object DefaultScoopAiFactory {
          */
         readManifestRefHandler: (suspend (bucket: String, name: String) -> String)? = null,
     ): ScoopManifestGenerator {
-        val resolved = ProviderConfigResolver.resolve(
-            cliProvider = config.provider,
-            cliApiKey = config.apiKey,
-            cliBaseUrl = config.baseUrl,
-            cliModel = config.model,
+        val resolvedConfig = resolved ?: resolveProviderConfig(
+            flagProvider = config.provider,
+            flagApiKey = config.apiKey,
+            flagBaseUrl = config.baseUrl,
+            flagModel = config.model,
         )
 
-        if (resolved.provider == "openai-compatible" && resolved.baseUrl == null) {
-            error("baseUrl or SCOOP_AI_BASE_URL is required when using openai-compatible provider.")
+        if (resolvedConfig.provider == OPENAI_COMPATIBLE_PROVIDER && resolvedConfig.baseUrl == null) {
+            error(OPENAI_COMPATIBLE_BASE_URL_REQUIRED)
         }
 
         val cache = ScoopCacheManager(keepCache = config.keepCache)
@@ -105,16 +126,23 @@ object DefaultScoopAiFactory {
         val (assistVerifier, assistUnavailableReason) = ProcessScoopVerifier.tryCreateDetailed(cache = cache)
 
         return ScoopManifestGenerator(
-            promptExecutor = resolved.createExecutor(),
-            model = resolved.model,
+            promptExecutor = resolvedConfig.createExecutor(),
+            model = resolvedConfig.model,
             toolRegistry = toolRegistry,
             maxIterations = config.maxIterations,
             manifestIo = manifestIo,
             gitHubApi = gitHubApi,
             archiveInspector = archiveInspector,
-            onPhase = onPhase,
-            onToolActivity = onToolActivity,
-            phaseOutputListener = onPhaseOutput,
+            callbacks = SessionCallbacks(
+                onPhase = onPhase ?: callbacks?.onPhase,
+                onPhaseOutput = onPhaseOutput ?: callbacks?.onPhaseOutput,
+                onToolActivity = onToolActivity ?: callbacks?.onToolActivity,
+            ),
+            host = AssistHost(
+                saveToBucket = saveToBucketHandler ?: host?.saveToBucket,
+                installApp = installAppHandler ?: host?.installApp,
+                readManifestRef = readManifestRefHandler ?: host?.readManifestRef,
+            ),
             artifacts = artifacts,
             usedAppNamesProvider = usedAppNamesProvider,
             scoopVerifier = scoopVerifier,

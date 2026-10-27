@@ -7,8 +7,9 @@ import com.scoopai.tools.DefaultToolRegistryFactory
 import com.scoopai.tools.ScoopAiConfig
 import com.scoopai.tools.archive.ZipArchiveInspector
 import com.scoopai.tools.cache.ScoopCacheManager
-import com.scoopai.tools.config.ProviderConfigResolver
 import com.scoopai.tools.config.ResolvedProviderConfig
+import com.scoopai.tools.config.resolveGithubToken
+import com.scoopai.tools.config.resolveProviderConfig
 import com.scoopai.tools.github.JdkHttpGitHubApi
 import com.scoopai.tools.manifest.FileManifestIo
 import com.scoopai.tools.verify.ProcessScoopVerifier
@@ -64,9 +65,7 @@ class CompositionRoot(
 
     /** Priority: `--github-token` > `SCOOP_AI_GITHUB_TOKEN` > `GITHUB_TOKEN` > null. */
     fun effectiveGithubToken(): String? =
-        envArgs.githubToken
-            ?: env["SCOOP_AI_GITHUB_TOKEN"]
-            ?: env["GITHUB_TOKEN"]
+        resolveGithubToken(flagGithubToken = envArgs.githubToken) { key -> env[key] }
 
     /**
      * Resolve LLM provider config from CLI flags and env fallbacks.
@@ -74,26 +73,20 @@ class CompositionRoot(
      * @throws com.scoopai.cli.error.ConfigError if openai-compatible lacks a base URL.
      */
     fun resolveProviderConfig(): ResolvedProviderConfig {
-        val config = try {
-            ProviderConfigResolver.resolve(
-                cliProvider = envArgs.provider,
-                cliApiKey = envArgs.apiKey,
-                cliBaseUrl = envArgs.baseUrl,
-                cliModel = envArgs.modelName,
+        try {
+            return com.scoopai.tools.config.resolveProviderConfig(
+                flagProvider = envArgs.provider,
+                flagApiKey = envArgs.apiKey,
+                flagBaseUrl = envArgs.baseUrl,
+                flagModel = envArgs.modelName,
+                flagGithubToken = effectiveGithubToken(),
+                env = { key -> env[key] },
             )
         } catch (e: Exception) {
             throw com.scoopai.cli.error.ConfigError(
                 e.message ?: e.javaClass.simpleName, e
             )
         }
-
-        if (config.provider == "openai-compatible" && config.baseUrl == null) {
-            throw com.scoopai.cli.error.ConfigError(
-                "--base-url or SCOOP_AI_BASE_URL is required when using openai-compatible provider."
-            )
-        }
-
-        return config
     }
 
     /**
@@ -101,10 +94,11 @@ class CompositionRoot(
      * via [DefaultScoopAiFactory] so CLI and library hosts share one path.
      */
     fun createGenerator(
-        onPhase: ((String) -> Unit)? = null,
+        /** Aggregate engine callbacks (phase start, phase output, tool activity). */
+        callbacks: com.scoopai.core.SessionCallbacks? = null,
         artifacts: com.scoopai.core.artifacts.SensitiveArtifactWriter? = null,
     ): ScoopManifestGenerator {
-        resolveProviderConfig()
+        val resolved = resolveProviderConfig()
 
         return DefaultScoopAiFactory.createGenerator(
             config = ScoopAiConfig(
@@ -118,7 +112,8 @@ class CompositionRoot(
                 keepCache = envArgs.keepCache,
                 nonInteractive = envArgs.nonInteractive,
             ),
-            onPhase = onPhase,
+            resolved = resolved,
+            callbacks = callbacks,
             artifacts = artifacts,
         )
     }

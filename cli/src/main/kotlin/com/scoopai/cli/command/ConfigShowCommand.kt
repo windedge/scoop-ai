@@ -1,17 +1,18 @@
 package com.scoopai.cli.command
 
 import com.github.ajalt.clikt.core.CliktCommand
-import com.scoopai.tools.config.ProviderConfigResolver
+import com.scoopai.tools.config.DEFAULT_PROVIDER
+import com.scoopai.tools.config.resolveProviderConfig
 
 /**
  * Display current runtime configuration.
  *
  * Shows the effective configuration after merging:
- * 1. CLI flags (not applicable here — config show reads env/defaults)
+ * 1. CLI flags (not applicable here - config show reads env/defaults)
  * 2. Environment variables
  * 3. Built-in defaults
  *
- * API keys and tokens are shown as "set" or "unset" — never the actual value.
+ * API keys and tokens are shown as "set" or "unset" - never the actual value.
  *
  * @param env Environment variable map (default: [System.getenv]), injectable for testing.
  */
@@ -51,18 +52,20 @@ class ConfigShowCommand(
     }
 
     /**
-     * Try to use [ProviderConfigResolver] first; fall back to manual env reads on failure.
+     * Try to use [resolveProviderConfig] first; fall back to manual env reads on failure.
      */
     private fun resolveProviderConfig(): Triple<String, String, String> {
         return try {
-            val config = ProviderConfigResolver.resolve()
+            val config = com.scoopai.tools.config.resolveProviderConfig(
+                env = { key -> env[key] },
+            )
             Triple(
                 config.provider,
                 config.model.id,
                 config.baseUrl ?: "default (not set)",
             )
         } catch (_: Exception) {
-            val provider = env["SCOOP_AI_PROVIDER"] ?: "deepseek"
+            val provider = env["SCOOP_AI_PROVIDER"] ?: DEFAULT_PROVIDER
             val model = env["SCOOP_AI_MODEL"] ?: "default"
             val baseUrl = env["SCOOP_AI_BASE_URL"] ?: "default (not set)"
             Triple(provider, model, baseUrl)
