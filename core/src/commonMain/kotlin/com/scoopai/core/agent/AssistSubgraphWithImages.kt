@@ -52,9 +52,32 @@ internal fun buildImageParts(images: List<BinaryImage>): List<MessagePart.Attach
     }
 
 /**
- * Copied from Koog [ai.koog.agents.ext.agent.setupSubgraphWithTask] (1.1.1); first hop
- * replaced to attach user images, attach gated by [shouldAttach] to keep repair rounds
- * text-only.
+ * Vendored copy of Koog [ai.koog.agents.ext.agent.setupSubgraphWithTask] (1.1.1)
+ * with two Scoop-AI changes. Part of the [com.scoopai.core.llm.KoogCompat]
+ * compatibility family; kept in this file because it needs the internal graph
+ * DSL surface (subgraph builder nodes/edges) that KoogCompat's llm package does
+ * not import.
+ *
+ * Trigger: two gaps in Koog 1.1.1's subgraphWithTask:
+ * 1. no way to attach binary image parts to the task message (assist sessions
+ *    accept user screenshots); and
+ * 2. a model answer that is plain text instead of a finish-tool call hard-throws
+ *    when the model carries ToolChoice capability (the assist round must be able
+ *    to answer pure questions conversationally).
+ *
+ * Changes over the original:
+ * - first hop replaced to attach user images, attach gated by [shouldAttach] to
+ *   keep repair rounds text-only (all other nodes: tool execution, finish,
+ *   retry loop are unchanged from the original);
+ * - text-only escape on the decide node: when created with
+ *   [enableTextOnlyAnswer] (the user-facing assist round) and the model answers
+ *   with plain text instead of calling the finish tool, the text is recovered as
+ *   [FinalizePayload.manifest] = "" with [FinalizePayload.explanation] = the
+ *   reply; the caller's graph routes an empty manifest into its answer/escape
+ *   path instead of normalize/verify.
+ *
+ * Retire when Koog's setupSubgraphWithTask grows an image-attach hook and a
+ * text-only answer escape; then delete this copy and use the upstream function.
  *
  * Key change over the original: the first LLM call node is a custom node that appends
  * both the task text and image parts to the prompt when [shouldAttach] returns true

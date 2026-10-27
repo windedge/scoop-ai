@@ -4,6 +4,7 @@ import ai.koog.agents.core.agent.AIAgent
 import ai.koog.agents.core.agent.GraphAIAgent
 import ai.koog.agents.core.agent.config.AIAgentConfig
 import ai.koog.agents.core.tools.ToolRegistry
+import ai.koog.agents.features.eventHandler.feature.EventHandlerConfig
 import ai.koog.agents.features.eventHandler.feature.handleEvents
 import ai.koog.agents.snapshot.feature.Persistence
 import ai.koog.prompt.dsl.prompt
@@ -49,7 +50,7 @@ import com.scoopai.core.agent.ReadManifestRefTool
 import ai.koog.agents.core.tools.ToolBase
 import ai.koog.agents.core.dsl.builder.strategy
 import ai.koog.agents.ext.agent.subgraphWithTask
-import com.scoopai.core.agent.LenientStringFinishTool
+import com.scoopai.core.llm.KoogCompat
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
@@ -130,19 +131,7 @@ class ScoopManifestGenerator(
     private val gitHubApi: GitHubApi? = null,
     /** Archive inspector for prefetching persist/search data before the LLM phase. */
     private val archiveInspector: ArchiveInspector? = null,
-    /**
-     * Callback invoked when a phase starts. Used by cli ConsoleProgress overlay.
-     */
-    private val onPhase: ((String) -> Unit)? = null,
-    /**
-     * In-memory listener invoked once per completed phase (research / analyze /
-     * generate / assist / repair) with the raw, un-masked phase output JSON
-     * (`phaseName, output`). Intended for in-memory checkpoints only (e.g.
-     * [com.scoopai.core.artifacts.ResumeData.fromPhaseOutputs]); do NOT persist
-     * this content in sensitive scenarios, as it is not masked.
-     */
-    private val phaseOutputListener: ((phaseName: String, output: String) -> Unit)? = null,
-    /** Observer for recording per-phase execution statistics. If null, creates a default instance. */
+    /** Observer for recording per-phase execution statistics. */
     private val observer: GenerationObserver = GenerationObserver(),
     /**
      * Debug artifacts writer (optional). Applies masking to all written content.
@@ -155,11 +144,6 @@ class ScoopManifestGenerator(
      * and reports a conflict error if the name is already used.
      */
     private val usedAppNamesProvider: (suspend () -> Set<String>)? = null,
-    /**
-     * Callback invoked on tool call events (Started, Completed, Failed).
-     * Used by hosts (e.g. Scooper) for transparent tool call progress reporting.
-     */
-    private val onToolActivity: ((ToolActivity) -> Unit)? = null,
     /**
      * Real install verifier wired into the review agent as the `verify_install`
      * tool. When non-null, the review agent may run a real scoop install of the
@@ -179,43 +163,119 @@ class ScoopManifestGenerator(
      * run in this session.
      */
     private val assistTestUnavailableReason: String? = null,
+    /** Aggregate engine callbacks (phase start, phase output, tool activity). */
+    private val callbacks: SessionCallbacks = SessionCallbacks.empty,
+    /** Assist-subgraph host capabilities (save / install / read-reference tools). */
+    private val host: AssistHost = AssistHost.NoOp,
+    // ------------------------------------------------------------------
+    // Deprecated flat callback forms, kept for source compatibility with
+    // existing hosts/tests; merged into multicast dispatchers below. New
+    // callers should pass [callbacks] / [host] instead.
+    // ------------------------------------------------------------------
     /**
-     * Host-provided save callback backing the assist subgraph's `save_to_bucket`
-     * tool (architecture A: the host owns the save logic). When null the tool is
-     * not registered and the prompts omit the save guidance (CLI has no host).
-     * Only an Assist session wires the tool; a Generate session's repair loop
-     * must not save mid-repair.
+     * Callback invoked when a phase starts. Used by cli ConsoleProgress overlay.
      */
-    private val saveHandler: (suspend (SaveToBucketArgs) -> String)? = null,
+    onPhase: ((String) -> Unit)? = null,
     /**
-     * Host-provided install callback backing the assist subgraph's `install_app`
-     * tool (architecture A: the host owns the install logic). When null the tool
-     * is not registered and the prompts omit the install guidance (CLI has no
-     * host). A null bucket tells the host to direct-install the current manifest
-     * from its local file (no bucket); a non-null bucket installs the manifest
-     * previously saved to that bucket. Only an Assist session wires the tool; a
-     * Generate session's repair loop must not install mid-repair.
+     * In-memory listener invoked once per completed phase (research / analyze /
+     * generate / assist / repair) with the raw, un-masked phase output JSON
+     * (`phaseName, output`). Intended for in-memory checkpoints only (e.g.
+     * [com.scoopai.core.artifacts.ResumeData.fromPhaseOutputs]); do NOT persist
+     * this content in sensitive scenarios, as it is not masked.
      */
-    private val installHandler: (suspend (bucket: String?, name: String) -> String)? = null,
+    phaseOutputListener: ((phaseName: String, output: String) -> Unit)? = null,
     /**
-     * Host-provided read callback backing the assist subgraph's
-     * `read_manifest_reference` tool (architecture A: the host owns the local
-     * bucket lookup). When null the tool is not registered and the prompts omit
-     * the reference-read guidance (CLI has no host). Backs the user's
-     * `@bucket/app` reference syntax: the model reads the referenced manifest's
-     * raw JSON to use it as a base for edits or as a style reference. Only an
-     * Assist session wires the tool; a Generate session's repair loop must not
-     * read references mid-repair.
+     * Callback invoked on tool call events (Started, Completed, Failed).
+     * Used by hosts (e.g. Scooper) for transparent tool call progress reporting.
      */
-    private val readManifestRefHandler: (suspend (bucket: String, name: String) -> String)? = null,
+    onToolActivity: ((ToolActivity) -> Unit)? = null,
+    /**
+     * Flat save callback backing the assist subgraph's save_to_bucket tool;
+     * preferred form is [host]. A Generate session's repair loop must not save.
+     */
+    saveHandler: (suspend (SaveToBucketArgs) -> String)? = null,
+    /**
+     * Flat install callback backing the assist subgraph's install_app tool;
+     * preferred form is [host]. A Generate session's repair loop must not install.
+     */
+    installHandler: (suspend (bucket: String?, name: String) -> String)? = null,
+    /**
+     * Flat read callback backing the assist subgraph's
+     * read_manifest_reference tool; preferred form is [host].
+     */
+    readManifestRefHandler: (suspend (bucket: String, name: String) -> String)? = null,
 ) {
+    private val flatOnPhase = onPhase
+    private val flatPhaseOutputListener = phaseOutputListener
+    private val flatOnToolActivity = onToolActivity
+    private val flatSaveHandler = saveHandler
+    private val flatInstallHandler = installHandler
+    private val flatReadManifestRefHandler = readManifestRefHandler
+
+    /** Multicast phase-start dispatcher: flat listener first, then aggregate. */
+    private fun emitPhaseStart(name: String) {
+        flatOnPhase?.invoke(name)
+        callbacks.onPhase?.invoke(name)
+    }
+
+    /** Multicast tool-activity dispatcher: flat listener first, then aggregate. */
+    private fun emitToolActivity(activity: ToolActivity) {
+        flatOnToolActivity?.invoke(activity)
+        callbacks.onToolActivity?.invoke(activity)
+    }
+
+    /**
+     * Shared tool-event wiring for both agents' handleEvents blocks: the outer
+     * agent uses the "[tool]" log prefix, the review agent "[review-tool]".
+     * [onCompletedExtra] lets the review agent track verify_install outcomes.
+     */
+    private fun EventHandlerConfig.toolEventWiring(
+        logPrefix: String,
+        pendingIntent: () -> String?,
+        onCompletedExtra: ((toolName: String, raw: String) -> Unit)? = null,
+    ) {
+        onToolCallStarting { ctx ->
+            observer.recordToolCall()
+            val args = sanitizeForLog(ctx.toolArgs.toString())
+            logger.info { "$logPrefix ${ctx.toolName}($args)" }
+            emitToolActivity(ToolActivity.Started(ctx.toolName, args, intent = pendingIntent()))
+        }
+        onToolCallCompleted { ctx ->
+            val raw = koogToolResultToString(ctx.toolResult)
+            logger.info { "$logPrefix ${ctx.toolName} -> ${sanitizeForLog(raw, maxLen = 200)}" }
+            emitToolActivity(ToolActivity.Completed(ctx.toolName, raw, intent = pendingIntent()))
+            onCompletedExtra?.invoke(ctx.toolName, raw)
+        }
+        onToolCallFailed { ctx ->
+            val errorMsg = sanitizeForLog(ctx.message.ifBlank { ctx.error?.message ?: "unknown tool error" }, maxLen = 200)
+            logger.warn { "$logPrefix ${ctx.toolName} failed: $errorMsg" }
+            emitToolActivity(ToolActivity.Failed(ctx.toolName, errorMsg, intent = pendingIntent()))
+        }
+    }
+
+    /**
+     * Shared bookkeeping for onLLMCallCompleted across both agents: token
+     * accounting plus the pending tool-call intent capture. Returns the intent
+     * for the caller to store; per-agent response logging stays at the call site.
+     */
+    private fun trackLlmCall(
+        ctx: ai.koog.agents.core.feature.handler.llm.LLMCallCompletedContext,
+        tokenAccumulator: TokenAccumulator,
+    ): String? {
+        val inputTokens = ctx.response?.metaInfo?.inputTokensCount?.toLong() ?: 0L
+        val outputTokens = ctx.response?.metaInfo?.outputTokensCount?.toLong() ?: 0L
+        tokenAccumulator.input += inputTokens
+        tokenAccumulator.output += outputTokens
+        observer.recordLlmCall(inputTokens, outputTokens)
+        return extractToolCallIntent(ctx.response)
+    }
     /**
      * Model with [LLMCapability.ToolChoice] stripped so that Koog uses its
      * internal re-prompt path instead of hard-throwing on text-only responses
-     * (a common thinking-model quirk).
+     * (a common thinking-model quirk). Assembly owned by KoogCompat.
      */
     private val modelWithoutToolChoice: LLModel by lazy {
-        model.copy(capabilities = model.capabilities?.filter { it != LLMCapability.ToolChoice })
+        KoogCompat.decorateModel(model, stripToolChoice = true)
     }
 
     /**
@@ -254,11 +314,26 @@ class ScoopManifestGenerator(
 
         // save_to_bucket/install_app are assist-only: a Generate session's repair
         // loop must not save or install an unverified manifest. Registered only
-        // when the host provides a handler, so CLI sessions run without them.
+        // when the host provides a handler (flat param or AssistHost aggregate),
+        // so CLI sessions run without them.
         val assistOnly = request is SessionRequest.Assist
-        val saveToBucketTool = if (assistOnly) saveHandler?.let(::SaveToBucketTool) else null
-        val installAppTool = if (assistOnly) installHandler?.let(::InstallAppTool) else null
-        val readManifestRefTool = if (assistOnly) readManifestRefHandler?.let(::ReadManifestRefTool) else null
+        // The flat save handler takes the tool args while AssistHost takes the
+        // raw (bucket, name, overwrite) triple; adapt whichever form was given.
+        var effectiveSaveHandler: (suspend (SaveToBucketArgs) -> String)? = flatSaveHandler
+        if (effectiveSaveHandler == null) {
+            host.saveToBucket?.let { triple ->
+                effectiveSaveHandler = { args: SaveToBucketArgs -> triple(args.bucket, args.name, args.overwrite) }
+            }
+        }
+        val effectiveInstallHandler = flatInstallHandler ?: host.installApp
+        val effectiveReadRefHandler = flatReadManifestRefHandler ?: host.readManifestRef
+        val saveToBucketTool = if (assistOnly) {
+            effectiveSaveHandler?.let { handler -> SaveToBucketTool(handler) }
+        } else {
+            null
+        }
+        val installAppTool = if (assistOnly) effectiveInstallHandler?.let(::InstallAppTool) else null
+        val readManifestRefTool = if (assistOnly) effectiveReadRefHandler?.let(::ReadManifestRefTool) else null
         val assistPrompt: suspend (AssistContext) -> String =
             {
                 if (it.explanatory) {
@@ -334,40 +409,22 @@ class ScoopManifestGenerator(
         ) {
             handleEvents {
                 onLLMCallCompleted { ctx ->
-                    val inputTokens = ctx.response?.metaInfo?.inputTokensCount?.toLong() ?: 0L
-                    val outputTokens = ctx.response?.metaInfo?.outputTokensCount?.toLong() ?: 0L
-                    tokenAccumulator.input += inputTokens
-                    tokenAccumulator.output += outputTokens
-                    observer.recordLlmCall(inputTokens, outputTokens)
-                    pendingToolIntent = extractToolCallIntent(ctx.response)
+                    pendingToolIntent = trackLlmCall(ctx, tokenAccumulator)
                 }
                 // Mirror the outer agent's tool wiring so hosts see review-phase
                 // verify_install activity too. With an empty registry nothing fires.
-                onToolCallStarting { ctx ->
-                    observer.recordToolCall()
-                    val args = sanitizeForLog(ctx.toolArgs.toString())
-                    logger.info { "[review-tool] ${ctx.toolName}($args)" }
-                    onToolActivity?.invoke(ToolActivity.Started(ctx.toolName, args, intent = pendingToolIntent))
-                }
-                onToolCallCompleted { ctx ->
-                    val raw = koogToolResultToString(ctx.toolResult)
-                    logger.info { "[review-tool] ${ctx.toolName} -> ${sanitizeForLog(raw, maxLen = 200)}" }
-                    onToolActivity?.invoke(ToolActivity.Completed(ctx.toolName, raw, intent = pendingToolIntent))
-                    if (ctx.toolName == com.scoopai.core.agent.VerifyInstallTool.TOOL_NAME) {
-                        when {
-                            raw.contains("\"success\":false") -> lastInstallTestFailed = true
-                            raw.contains("\"success\":true") -> lastInstallTestFailed = false
+                toolEventWiring(
+                    logPrefix = "[review-tool]",
+                    pendingIntent = { pendingToolIntent },
+                    onCompletedExtra = { toolName, raw ->
+                        if (toolName == com.scoopai.core.agent.VerifyInstallTool.TOOL_NAME) {
+                            when {
+                                raw.contains("\"success\":false") -> lastInstallTestFailed = true
+                                raw.contains("\"success\":true") -> lastInstallTestFailed = false
+                            }
                         }
-                    }
-                }
-                onToolCallFailed { ctx ->
-                    val errorMsg = sanitizeForLog(
-                        ctx.message.ifBlank { ctx.error?.message ?: "unknown tool error" },
-                        maxLen = 200,
-                    )
-                    logger.warn { "[review-tool] ${ctx.toolName} failed: $errorMsg" }
-                    onToolActivity?.invoke(ToolActivity.Failed(ctx.toolName, errorMsg, intent = pendingToolIntent))
-                }
+                    },
+                )
                 onToolValidationFailed { ctx ->
                     // Validation failures never reach Completed/Failed handlers; emit
                     // Failed so hosts do not see a hanging Started event.
@@ -376,7 +433,7 @@ class ScoopManifestGenerator(
                         maxLen = 200,
                     )
                     logger.warn { "[review-tool] ${ctx.toolName} invalid args: $errorMsg" }
-                    onToolActivity?.invoke(ToolActivity.Failed(ctx.toolName, errorMsg))
+                    emitToolActivity(ToolActivity.Failed(ctx.toolName, errorMsg))
                 }
             }
         }
@@ -393,10 +450,11 @@ class ScoopManifestGenerator(
         val phaseWrite: ((String, String) -> Unit)? = artifacts?.let { writer ->
             { phase, content -> writer.writePhase(phase, content) }
         }
-        val onPhaseOutput = if (phaseWrite != null || phaseOutputListener != null) {
+        val onPhaseOutput = if (phaseWrite != null || flatPhaseOutputListener != null || callbacks.onPhaseOutput != null) {
             { phase: String, out: String ->
                 phaseWrite?.invoke(phase, out)
-                phaseOutputListener?.invoke(phase, out)
+                flatPhaseOutputListener?.invoke(phase, out)
+                callbacks.onPhaseOutput?.invoke(phase, out)
                 Unit
             }
         } else {
@@ -415,12 +473,14 @@ class ScoopManifestGenerator(
             reviewExecutor = reviewExecutor,
             gitHubApi = gitHubApi,
             archiveInspector = archiveInspector,
-            onPhase = { name ->
-                activePhase = name
-                onPhase?.invoke(name)
-            },
+            callbacks = SessionCallbacks(
+                onPhase = { name ->
+                    activePhase = name
+                    emitPhaseStart(name)
+                },
+                onPhaseOutput = onPhaseOutput,
+            ),
             observer = observer,
-            onPhaseOutput = onPhaseOutput,
             usedAppNamesProvider = usedAppNamesProvider,
             assistTools = wiredAssistTools,
             assistImages = images,
@@ -447,30 +507,13 @@ class ScoopManifestGenerator(
             toolRegistry = outerToolRegistry,
         ) {
             handleEvents {
-                onToolCallStarting { ctx ->
-                    observer.recordToolCall()
-                    val args = sanitizeForLog(ctx.toolArgs.toString())
-                    logger.info { "[tool] ${ctx.toolName}($args)" }
-                    onToolActivity?.invoke(ToolActivity.Started(ctx.toolName, args, intent = pendingToolIntent))
-                }
-                onToolCallCompleted { ctx ->
-                    val raw = koogToolResultToString(ctx.toolResult)
-                    logger.info { "[tool] ${ctx.toolName} -> ${sanitizeForLog(raw, maxLen = 200)}" }
-                    onToolActivity?.invoke(ToolActivity.Completed(ctx.toolName, raw, intent = pendingToolIntent))
-                }
-                onToolCallFailed { ctx ->
-                    val errorMsg = sanitizeForLog(ctx.message.ifBlank { ctx.error?.message ?: "unknown tool error" }, maxLen = 200)
-                    logger.warn { "[tool] ${ctx.toolName} failed: $errorMsg" }
-                    onToolActivity?.invoke(ToolActivity.Failed(ctx.toolName, errorMsg, intent = pendingToolIntent))
-                }
+                toolEventWiring(
+                    logPrefix = "[tool]",
+                    pendingIntent = { pendingToolIntent },
+                )
                 onLLMCallCompleted { ctx ->
-                    val inputTokens = ctx.response?.metaInfo?.inputTokensCount?.toLong() ?: 0L
-                    val outputTokens = ctx.response?.metaInfo?.outputTokensCount?.toLong() ?: 0L
-                    observer.recordLlmCall(inputTokens, outputTokens)
-                    tokenAccumulator.input += inputTokens
-                    tokenAccumulator.output += outputTokens
+                    pendingToolIntent = trackLlmCall(ctx, tokenAccumulator)
                     logLlmResponse(ctx.response, tokenAccumulator)
-                    pendingToolIntent = extractToolCallIntent(ctx.response)
                 }
                 onAgentCompleted {
                     logger.info { "[agent] Agent completed." }

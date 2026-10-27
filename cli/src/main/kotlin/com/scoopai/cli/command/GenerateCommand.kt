@@ -231,7 +231,9 @@ open class GenerateCommand(
             val result: ManifestResult = try {
                 runBlocking {
                     val generator = compositionRoot.createGenerator(
-                        onPhase = { name -> progress.phase(name) },
+                        callbacks = com.scoopai.core.sessionCallbacks {
+                            onPhase { name -> progress.phase(name) }
+                        },
                         artifacts = sensitiveArtifacts,
                     )
                     // Reset tool call budget for a fresh run

@@ -45,7 +45,8 @@ public data class FinalizePayload(
 
 /**
  * Drop-in replacement for Koog's `FinishTool<String>` used by the generated
- * subgraphs (whose `Output` is now [FinalizePayload]).
+ * subgraphs (whose `Output` is now [FinalizePayload]). Internal: served
+ * exclusively through [com.scoopai.core.llm.KoogCompat.finishTool].
  *
  * ## Why this exists
  *
@@ -97,9 +98,13 @@ public data class FinalizePayload(
  *
  * The tool name stays `finalize_task_result` so prompts and the strategy graph
  * need no changes.
+ *
+ * Retire when Koog's FinishTool accepts object-or-string `result` payloads
+ * leniently (and supports the optional explanation/answered/activities
+ * protocol fields we layered on top).
  */
 @OptIn(InternalAgentToolsApi::class)
-public class LenientStringFinishTool : Tool<FinalizePayload, FinalizePayload>(
+internal class LenientStringFinishTool : Tool<FinalizePayload, FinalizePayload>(
     argsType = typeToken<FinalizePayload>(),
     resultType = typeToken<FinalizePayload>(),
     descriptor = ToolDescriptor(

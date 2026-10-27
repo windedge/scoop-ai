@@ -79,7 +79,7 @@ data class ManifestResult(
  * Context passed to the assist subgraph. Serves two callers of the same subgraph entity:
  * - **assist**: a user follow-up ([explanatory] = true), where the finalize call is asked
  *   to produce an `explanation` and may optionally answer a pure question via the escape
- *   hatch (see [com.scoopai.core.agent.LenientStringFinishTool]).
+ *   hatch (see [com.scoopai.core.llm.KoogCompat.finishTool]).
  * - **repair**: the internal fix loop after verify fails ([explanatory] = false), where no
  *   explanation is required (saving tokens).
  *

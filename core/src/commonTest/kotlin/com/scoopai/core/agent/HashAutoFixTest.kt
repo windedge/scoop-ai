@@ -5,6 +5,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import ai.koog.agents.core.agent.entity.AIAgentStorage
+import ai.koog.agents.core.agent.entity.AIAgentStorageKey
 import ai.koog.agents.core.agent.entity.createStorageKey
 import ai.koog.serialization.kotlinx.KotlinxSerializer
 import kotlinx.coroutines.runBlocking
@@ -220,7 +221,7 @@ class HashAutoFixTest {
     }
 
     // ---------------------------------------------------------------
-    // validateManifest wiring (autofix runs before validation and does
+    // ManifestVerifier wiring (autofix runs before validation and does
     // not consume a repair round)
     // ---------------------------------------------------------------
 
@@ -238,68 +239,71 @@ class HashAutoFixTest {
 
     private fun testStorage() = AIAgentStorage(KotlinxSerializer())
 
+    private fun verifier(
+        usedAppNamesProvider: (suspend () -> Set<String>)? = null,
+    ) = ManifestVerifier(
+        manifestIo = recordingManifestIo,
+        reviewExecutor = null,
+        usedAppNamesProvider = usedAppNamesProvider,
+        maxRetries = 3,
+    )
+
+    private fun verifyContext(
+        storage: AIAgentStorage,
+        retryKey: AIAgentStorageKey<Int>,
+        finalKey: AIAgentStorageKey<String>,
+        expectedHashes: Map<String, String> = emptyMap(),
+    ) = ManifestVerifier.VerifyContext(
+        storage = storage,
+        retryCountKey = retryKey,
+        expectedHashes = expectedHashes,
+        finalManifestSetter = { storage.set(finalKey, it) },
+    )
+
     @Test
-    fun `validateManifest autofixes hash and passes without consuming a repair round`() = runBlocking {
+    fun `verify autofixes hash and passes without consuming a repair round`() = runBlocking {
         val retryKey = createStorageKey<Int>("test_retry")
         val finalKey = createStorageKey<String>("test_final")
         val storage = testStorage()
         storage.set(retryKey, 0)
         val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"$truncatedHash"}"""
-        val ctx = validateManifest(
-            manifest = manifest,
-            manifestIo = recordingManifestIo,
-            reviewExecutor = null,
-            retryCountKey = retryKey,
-            storage = storage,
-            maxRetries = 3,
-            expectedHashes = mapOf("https://example.com/app.zip" to goodHash64),
-            finalManifestSetter = { storage.set(finalKey, it) },
+        val outcome = verifier().verify(
+            manifest,
+            verifyContext(storage, retryKey, finalKey, expectedHashes = mapOf("https://example.com/app.zip" to goodHash64)),
         )
-        assertNull(ctx, "fixed manifest must pass validation")
+        assertTrue(outcome.passed, "fixed manifest must pass validation")
         assertEquals(0, storage.get(retryKey), "autofix must not consume a repair round")
         assertEquals(goodHash64, Json.parseToJsonElement(storage.get(finalKey)!!).jsonObject["hash"]!!.jsonPrimitive.content)
     }
 
     @Test
-    fun `validateManifest without a resolvable source falls back to the repair loop`() = runBlocking {
+    fun `verify without a resolvable source falls back to the repair loop`() = runBlocking {
         val retryKey = createStorageKey<Int>("test_retry")
         val finalKey = createStorageKey<String>("test_final")
         val storage = testStorage()
         storage.set(retryKey, 0)
         val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"$truncatedHash"}"""
-        val ctx = validateManifest(
-            manifest = manifest,
-            manifestIo = recordingManifestIo,
-            reviewExecutor = null,
-            retryCountKey = retryKey,
-            storage = storage,
-            maxRetries = 3,
-            expectedHashes = mapOf("https://example.com/other.zip" to goodHash64),
-            finalManifestSetter = { storage.set(finalKey, it) },
+        val outcome = verifier().verify(
+            manifest,
+            verifyContext(storage, retryKey, finalKey, expectedHashes = mapOf("https://example.com/other.zip" to goodHash64)),
         )
-        assertTrue(ctx != null, "unfixable hash must reach the repair loop")
+        assertTrue(!outcome.passed, "unfixable hash must reach the repair loop")
         assertEquals(1, storage.get(retryKey))
-        assertTrue(ctx!!.feedback.contains("not a valid SHA-256 hash"))
+        assertTrue(outcome.issues.single().contains("not a valid SHA-256 hash"))
     }
 
     @Test
-    fun `validateManifest passes valid manifest through unchanged`() = runBlocking {
+    fun `verify passes valid manifest through unchanged`() = runBlocking {
         val retryKey = createStorageKey<Int>("test_retry")
         val finalKey = createStorageKey<String>("test_final")
         val storage = testStorage()
         storage.set(retryKey, 0)
         val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"$goodHash64"}"""
-        val ctx = validateManifest(
-            manifest = manifest,
-            manifestIo = recordingManifestIo,
-            reviewExecutor = null,
-            retryCountKey = retryKey,
-            storage = storage,
-            maxRetries = 3,
-            expectedHashes = mapOf("https://example.com/app.zip" to goodHash64),
-            finalManifestSetter = { storage.set(finalKey, it) },
+        val outcome = verifier().verify(
+            manifest,
+            verifyContext(storage, retryKey, finalKey, expectedHashes = mapOf("https://example.com/app.zip" to goodHash64)),
         )
-        assertNull(ctx)
+        assertTrue(outcome.passed)
         assertEquals(0, storage.get(retryKey))
     }
 
@@ -319,21 +323,18 @@ class HashAutoFixTest {
         storage.set(suggestedKey, "fd")
         storage.set(baseNameKey, "fd")
         val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"$goodHash64"}"""
-        val ctx = validateManifest(
-            manifest = manifest,
-            manifestIo = recordingManifestIo,
-            reviewExecutor = null,
-            retryCountKey = retryKey,
-            storage = storage,
-            maxRetries = 3,
-            usedAppNamesProvider = { setOf("fd", "micro") },
-            suggestedAppNameKey = suggestedKey,
-            appNameConflictKey = conflictKey,
-            assistBaseNameKey = baseNameKey,
-            expectedHashes = emptyMap(),
-            finalManifestSetter = { storage.set(finalKey, it) },
+        val ctx = verifier(usedAppNamesProvider = { setOf("fd") }).verify(
+            manifest,
+            ManifestVerifier.VerifyContext(
+                storage = storage,
+                retryCountKey = retryKey,
+                suggestedAppNameKey = suggestedKey,
+                appNameConflictKey = conflictKey,
+                assistBaseNameKey = baseNameKey,
+                finalManifestSetter = { storage.set(finalKey, it) },
+            ),
         )
-        assertNull(ctx, "name-identical in-place assist must pass verify")
+        assertTrue(ctx.passed, "name-identical in-place assist must pass verify")
         assertNull(storage.get(conflictKey), "no conflict notice for the referenced name itself")
     }
 
@@ -349,22 +350,18 @@ class HashAutoFixTest {
         storage.set(suggestedKey, "FD")
         storage.set(baseNameKey, "fd")
         val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"$goodHash64"}"""
-        val ctx = validateManifest(
-            manifest = manifest,
-            manifestIo = recordingManifestIo,
-            reviewExecutor = null,
-            retryCountKey = retryKey,
-            storage = storage,
-            maxRetries = 3,
-            // Same case as the suggested name, so only the ignoreCase base-name comparison can exempt it.
-            usedAppNamesProvider = { setOf("FD") },
-            suggestedAppNameKey = suggestedKey,
-            appNameConflictKey = conflictKey,
-            assistBaseNameKey = baseNameKey,
-            expectedHashes = emptyMap(),
-            finalManifestSetter = { storage.set(finalKey, it) },
+        val ctx = verifier(usedAppNamesProvider = { setOf("FD") }).verify(
+            manifest,
+            ManifestVerifier.VerifyContext(
+                storage = storage,
+                retryCountKey = retryKey,
+                suggestedAppNameKey = suggestedKey,
+                appNameConflictKey = conflictKey,
+                assistBaseNameKey = baseNameKey,
+                finalManifestSetter = { storage.set(finalKey, it) },
+            ),
         )
-        assertNull(ctx)
+        assertTrue(ctx.passed)
         assertNull(
             storage.get(conflictKey),
             "a case-only difference from the assist base name must be exempted, not reported",
@@ -385,21 +382,18 @@ class HashAutoFixTest {
         assistStorage.set(retryKey, 1)
         assistStorage.set(suggestedKey, "micro")
         assistStorage.set(baseNameKey, "fd")
-        val assistCtx = validateManifest(
-            manifest = manifest,
-            manifestIo = recordingManifestIo,
-            reviewExecutor = null,
-            retryCountKey = retryKey,
-            storage = assistStorage,
-            maxRetries = 3,
-            usedAppNamesProvider = { setOf("fd", "micro") },
-            suggestedAppNameKey = suggestedKey,
-            appNameConflictKey = conflictKey,
-            assistBaseNameKey = baseNameKey,
-            expectedHashes = emptyMap(),
-            finalManifestSetter = { assistStorage.set(finalKey, it) },
+        val assistCtx = verifier(usedAppNamesProvider = { setOf("micro") }).verify(
+            manifest,
+            ManifestVerifier.VerifyContext(
+                storage = assistStorage,
+                retryCountKey = retryKey,
+                suggestedAppNameKey = suggestedKey,
+                appNameConflictKey = conflictKey,
+                assistBaseNameKey = baseNameKey,
+                finalManifestSetter = { assistStorage.set(finalKey, it) },
+            ),
         )
-        assertNull(assistCtx, "conflict is a non-blocking notice, verify still passes")
+        assertTrue(assistCtx.passed, "conflict is a non-blocking notice, verify still passes")
         assertTrue(
             assistStorage.get(conflictKey)?.contains("micro") == true,
             "a real conflict (name differs from the reference) must still be recorded",
@@ -409,20 +403,17 @@ class HashAutoFixTest {
         val generateStorage = testStorage()
         generateStorage.set(retryKey, 0)
         generateStorage.set(suggestedKey, "fd")
-        val generateCtx = validateManifest(
-            manifest = manifest,
-            manifestIo = recordingManifestIo,
-            reviewExecutor = null,
-            retryCountKey = retryKey,
-            storage = generateStorage,
-            maxRetries = 3,
-            usedAppNamesProvider = { setOf("fd") },
-            suggestedAppNameKey = suggestedKey,
-            appNameConflictKey = conflictKey,
-            expectedHashes = emptyMap(),
-            finalManifestSetter = { generateStorage.set(finalKey, it) },
+        val generateCtx = verifier(usedAppNamesProvider = { setOf("fd") }).verify(
+            manifest,
+            ManifestVerifier.VerifyContext(
+                storage = generateStorage,
+                retryCountKey = retryKey,
+                suggestedAppNameKey = suggestedKey,
+                appNameConflictKey = conflictKey,
+                finalManifestSetter = { generateStorage.set(finalKey, it) },
+            ),
         )
-        assertNull(generateCtx, "conflict is a non-blocking notice, verify still passes")
+        assertTrue(generateCtx.passed, "conflict is a non-blocking notice, verify still passes")
         assertTrue(
             generateStorage.get(conflictKey)?.contains("fd") == true,
             "generate path must keep reporting the conflict",

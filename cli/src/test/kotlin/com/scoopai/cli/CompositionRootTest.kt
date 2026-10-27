@@ -211,7 +211,9 @@ class CompositionRootTest {
         val envArgs = EnvArgs(url = "https://github.com/owner/repo", apiKey = "test-key")
         val root = CompositionRoot(envArgs, emptyMap())
         var invoked = false
-        val generator = root.createGenerator(onPhase = { name -> invoked = true })
+        val generator = root.createGenerator(
+            callbacks = com.scoopai.core.SessionCallbacks(onPhase = { name -> invoked = true }),
+        )
         assertNotNull(generator)
         // onPhase is not called during construction, only during generate()
     }

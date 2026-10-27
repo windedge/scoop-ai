@@ -89,7 +89,7 @@ class ScoopManifestStrategyTest {
             generatePromptBuilder = { skeleton, analyze, _ -> buildGeneratePrompt(skeleton, analyze, null) },
             assistPromptBuilder = { if (it.explanatory) buildAssistPrompt(it) else buildRepairPrompt(it) },
             manifestIo = manifestIo,
-            onPhase = onPhase,
+            callbacks = com.scoopai.core.SessionCallbacks(onPhase = onPhase),
             observer = observer,
         )
         return AIAgent(

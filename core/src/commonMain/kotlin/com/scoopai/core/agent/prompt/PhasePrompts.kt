@@ -649,7 +649,7 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
  * additionally provides a Question Escape Hatch: if the user message is a pure
  * question about the manifest (no change request), the LLM answers via the
  * `explanation` parameter and returns the manifest verbatim (see
- * [com.scoopai.core.agent.LenientStringFinishTool] `answered` flag).
+ * [com.scoopai.core.llm.KoogCompat.finishTool] `answered` flag).
  *
  * When [installTestActive] is true the assist subgraph exposes the `verify_install`
  * tool: run it only when the user explicitly asks, in its own turn, then hand the

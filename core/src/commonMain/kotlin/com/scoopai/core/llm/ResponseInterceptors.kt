@@ -56,13 +56,16 @@ private fun hasToolCalls(message: JsonObject): Boolean {
 /**
  * Maps a reasoning-only OpenAI-compatible response to one Koog can decode.
  *
- * Some reasoner backends (e.g. DeepSeek V4 Flash behind an OpenAI-compatible
- * gateway) emit a pure-thinking response: `choices[0].message.content` is
+ * Owned by [com.scoopai.core.llm.KoogCompat.decorateHttpClient].
+ *
+ * Trigger: some reasoner backends (e.g. DeepSeek V4 Flash behind an
+ * OpenAI-compatible gateway) emit a pure-thinking response: `choices[0].message.content` is
  * null/blank and there are no `tool_calls`, with the model's reasoning held in
  * an auxiliary key (`reasoning_content` / `reasoning` / `reasoningContent`,
  * checked in that priority order). Koog ignores the auxiliary key and parses
- * the message as `parts=[]`, which (when the model lacks ToolChoice capability)
- * makes the subgraph throw "Subgraph with task must always call tools".
+ * the message as `parts=[]`, which (when the model lacks ToolChoice capability,
+ * e.g. via [com.scoopai.core.llm.KoogCompat.decorateModel]) makes the subgraph
+ * throw "Subgraph with task must always call tools".
  *
  * This rewriter copies the non-blank reasoning text into `message.content`,
  * which Koog then decodes as `MessagePart.Text` so the strategy graph can
@@ -71,8 +74,11 @@ private fun hasToolCalls(message: JsonObject): Boolean {
  * `content` already present, a non-empty `tool_calls`, or an empty `choices`
  * array. Only the complete `message.content` layer is handled (SSE chunks are
  * rewritten individually by [com.scoopai.core.llm.InterceptingHttpClient.sse]).
+ *
+ * Retire when Koog routes `MessagePart.Reasoning`-bearing responses onto its
+ * text/re-prompt edge instead of only matching plain Text parts.
  */
-public fun reasoningFallbackToContent(rawJson: String): String {
+internal fun reasoningFallbackToContent(rawJson: String): String {
     val root = parseJsonObjectOrNull(rawJson) ?: return rawJson
 
     // Must be a chat-completions response with at least one choice.
@@ -117,8 +123,16 @@ public fun reasoningFallbackToContent(rawJson: String): String {
  * Adds the locally observed Unix timestamp to an OpenAI Chat Completions
  * response when an OpenAI-compatible gateway omitted the required `created`
  * field. Other response shapes and invalid JSON are deliberately untouched.
+ *
+ * Owned by [com.scoopai.core.llm.KoogCompat.decorateHttpClient].
+ *
+ * Trigger: some OpenAI-compatible gateways omit the required `created` field;
+ * Koog's `OpenAIChatCompletionResponse` decoder throws `MissingFieldException`
+ * before any strategy code runs.
+ *
+ * Retire when Koog makes `created` optional in the response DTO.
  */
-public fun normalizeMissingCreated(rawJson: String, createdEpochSeconds: Long): String {
+internal fun normalizeMissingCreated(rawJson: String, createdEpochSeconds: Long): String {
     val root = parseJsonObjectOrNull(rawJson) ?: return rawJson
 
     if (root["choices"] !is kotlinx.serialization.json.JsonArray) return rawJson
@@ -162,8 +176,11 @@ private const val MALFORMED_FUNCTION_CALL_RETRY_HINT =
  * else (other finish_reason such as length/safety/recitation, non-blank
  * content, real tool_calls, non chat-completions shape, invalid JSON) is left
  * untouched -- those are deliberately out of scope and can be extended on demand.
+ *
+ * Retire when Koog handles the `malformed_function_call` finish reason (or the
+ * empty-turn Unhandled fallback gets its own retry loop).
  */
-public fun malformedFunctionCallRetryHint(rawJson: String): String {
+internal fun malformedFunctionCallRetryHint(rawJson: String): String {
     val root = parseJsonObjectOrNull(rawJson) ?: return rawJson
 
     // Must be a chat-completions response with at least one choice.

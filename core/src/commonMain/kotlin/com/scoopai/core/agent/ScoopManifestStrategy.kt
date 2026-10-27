@@ -13,32 +13,18 @@ import ai.koog.serialization.typeToken
 import com.scoopai.core.AssistContext
 import com.scoopai.core.ManifestResult
 import com.scoopai.core.SessionRequest
+import com.scoopai.core.llm.KoogCompat
 import com.scoopai.core.observer.GenerationObserver
 import com.scoopai.core.agent.nodes.assembleManifestSkeleton
 import com.scoopai.core.agent.nodes.finalizeManifestSkeleton
 import com.scoopai.core.agent.nodes.autoFillBinFromShortcuts
-import com.scoopai.core.agent.nodes.normalizeEnvSet
-import com.scoopai.core.agent.nodes.enforceArchitectureWrap
-import com.scoopai.core.agent.nodes.normalizeHomepage
-import com.scoopai.core.agent.nodes.removeInvalidTopLevelFields
-import com.scoopai.core.agent.nodes.normalizeBin
-import com.scoopai.core.agent.nodes.resolveDualBinConflicts
-import com.scoopai.core.agent.nodes.checkAutoupdateVersionPlaceholder
-import com.scoopai.core.agent.nodes.validatePersistPaths
-import com.scoopai.core.agent.nodes.checkAppNameConflict
 import com.scoopai.core.tools.api.ArchiveInspector
 import com.scoopai.core.tools.api.GitHubApi
 import com.scoopai.core.tools.api.ManifestIo
 import ai.koog.agents.core.agent.entity.AIAgentStorageAPI
 import ai.koog.agents.core.agent.entity.AIAgentStorageKey
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import io.github.oshai.kotlinlogging.KotlinLogging
-import kotlin.time.TimeMark
-import kotlin.time.TimeSource
+import com.scoopai.core.SessionCallbacks
 
 private val logger = KotlinLogging.logger {}
 
@@ -51,13 +37,6 @@ private val logger = KotlinLogging.logger {}
  */
 public const val SCOOP_MANIFEST_STRATEGY_NAME: String = "unified_scoop_manifest"
 
-/** Shared Json instance for phase output parsing (lenient). */
-internal val phaseJson: Json = Json {
-    ignoreUnknownKeys = true
-    isLenient = true
-    coerceInputValues = true
-}
-
 /**
  * The single source of truth for the phase name emitted for the assist/repair
  * subgraph: a user follow-up ([AssistContext.explanatory] = true) is "assist",
@@ -66,7 +45,7 @@ internal val phaseJson: Json = Json {
 internal fun assistPhaseName(ctx: AssistContext): String = if (ctx.explanatory) "assist" else "repair"
 
 /**
- * Carrier produced by the [ScoopManifestStrategy]'s checkAnswered node: the
+ * Carrier produced by the [scoopManifestStrategy]'s checkAnswered node: the
  * finalize payload plus a flag telling whether the finalize was a pure-answer
  * escape hatch (the user message was a question, so the manifest is echoed back
  * unmodified).
@@ -76,6 +55,21 @@ private data class CheckedFinalize(
     val payload: FinalizePayload,
     val isPureAnswer: Boolean,
 )
+
+/**
+ * Normalizes a finalize explanation for use: trimmed, or null when blank.
+ * Shared by the generate and assist/repair exit edges; only a usable (non-null)
+ * result may overwrite the stored explanation.
+ */
+internal fun usableExplanation(explanation: String?): String? =
+    explanation?.trim()?.takeIf { it.isNotEmpty() }
+
+/**
+ * Non-blank overwrite rule: a usable [next] replaces [previous], otherwise
+ * [previous] is kept (a repair round without an explanation must not erase the
+ * last valid one, architecture proposal 4.3).
+ */
+internal fun keepExplanation(previous: String?, next: String?): String? = next ?: previous
 
 // Repair rounds finalize with their own explanation; combine it under the generate
 // summary when they differ, otherwise keep the single explanation as-is. An assist
@@ -100,7 +94,7 @@ internal fun assistModelWithVision(agentModel: LLModel?, images: List<BinaryImag
 /**
  * Creates a graph strategy for generating Scoop manifests.
  *
- * Flow (v4 — prefetch + 3-phase + edge-based assist/repair loop):
+ * Flow (v4 -- prefetch + 3-phase + edge-based assist/repair loop):
  * ```
  * nodeStart → prefetch(deterministic: pre-collect data)
  *   → research(LLM, research tools)
@@ -124,8 +118,8 @@ internal fun assistModelWithVision(agentModel: LLModel?, images: List<BinaryImag
  * @param analyzePromptBuilder Builds the analyze prompt from [ResearchOutput].
  * @param generatePromptBuilder Builds the generate prompt from (skeleton, analyze, research).
  * @param assistPromptBuilder Builds the assist/repair prompt from [AssistContext].
- * @param manifestIo Structural validate tool (used in verify node).
- * @param reviewExecutor Semantic review executor (independent LLM agent, used in verify node).
+ * @param manifestIo Structural validate backend handed to the [ManifestVerifier].
+ * @param reviewExecutor Semantic review executor (independent LLM agent) handed to the [ManifestVerifier].
  * @param gitHubApi GitHub API for prefetching project data before LLM phases.
  * @param archiveInspector Archive inspector for prefetching persist/search data before LLM phases.
  */
@@ -142,15 +136,12 @@ fun scoopManifestStrategy(
     reviewExecutor: (suspend (String) -> String)? = null,
     gitHubApi: GitHubApi? = null,
     archiveInspector: ArchiveInspector? = null,
-    /** Callback invoked when a phase starts (name: "research", "analyze", "generate", "assist", "repair"). */
-    onPhase: ((String) -> Unit)? = null,
+    /** Engine event callbacks (phase start, phase output, tool activity). */
+    callbacks: SessionCallbacks = SessionCallbacks.empty,
+    /** Phase start/duration store; pairs with the observer's enter/exit calls. */
+    telemetry: PhaseTelemetry = PhaseTelemetry(),
     /** Observer for recording per-phase execution statistics. */
     observer: GenerationObserver = GenerationObserver(),
-    /**
-     * Callback invoked when a phase completes with its serialized output.
-     * Parameters: (phaseName, serializedOutput).
-     */
-    onPhaseOutput: ((String, String) -> Unit)? = null,
     /**
      * Provider for the set of existing manifest names in local Scoop buckets.
      * When non-null, the verify phase checks [suggestedAppName] against this set
@@ -191,12 +182,17 @@ fun scoopManifestStrategy(
     val explanationKey = createStorageKey<String>("final_explanation")
     val generateExplanationKey = createStorageKey<String>("generate_explanation")
 
-    // ── Phase timing (for progress logging) ────────────────────
-    var researchStart: TimeMark? = null
-    var analyzeStart: TimeMark? = null
-    var generateStart: TimeMark? = null
-    var assistStart: TimeMark? = null
-    var verifyStart: TimeMark? = null
+    // The verify pipeline (structure + review + conflict + autofix), extracted from
+    // this graph so it can be driven and tested independently of the graph engine.
+    val manifestVerifier = ManifestVerifier(
+        manifestIo = manifestIo,
+        reviewExecutor = reviewExecutor,
+        usedAppNamesProvider = usedAppNamesProvider,
+        maxRetries = maxRetries,
+    )
+
+    val onPhase = callbacks.onPhase
+    val onPhaseOutput = callbacks.onPhaseOutput
 
     // Captured at subgraph entry ("assist" or "repair") and used at the exit
     // edge/node so observer.enterPhase and exitPhase always use the same name.
@@ -255,13 +251,13 @@ fun scoopManifestStrategy(
         onPhase?.invoke("research")
         observer.enterPhase("research")
         logger.info { PhaseProgressLogger.starting("research") }
-        researchStart = TimeSource.Monotonic.markNow()
+        telemetry.enter("research")
         researchPromptBuilder?.invoke(prefetchResult) ?: prefetchResult.originalUrl
     }
 
     // ── Research completion logging ──
     val researchDone by node<ResearchOutput, ResearchOutput>("researchDone") { output ->
-        val elapsed = researchStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
+        val elapsed = telemetry.exit("research")
         observer.exitPhase("research", elapsed)
         logger.info { PhaseProgressLogger.completed("research", elapsed, llmCalls = observer.lastCompletedLlmCallCount()) }
         onPhaseOutput?.invoke("research", phaseJson.encodeToString(ResearchOutput.serializer(), output))
@@ -288,7 +284,7 @@ fun scoopManifestStrategy(
         onPhase?.invoke("analyze")
         observer.enterPhase("analyze")
         logger.info { PhaseProgressLogger.starting("analyze") }
-        analyzeStart = TimeSource.Monotonic.markNow()
+        telemetry.enter("analyze")
         storage.set(researchDataKey, input)
         input.suggested_app_name?.let { storage.set(suggestedAppNameKey, it) }
         analyzePromptBuilder?.invoke(input) ?: input.toString()
@@ -302,21 +298,22 @@ fun scoopManifestStrategy(
     }
 
     // ── Generate phase (LLM, no tools: review skeleton + finalize) ──
-    // Uses LenientStringFinishTool instead of Koog's default FinishTool<String>:
-    // when the model passes the manifest as a JSON object instead of a string,
-    // Koog 1.0.0 fails with "Index -1 out of bounds" (see LenientStringFinishTool kdoc).
+    // Uses the lenient finalize_task_result tool (KoogCompat.finishTool) instead
+    // of Koog's default FinishTool<String>: when the model passes the manifest as
+    // a JSON object instead of a string, Koog 1.0.0 fails with "Index -1 out of
+    // bounds" (see KoogCompat.finishTool kdoc).
     // The subgraph output is a FinalizePayload: manifest plus an optional explanation.
     // Note: subgraphWithTask's Output type parameter is the finish tool's args type
     // (FinalizePayload), not the raw String the model passes in `result`.
     val generate by subgraphWithTask<String, FinalizePayload, FinalizePayload>(
         tools = emptyList<ToolBase<*, *>>(),
-        finishTool = LenientStringFinishTool(),
+        finishTool = KoogCompat.finishTool,
         llmParams = llmParams,
     ) { skeleton ->
         onPhase?.invoke("generate")
         observer.enterPhase("generate")
         logger.info { PhaseProgressLogger.starting("generate") }
-        generateStart = TimeSource.Monotonic.markNow()
+        telemetry.enter("generate")
         storage.set(retryCountKey, 0)
         generatePromptBuilder?.invoke(skeleton, storage.get(analyzeDataKey)!!, storage.get(researchDataKey)) ?: skeleton
     }
@@ -338,7 +335,7 @@ fun scoopManifestStrategy(
         llmParams = llmParams,
     ) {
         setupAssistSubgraphWithTask(
-            finishTool = LenientStringFinishTool(),
+            finishTool = KoogCompat.finishTool,
             inputType = typeToken<AssistContext>(),
             outputTransformedType = typeToken<FinalizePayload>(),
             parallelTools = false,
@@ -351,7 +348,7 @@ fun scoopManifestStrategy(
             onPhase?.invoke(assistPhaseNameForEvents)
             observer.enterPhase(assistPhaseNameForEvents)
             logger.info { PhaseProgressLogger.starting(assistPhaseNameForEvents) }
-            assistStart = TimeSource.Monotonic.markNow()
+            telemetry.enter(assistPhaseNameForEvents)
             val base = assistPromptBuilder?.invoke(input) ?: ""
             if (assistImages.isNotEmpty() && input.explanatory) {
                 base + "\n\n[${assistImages.size} user image(s) attached to this message]"
@@ -372,21 +369,29 @@ fun scoopManifestStrategy(
     // ── Verify node (deterministic: validate + review + app name conflict) ──
     // Executed once per pass: the initial check plus every assist/repair-loop round.
     // enterPhase/exitPhase must stay strictly paired per execution (try/finally);
-    // the semantic review inside validateManifest folds into this phase's
-    // statistics (architecture proposal 4.6).
+    // the semantic review inside the verifier folds into this phase's statistics
+    // (architecture proposal 4.6).
     val verify by node<String, AssistContext?>("verify") { manifest ->
         onPhase?.invoke("verify")
         observer.enterPhase("verify")
         logger.info { PhaseProgressLogger.starting("verify") }
-        verifyStart = TimeSource.Monotonic.markNow()
+        telemetry.enter("verify")
         // Authoritative hashes from the analyze/research outputs let the verifier
         // deterministically repair LLM hash transcription errors before the
         // structural validation runs (empty for assist sessions: no phase outputs).
-        val expectedHashes = expectedHashesFromOutputs(storage.get(analyzeDataKey), storage.get(researchDataKey))
+        val context = ManifestVerifier.VerifyContext(
+            storage = storage,
+            retryCountKey = retryCountKey,
+            suggestedAppNameKey = suggestedAppNameKey,
+            appNameConflictKey = appNameConflictKey,
+            assistBaseNameKey = assistBaseNameKey,
+            expectedHashes = expectedHashesFromOutputs(storage.get(analyzeDataKey), storage.get(researchDataKey)),
+            finalManifestSetter = { storage.set(finalManifestKey, it) },
+        )
         try {
-            validateManifest(manifest, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries, usedAppNamesProvider, suggestedAppNameKey, appNameConflictKey, assistBaseNameKey, expectedHashes) { storage.set(finalManifestKey, it) }
+            manifestVerifier.verify(manifest, context).toAssistContext(manifest)
         } finally {
-            val elapsed = verifyStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
+            val elapsed = telemetry.exit("verify")
             observer.exitPhase("verify", elapsed)
             logger.info { PhaseProgressLogger.completed("verify", elapsed, llmCalls = observer.lastCompletedLlmCallCount()) }
         }
@@ -476,7 +481,7 @@ fun scoopManifestStrategy(
 
     // Main path: analyze → prepareManifest → generate → normalize
     edge(analyze forwardTo prepareManifest transformed { output ->
-        val elapsed = analyzeStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
+        val elapsed = telemetry.exit("analyze")
         observer.exitPhase("analyze", elapsed)
         logger.info { PhaseProgressLogger.completed("analyze", elapsed, llmCalls = observer.lastCompletedLlmCallCount()) }
         onPhaseOutput?.invoke("analyze", phaseJson.encodeToString(AnalyzeOutput.serializer(), output))
@@ -484,7 +489,7 @@ fun scoopManifestStrategy(
     })
     edge(prepareManifest forwardTo generate)
     edge(generate forwardTo normalize transformed { payload ->
-        val elapsed = generateStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
+        val elapsed = telemetry.exit("generate")
         observer.exitPhase("generate", elapsed)
         logger.info { PhaseProgressLogger.completed("generate", elapsed, llmCalls = observer.lastCompletedLlmCallCount()) }
         // _meta.activities rides only the onPhaseOutput channel; normalize still
@@ -493,7 +498,7 @@ fun scoopManifestStrategy(
         // Only write non-blank explanations: internal repair rounds do not require
         // an explanation, and a null/blank overwrite would lose the explanation from
         // the round that first produced it (architecture proposal 4.3).
-        payload.explanation?.trim()?.takeIf { it.isNotEmpty() }?.let { explanation ->
+        usableExplanation(payload.explanation)?.let { explanation ->
             storage.set(explanationKey, explanation)
             storage.set(generateExplanationKey, explanation)
         }
@@ -505,7 +510,7 @@ fun scoopManifestStrategy(
     // verify → assist edge below), so the phase name for events is captured at
     // entry in assistPhaseNameForEvents and reused here at exit.
     edge(assist forwardTo checkAnswered transformed { payload ->
-        val elapsed = assistStart?.elapsedNow()?.inWholeMilliseconds ?: 0L
+        val elapsed = telemetry.exit(assistPhaseNameForEvents)
         observer.exitPhase(assistPhaseNameForEvents, elapsed)
         logger.info { PhaseProgressLogger.completed(assistPhaseNameForEvents, elapsed, llmCalls = observer.lastCompletedLlmCallCount()) }
         // Same _meta-only channel rule as the generate edge.
@@ -513,7 +518,9 @@ fun scoopManifestStrategy(
         // Same non-blank-only rule as the generate edge: a repair round without a
         // usable explanation must not erase the last valid one, while a user assist
         // with a new explanation overwrites it.
-        payload.explanation?.trim()?.takeIf { it.isNotEmpty() }?.let { explanation -> storage.set(explanationKey, explanation) }
+        keepExplanation(storage.get(explanationKey), usableExplanation(payload.explanation))?.let {
+            storage.set(explanationKey, it)
+        }
         payload
     })
 
@@ -533,382 +540,17 @@ fun scoopManifestStrategy(
     })
     edge(buildFinalResult forwardTo nodeFinish)
 
-    // Verify → fail + retry ≤ 3 → repair loop (explanatory=false)
+    // Verify → fail + retry ≤ max → repair loop (explanatory=false)
     edge(verify forwardTo assist onCondition { ctx ->
         ctx != null && ctx.retryCount <= maxRetries
     } transformed { ctx ->
         ctx!!
     })
 
-    // Verify → fail + retry > 3 → buildExhaustedResult → finish
+    // Verify → fail + retry > max → buildExhaustedResult → finish
     edge(verify forwardTo buildExhaustedResult onCondition { ctx ->
         ctx != null && ctx.retryCount > maxRetries
     })
     edge(buildExhaustedResult forwardTo nodeFinish)
 }
 
-// ---------------------------------------------------------------------------
-// JSON helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Applies deterministic normalization rules to a manifest after LLM generation:
- * normalizeEnvSet → enforceArchitectureWrap → normalizeHomepage →
- * removeInvalidTopLevelFields → normalizeBin → resolveDualBinConflicts.
- */
-internal fun normalizeManifest(manifestJson: String): String {
-    var result = manifestJson
-    val afterEnv = normalizeEnvSet(result)
-    if (afterEnv != result) {
-        logger.info { "[normalize] Manifest modified by normalizeEnvSet" }
-        result = afterEnv
-    }
-    val afterArch = enforceArchitectureWrap(result)
-    if (afterArch != result) {
-        logger.info { "[normalize] Manifest modified by enforceArchitectureWrap" }
-        result = afterArch
-    }
-    val afterHomepage = normalizeHomepage(result)
-    if (afterHomepage != result) {
-        logger.info { "[normalize] Manifest modified by normalizeHomepage" }
-        result = afterHomepage
-    }
-    val afterInvalid = removeInvalidTopLevelFields(result)
-    if (afterInvalid != result) {
-        logger.info { "[normalize] Manifest modified by removeInvalidTopLevelFields" }
-        result = afterInvalid
-    }
-    val afterBinNorm = normalizeBin(result)
-    if (afterBinNorm != result) {
-        logger.info { "[normalize] Manifest modified by normalizeBin" }
-        result = afterBinNorm
-    }
-    val afterBinConflicts = try {
-        Json.parseToJsonElement(result) as? JsonObject
-    } catch (_: Exception) {
-        null
-    }?.let { resolveDualBinConflicts(it) }
-    if (afterBinConflicts != null && afterBinConflicts.toString() != result) {
-        logger.info { "[normalize] Manifest modified by resolveDualBinConflicts" }
-        result = afterBinConflicts.toString()
-    }
-    return result
-}
-
-/**
- * Validates a manifest JSON string and returns an [AssistContext] with errors if found,
- * or null if validation passes.
- */
-internal suspend fun validateManifest(
-    manifest: String,
-    manifestIo: ManifestIo?,
-    reviewExecutor: (suspend (String) -> String)?,
-    retryCountKey: AIAgentStorageKey<Int>,
-    storage: AIAgentStorageAPI,
-    maxRetries: Int,
-    usedAppNamesProvider: (suspend () -> Set<String>)? = null,
-    suggestedAppNameKey: AIAgentStorageKey<String>? = null,
-    appNameConflictKey: AIAgentStorageKey<String>? = null,
-    assistBaseNameKey: AIAgentStorageKey<String>? = null,
-    expectedHashes: Map<String, String> = emptyMap(),
-    finalManifestSetter: suspend (String) -> Unit,
-): AssistContext? {
-    // Deterministic hash autofix: a mangled (e.g. character-dropped) hash cannot
-    // be recovered by the model in the repair loop, so replace it with the hash
-    // of the same asset from the analyze/research outputs and re-run validation
-    // on the fixed manifest. The retry counter is only incremented by the pass
-    // below, so this repair does not consume a repair round.
-    if (expectedHashes.isNotEmpty()) {
-        val fixed = autoFixInvalidHashes(manifest, expectedHashes)
-        if (fixed != null) {
-            logger.info { "[verify] Auto-fixed invalid hash(es) from phase output hashes" }
-            return validateManifest(fixed, manifestIo, reviewExecutor, retryCountKey, storage, maxRetries, usedAppNamesProvider, suggestedAppNameKey, appNameConflictKey, assistBaseNameKey, expectedHashes, finalManifestSetter)
-        }
-    }
-    finalManifestSetter(manifest)
-    val errors = mutableListOf<String>()
-
-    // Step 1: Structural validation
-    if (manifestIo != null) {
-        try {
-            val validateJson = manifestIo.validate(manifest)
-            val validationErrors = parseValidateErrors(validateJson)
-            errors.addAll(validationErrors)
-            if (validationErrors.isEmpty()) {
-                logger.info { "[verify] Structural validation passed" }
-            } else {
-                logger.info { "[verify] Structural validation found ${validationErrors.size} errors" }
-            }
-        } catch (e: Exception) {
-            errors.add("Validate error: ${e.message}")
-            logger.warn { "[verify] Structural validation threw: ${e.message}" }
-        }
-    } else {
-        logger.info { "[verify] No manifestIo, skipping structural validation" }
-    }
-
-    // Step 1.5: Deterministic autoupdate placeholder backstop
-    // (runs even when structural validation is skipped — it only needs the manifest JSON)
-    checkAutoupdateVersionPlaceholder(manifest)?.let { msg ->
-        errors.add(msg)
-        logger.info { "[verify] Autoupdate placeholder check: hard-coded autoupdate.url found" }
-    }
-
-    // Step 1.6: Deterministic persist path validation
-    // (runs even when structural validation is skipped — it only needs the manifest JSON)
-    validatePersistPaths(manifest)?.let { msg ->
-        errors.add(msg)
-        logger.info { "[verify] Persist path check: invalid persist entry found" }
-    }
-
-    // Step 1.7: App name conflict check
-    // (reads suggestedAppName from storage, checks against local bucket names)
-    // NOTE: Name conflict is a non-blocking Notice; it must NOT trigger an assist/repair
-    // loop because the LLM cannot change local bucket contents. It is recorded to be surfaced in ManifestResult.issues.
-    if (usedAppNamesProvider != null && suggestedAppNameKey != null) {
-        try {
-            val suggestedName = storage.get(suggestedAppNameKey)
-            val usedNames = usedAppNamesProvider()
-            if (usedNames.isNotEmpty()) {
-                val conflictMsg = checkAppNameConflict(suggestedName, usedNames)
-                // An assist session keeps the referenced name on purpose (in-place update):
-                // a conflict against that base is expected, a renamed app still conflicts.
-                val exempt = assistBaseNameKey != null &&
-                    suggestedName.equals(storage.get(assistBaseNameKey), ignoreCase = true)
-                if (conflictMsg != null && !exempt) {
-                    if (appNameConflictKey != null) {
-                        storage.set(appNameConflictKey, conflictMsg)
-                    }
-                    logger.info { "[verify] App name conflict detected (non-blocking notice): $suggestedName" }
-                } else if (conflictMsg != null) {
-                    logger.info { "[verify] App name equals the assist reference base; conflict exempted: $suggestedName" }
-                }
-            }
-        } catch (e: Exception) {
-            logger.warn { "[verify] App name conflict check error: ${e.message}" }
-        }
-    }
-
-    // Step 2: Semantic review (only when validate passes)
-    if (errors.isEmpty() && reviewExecutor != null) {
-        logger.info { "[verify] Starting semantic review" }
-        try {
-            val reviewResult = reviewExecutor(manifest)
-            val reviewErrors = parseReviewErrors(reviewResult)
-            errors.addAll(reviewErrors)
-            logger.info { "[verify] Semantic review found ${reviewErrors.size} issues" }
-        } catch (e: Exception) {
-            val message = "Review agent error: ${e.message}"
-            errors.add(message)
-            logger.warn { "[verify] $message" }
-        }
-    } else if (errors.isNotEmpty()) {
-        logger.info { "[verify] Skipping semantic review due to ${errors.size} validation errors" }
-    } else {
-        logger.info { "[verify] No reviewExecutor, skipping semantic review" }
-    }
-
-    logger.info { "[verify] Total errors: ${errors.size}" }
-
-    if (errors.isNotEmpty()) {
-        val currentRetry = (storage.get(retryCountKey) ?: 0) + 1
-        storage.set(retryCountKey, currentRetry)
-        logger.info { "[verify] Errors found, retry #$currentRetry (max $maxRetries)" }
-        return AssistContext(manifest = manifest, feedback = errors.joinToString("\n- ", "- "), retryCount = currentRetry)
-    } else {
-        logger.info { "[verify] Validation passed, proceeding to finish" }
-        return null
-    }
-}
-
-private val codeBlockRegex = Regex("```(?:json)?\\s*\\n?([\\s\\S]*?)```")
-
-internal fun extractJsonBlock(text: String): String? {
-    codeBlockRegex.find(text)?.let { match ->
-        val candidate = match.groupValues[1].trim()
-        if (isValidJson(candidate)) return candidate
-    }
-    val trimmed = text.trim()
-    if (isValidJson(trimmed)) return trimmed
-    val start = trimmed.indexOf('{')
-    val end = trimmed.lastIndexOf('}')
-    if (start >= 0 && end > start) {
-        val sub = trimmed.substring(start, end + 1)
-        if (isValidJson(sub)) return sub
-    }
-    return null
-}
-
-internal fun isValidJson(text: String): Boolean = try {
-    Json.parseToJsonElement(text) is JsonObject
-} catch (_: Exception) {
-    false
-}
-
-/**
- * Normalizes a manifest JSON string for semantic comparison, returning an empty
- * string when the input is not a parseable JSON object. Used by the question
- * escape hatch to compare the finalize result against the input manifest: both
- * sides run through [normalizeManifest] so cosmetic differences (whitespace,
- * key order, benign normalizations) do not prevent a pure-answer from being
- * recognized, while a genuinely modified manifest fails the comparison.
- */
-internal fun normalizeIfValid(manifestJson: String): String =
-    if (isValidJson(manifestJson)) normalizeManifest(manifestJson) else ""
-
-/**
- * Splits an [AssistContext.feedback] string back into the individual issue messages.
- *
- * `feedback` is produced by `errors.joinToString("\n- ", "- ")`, so each issue line
- * is prefixed with "- ". This reverses that join so the issues can be surfaced as a
- * structured list on [ManifestResult.issues].
- */
-internal fun splitFeedback(feedback: String): List<String> {
-    if (feedback.isBlank()) return emptyList()
-    return feedback.lineSequence()
-        .map { it.removePrefix("- ").trim() }
-        .filter { it.isNotBlank() }
-        .toList()
-}
-
-/** Soft cap for the detail sentence taken from alternatives/notes. */
-private const val NO_ASSETS_DETAIL_LIMIT = 140
-
-/** Hard cap for the whole synthesized explanation, ellipsis included. */
-private const val NO_ASSETS_EXPLANATION_LIMIT = 220
-
-private const val NO_ASSETS_ELLIPSIS = "..."
-
-/**
- * Extracts the first sentence of [text], truncated to [limit] characters.
- *
- * The excerpt ends at the first sentence boundary (a "." or full-width period
- * followed by whitespace, or the end of the text) found within the first [limit]
- * characters. Abbreviation periods such as the one in "e.g." (a single letter
- * between two periods) do not count as a boundary. When no boundary exists
- * within [limit], the excerpt is backed off to the last space so words are not
- * cut in half.
- */
-internal fun firstSentence(text: String, limit: Int = NO_ASSETS_DETAIL_LIMIT): String {
-    val trimmed = text.trim()
-    if (trimmed.isEmpty()) return ""
-    val window = trimmed.take(limit)
-    window.forEachIndexed { index, c ->
-        if (c != '.' && c != '\u3002') return@forEachIndexed
-        val next = window.getOrNull(index + 1)
-        if (next != null && !next.isWhitespace()) return@forEachIndexed
-        // Skip abbreviation periods such as "e.g." / "i.e." (letter between two periods).
-        if (c == '.' && index >= 2 && window[index - 2] == '.' && window[index - 1].isLetter()) return@forEachIndexed
-        return window.take(index + 1)
-    }
-    // No sentence boundary within the limit: keep short text whole, otherwise
-    // back off to the last space to avoid splitting a word.
-    if (trimmed.length <= limit) return trimmed
-    val lastSpace = window.lastIndexOf(' ')
-    return if (lastSpace > 0) window.take(lastSpace) else window
-}
-
-/**
- * Deterministically synthesizes the noAssets explanation from the research output
- * (English fallback text, architecture proposal 4.7).
- *
- * The noAssets early-finish branch never reaches the generate/assist/repair subgraphs, so
- * the explanation of such a run can never come from a finalize_task_result call;
- * the engine produces it from the fields the research phase already gathered
- * ([ResearchOutput.alternatives], [ResearchOutput.notes], [ResearchOutput.project]).
- *
- * Output style is one or two short user-facing sentences: a fixed lead-in with the
- * project name, plus at most the first sentence of alternatives (preferred) or notes
- * (fallback). The remaining field content is not listed, and the total length is
- * capped at [NO_ASSETS_EXPLANATION_LIMIT] characters with an ellipsis on overflow.
- */
-internal fun buildNoAssetsExplanation(research: ResearchOutput): String? {
-    val builder = StringBuilder("No Windows assets found for this project")
-    if (research.project.isNotBlank()) {
-        builder.append(" (").append(research.project.trim()).append(")")
-    }
-    builder.append(".")
-    // One short detail sentence at most: prefer alternatives, fall back to notes.
-    val detailSource = when {
-        research.alternatives.isNotBlank() -> research.alternatives
-        research.notes.isNotBlank() -> research.notes
-        else -> null
-    }
-    if (detailSource != null) {
-        val detail = firstSentence(detailSource)
-        if (detail.isNotBlank()) {
-            builder.append(" ").append(detail)
-        }
-    }
-    var explanation = builder.toString()
-    if (explanation.length > NO_ASSETS_EXPLANATION_LIMIT) {
-        explanation = explanation.take(NO_ASSETS_EXPLANATION_LIMIT - NO_ASSETS_ELLIPSIS.length).trimEnd() + NO_ASSETS_ELLIPSIS
-    }
-    return explanation
-}
-
-@kotlinx.serialization.Serializable
-private data class StatusWrapper(val status: ResearchStatus = ResearchStatus.OK)
-
-/**
- * Extracts the `status` field from a JSON string.
- * Returns [ResearchStatus.OK] if the JSON cannot be parsed or the field is absent.
- */
-internal fun parseResearchStatus(output: String): ResearchStatus {
-    return try {
-        phaseJson.decodeFromString(StatusWrapper.serializer(), output).status
-    } catch (_: Exception) {
-        ResearchStatus.OK
-    }
-}
-
-/**
- * Extracts error messages from a validate JSON result.
- * Returns empty list when valid=true.
- */
-internal fun parseValidateErrors(validateJson: String): List<String> {
-    return try {
-        val obj = Json.parseToJsonElement(validateJson).jsonObject
-        if (obj["valid"]?.jsonPrimitive?.content == "true") return emptyList()
-        obj["errors"]?.jsonArray
-            ?.mapNotNull { it.jsonPrimitive.content.takeIf { c -> c.isNotBlank() } }
-            ?: emptyList()
-    } catch (_: Exception) {
-        emptyList()
-    }
-}
-
-/**
- * Extracts error-severity issue messages from a review JSON result.
- *
- * Fail-closed semantics: `approved == "true"` short-circuits to an empty list
- * (the manifest passes), but anything that cannot be positively interpreted as
- * a rejected-but-actionable review returns [REVIEW_UNPARSEABLE] so an
- * unexpected review output cannot silently pass the manifest. In particular,
- * parse failures, pure narrative text, `approved: false` with no error-severity
- * issue, or a JSON object that declares nothing interpretable all fail closed.
- * A markdown fence around the JSON is tolerated via [extractJsonBlock].
- */
-internal fun parseReviewErrors(reviewJson: String): List<String> {
-    val jsonText = extractJsonBlock(reviewJson) ?: return listOf(REVIEW_UNPARSEABLE)
-    try {
-        val obj = Json.parseToJsonElement(jsonText).jsonObject
-        if (obj["approved"]?.jsonPrimitive?.content == "true") return emptyList()
-        val errorIssues = obj["issues"]?.jsonArray
-            ?.filter { it.jsonObject["severity"]?.jsonPrimitive?.content == "error" }
-            ?.mapNotNull { it.jsonObject["message"]?.jsonPrimitive?.content }
-            .orEmpty()
-        return if (errorIssues.isEmpty()) listOf(REVIEW_UNPARSEABLE) else errorIssues
-    } catch (_: Exception) {
-        return listOf(REVIEW_UNPARSEABLE)
-    }
-}
-
-/**
- * Message returned by [parseReviewErrors] when the review output cannot be
- * interpreted (unparseable JSON, or not approved and no error-severity issue
- * could be extracted). Keeps semantic review fail-closed: an unexpected review
- * result must not silently pass the manifest.
- */
-internal const val REVIEW_UNPARSEABLE =
-    "Semantic review returned an unparseable or unexpected result"
