@@ -86,7 +86,9 @@ class ScoopManifestStrategyTest {
         val strategy = scoopManifestStrategy(
             researchPromptBuilder = { buildResearchPrompt(it, null) },
             analyzePromptBuilder = { buildAnalyzePrompt(it) },
-            generatePromptBuilder = { skeleton, analyze, _ -> buildGeneratePrompt(skeleton, analyze, null) },
+            generatePromptBuilder = { skeleton, analyze, _, assetNames ->
+                buildGeneratePrompt(skeleton, analyze, null, checksumsAssetNames = assetNames)
+            },
             assistPromptBuilder = { if (it.explanatory) buildAssistPrompt(it) else buildRepairPrompt(it) },
             manifestIo = manifestIo,
             callbacks = com.scoopai.core.SessionCallbacks(onPhase = onPhase),
@@ -614,15 +616,6 @@ class ScoopManifestStrategyTest {
         assertEquals("test-app", result.suggestedAppName)
         assertTrue(result.manifest.contains("1.0.1"), "Should contain refined version 1.0.1, got: ${result.manifest}")
         assertTrue(!result.exhausted, "Assist should succeed without being marked exhausted")
-    }
-
-    @Test
-    fun `parseResearchStatus extracts status from JSON`() {
-        assertEquals(ResearchStatus.OK, parseResearchStatus("""{"status":"ok"}"""))
-        assertEquals(ResearchStatus.NO_WINDOWS_ASSETS, parseResearchStatus("""{"status":"no_windows_assets"}"""))
-        assertEquals(ResearchStatus.OK, parseResearchStatus("not json"))
-        assertEquals(ResearchStatus.OK, parseResearchStatus("""{"noStatus":true}"""))
-        assertEquals(ResearchStatus.OK, parseResearchStatus(""))
     }
 
     // =========================================================================

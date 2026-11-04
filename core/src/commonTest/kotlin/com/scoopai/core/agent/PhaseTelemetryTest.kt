@@ -11,7 +11,8 @@ import kotlin.time.TimeSource
 /**
  * Unit tests for [PhaseTelemetry]: the start/duration store that replaces the
  * strategy's five per-phase TimeMark variables. Each enter/exit pair mirrors
- * the observer's enterPhase/exitPhase bracket for one phase execution.
+ * the observer's enterPhase/exitPhase bracket for one phase execution and the
+ * exit return value is the only duration a caller can observe.
  */
 class PhaseTelemetryTest {
 
@@ -36,50 +37,42 @@ class PhaseTelemetryTest {
         assertEquals(0L, telemetry.exit("analyze"), "no enter means no duration")
     }
 
-    @Test
-    fun `durationOf reports the last exited duration`() {
-        val telemetry = PhaseTelemetry()
-
-        telemetry.enter("generate")
-        val elapsed = telemetry.exit("generate")
-
-        assertEquals(elapsed, telemetry.durationOf("generate"))
-    }
-
-    @Test
-    fun `durationOf returns zero for a phase that never ran`() {
-        val telemetry = PhaseTelemetry()
-
-        assertEquals(0L, telemetry.durationOf("verify"))
-    }
-
     // ---------------------------------------------------------------------
     // repeated phase executions (verify / assist / repair run in loops)
     // ---------------------------------------------------------------------
 
     @Test
-    fun `a second enter-exit pair overwrites the previous duration`() {
-        val telemetry = PhaseTelemetry()
+    fun `each enter-exit pair reports its own elapsed time`() {
+        val clock = FakeClock()
+        val telemetry = PhaseTelemetry(clock = clock::mark)
 
         telemetry.enter("verify")
+        clock.now = 10L
         val first = telemetry.exit("verify")
+        clock.now = 30L
         telemetry.enter("verify")
+        clock.now = 55L
         val second = telemetry.exit("verify")
 
-        assertTrue(first >= 0L && second >= 0L)
-        assertEquals(second, telemetry.durationOf("verify"), "the latest pair wins")
+        assertEquals(10L, first, "the first pair measures only its own span")
+        assertEquals(25L, second, "a re-entered phase measures from its new mark")
     }
 
     @Test
-    fun `durations maps every exited phase to its latest duration`() {
-        val telemetry = PhaseTelemetry()
+    fun `phases are measured independently of each other`() {
+        val clock = FakeClock()
+        val telemetry = PhaseTelemetry(clock = clock::mark)
 
         telemetry.enter("research")
+        clock.now = 100L
         val research = telemetry.exit("research")
+        clock.now = 140L
         telemetry.enter("analyze")
+        clock.now = 200L
         val analyze = telemetry.exit("analyze")
 
-        assertEquals(mapOf("research" to research, "analyze" to analyze), telemetry.durations())
+        assertEquals(100L, research)
+        assertEquals(60L, analyze)
     }
 
     // ---------------------------------------------------------------------
@@ -96,7 +89,6 @@ class PhaseTelemetryTest {
         val elapsed = telemetry.exit("research")
 
         assertEquals(1234L, elapsed)
-        assertEquals(1234L, telemetry.durationOf("research"))
     }
 
     @Test
@@ -114,10 +106,10 @@ class PhaseTelemetryTest {
 private class FakeClock {
     var now: Long = 0L
 
-    fun mark(): TimeMark = FakeTimeMark(this)
+    fun mark(): TimeMark = FakeTimeMark(this, now)
 }
 
-/** TimeMark reading the shared clock at elapsedNow, so later clock moves count. */
-private class FakeTimeMark(private val clock: FakeClock) : TimeMark {
-    override fun elapsedNow(): Duration = clock.now.milliseconds
+/** TimeMark remembering its own create time so later clock moves count as elapsed. */
+private class FakeTimeMark(private val clock: FakeClock, private val startedAt: Long) : TimeMark {
+    override fun elapsedNow(): Duration = (clock.now - startedAt).milliseconds
 }

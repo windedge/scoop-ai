@@ -4,7 +4,7 @@ import ai.koog.http.client.KoogHttpClient
 import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.llm.LLMProvider
 import com.scoopai.core.llm.InterceptingHttpClient
-import com.scoopai.tools.config.ApiKeyResolver
+import com.scoopai.tools.config.resolveProviderConfig
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -275,7 +275,7 @@ class LlmProviderFactoryTest {
             LlmProviderFactory.create("bogus-provider", "key")
         }
         val resolverError = assertFailsWith<Exception> {
-            ApiKeyResolver.resolve("bogus-provider")
+            resolveProviderConfig(flagProvider = "bogus-provider", env = { null })
         }
         assertEquals(factoryError.message, resolverError.message)
         assertEquals(

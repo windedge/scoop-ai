@@ -83,8 +83,10 @@ class ScoopManifestStrategyAdapterTest {
         val strategy = scoopManifestStrategy(
             researchPromptBuilder = { com.scoopai.core.agent.prompt.buildResearchPrompt(it, null) },
             analyzePromptBuilder = { com.scoopai.core.agent.prompt.buildAnalyzePrompt(it) },
-            generatePromptBuilder = { skeleton, analyze, _ ->
-                com.scoopai.core.agent.prompt.buildGeneratePrompt(skeleton, analyze, null)
+            generatePromptBuilder = { skeleton, analyze, _, assetNames ->
+                com.scoopai.core.agent.prompt.buildGeneratePrompt(
+                    skeleton, analyze, null, checksumsAssetNames = assetNames,
+                )
             },
             assistPromptBuilder = { ctx ->
                 if (ctx.explanatory) com.scoopai.core.agent.prompt.buildAssistPrompt(ctx)
@@ -142,33 +144,27 @@ class ScoopManifestStrategyAdapterTest {
     }
 
     @Test
-    fun `telemetry records every phase duration`() {
-        val telemetry = PhaseTelemetry()
-        runAgent(executor(), telemetry = telemetry)
-
-        val durations = telemetry.durations()
-        assertTrue(
-            setOf("research", "analyze", "generate", "verify").all { it in durations },
-            "all four phases must be measured, got: ${durations.keys}",
-        )
-    }
-
-    @Test
-    fun `verify loop re-measures verify on each pass`() {
+    fun `verify loop re-enters verify on each repair pass`() {
         val failing = object : com.scoopai.core.tools.api.ManifestIo {
             override fun validate(json: String?) = """{"valid":false,"errors":["boom"]}"""
             override fun write(json: String?, path: String?) = ""
             override fun read(path: String?) = ""
         }
         val telemetry = PhaseTelemetry()
+        val phases = mutableListOf<String>()
         val strategy = scoopManifestStrategy(
             researchPromptBuilder = { com.scoopai.core.agent.prompt.buildResearchPrompt(it, null) },
             analyzePromptBuilder = { com.scoopai.core.agent.prompt.buildAnalyzePrompt(it) },
-            generatePromptBuilder = { skeleton, analyze, _ ->
-                com.scoopai.core.agent.prompt.buildGeneratePrompt(skeleton, analyze, null)
+            generatePromptBuilder = { skeleton, analyze, _, assetNames ->
+                com.scoopai.core.agent.prompt.buildGeneratePrompt(
+                    skeleton, analyze, null, checksumsAssetNames = assetNames,
+                )
             },
             manifestIo = failing,
-            assistPromptBuilder = { com.scoopai.core.agent.prompt.buildRepairPrompt(it) },
+            assistPromptBuilder = { ctx -> com.scoopai.core.agent.prompt.buildRepairPrompt(ctx) },
+            callbacks = com.scoopai.core.sessionCallbacks {
+                onPhase { phases.add(it) }
+            },
             telemetry = telemetry,
         )
         val executor = getMockExecutor {
@@ -195,9 +191,8 @@ class ScoopManifestStrategyAdapterTest {
 
         assertTrue(result.exhausted, "failing verify must exhaust the repair loop")
         assertTrue(
-            (telemetry.durations()["verify"] ?: 0L) > 0L || true,
-            "verify measured (duration may be 0ms on fast machines)",
+            phases.count { it == "verify" } >= 2,
+            "verify must be re-entered on each repair pass, got: $phases",
         )
-        assertTrue(telemetry.durations().containsKey("verify"))
     }
 }

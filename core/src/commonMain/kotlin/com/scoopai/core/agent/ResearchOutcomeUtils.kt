@@ -86,18 +86,3 @@ internal fun buildNoAssetsExplanation(research: ResearchOutput): String? {
     }
     return explanation
 }
-
-@kotlinx.serialization.Serializable
-private data class StatusWrapper(val status: ResearchStatus = ResearchStatus.OK)
-
-/**
- * Extracts the `status` field from a JSON string.
- * Returns [ResearchStatus.OK] if the JSON cannot be parsed or the field is absent.
- */
-internal fun parseResearchStatus(output: String): ResearchStatus {
-    return try {
-        phaseJson.decodeFromString(StatusWrapper.serializer(), output).status
-    } catch (_: Exception) {
-        ResearchStatus.OK
-    }
-}
