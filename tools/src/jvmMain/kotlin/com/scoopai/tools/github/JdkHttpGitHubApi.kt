@@ -5,6 +5,7 @@ import ai.koog.agents.core.tools.annotations.LLMDescription
 import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
 import ai.koog.agents.core.tools.validateNotNull
+import com.scoopai.core.agent.nodes.extractSha256
 import com.scoopai.core.tools.api.GitHubApi
 import com.scoopai.tools.http.RetryingHttpClient
 import com.scoopai.tools.http.RetryingHttpClient.HttpException
@@ -285,5 +286,14 @@ class JdkHttpGitHubApi(
         put("name", asset.getStringOrNull("name"))
         put("browser_download_url", asset.getStringOrNull("browser_download_url"))
         put("size", asset.getLongOrNull("size"))
+        // GitHub returns the asset checksum as "sha256:<64 hex chars>"; surface it
+        // as "hash" (the field name the prompts promise) only for well-formed
+        // sha256 digests. Shared helper keeps casing/format handling symmetric
+        // with core's filterWindowsAssets.
+        val digest = asset.getStringOrNull("digest")
+        if (digest != null) {
+            val hex = extractSha256(digest)
+            if (hex.isNotEmpty()) put("hash", hex)
+        }
     }
 }

@@ -385,12 +385,159 @@ private fun hasVersionVariable(url: String): Boolean =
     SCOOP_VERSION_VARIABLES.any { url.contains(it) }
 
 /**
+ * Scoop autoupdate variables that expand to a plain name (no path semantics),
+ * so a template carrying them can still be matched against release asset
+ * basenames with a `.+` wildcard.
+ */
+private val SCOOP_WILDCARD_VARIABLES = listOf(
+    "\$checksum",
+    "\$sha256", "\$sha512", "\$md5", "\$dir",
+)
+
+/**
+ * Scoop autoupdate variables that expand to a full URL (with path). A template
+ * carrying them cannot be matched against the basename-only asset list, so the
+ * check is skipped (prefer missed findings over false positives).
+ */
+private val SCOOP_FULL_URL_VARIABLES = listOf("\$baseurl", "\$urlNoExt")
+
+/**
  * A "rolling" download URL never embeds the version (e.g. `/latest`, `/stable/`,
  * `/nightly`); for these, autoupdate legitimately has no `$version` placeholder.
  */
 private fun isRollingUrl(url: String): Boolean {
     val clean = url.substringBefore('#').lowercase()
     return clean.contains("/latest") || clean.contains("/stable/") || clean.contains("/nightly")
+}
+
+/** A `hash.url` paired with the main download URL from the same scope. */
+private fun collectAutoupdateHashUrls(autoupdate: JsonObject): List<Pair<String, String?>> {
+    val pairs = mutableListOf<Pair<String, String?>>()
+    fun addPair(scope: JsonObject, fallbackUrl: String? = null) {
+        val hashUrl = ((scope["hash"] as? JsonObject)?.get("url") as? JsonPrimitive)?.content ?: return
+        val mainUrl = (scope["url"] as? JsonPrimitive)?.content ?: fallbackUrl
+        pairs.add(hashUrl to mainUrl)
+    }
+    addPair(autoupdate)
+    (autoupdate["architecture"] as? JsonObject)?.let { arch ->
+        // A hash block misplaced directly under architecture: $url expansion
+        // falls back to the first real arch entry's url (not the hash block)
+        val fallbackUrl = arch.values
+            .filterIsInstance<JsonObject>()
+            .filter { it["hash"] !is JsonObject }
+            .firstNotNullOfOrNull { (it["url"] as? JsonPrimitive)?.content }
+        addPair(arch, fallbackUrl)
+        arch.forEach { (_, entry) -> (entry as? JsonObject)?.let(::addPair) }
+    }
+    return pairs
+}
+
+/**
+ * Builds a regex from a URL template: `$url` expands to the escaped basename
+ * of the main download URL, version and basename variables become `.+` (the
+ * concrete asset name carries the actual version), everything else is literal.
+ * Returns null when the template cannot be reliably expanded and the check
+ * must be skipped (prefer missed findings over false positives):
+ * - `$url` with no main download URL in scope,
+ * - full-URL variables (`$baseurl`, `$urlNoExt`) that can never match a
+ *   basename-only asset list (e.g. the valid `$baseurl/checksums.txt` pattern),
+ * - unknown `$xxx` variables and `${...}` expressions.
+ */
+internal fun templateToRegex(template: String, mainUrlBasename: String?): Regex? {
+    val variables = (SCOOP_VERSION_VARIABLES + SCOOP_WILDCARD_VARIABLES + SCOOP_FULL_URL_VARIABLES +
+        listOf("\$url", "\$basename", "\$basenameNoExt"))
+        .sortedByDescending { it.length }
+    val sb = StringBuilder()
+    var i = 0
+    while (i < template.length) {
+        val variable = variables.firstOrNull { template.startsWith(it, i) }
+        when {
+            variable != null -> {
+                when (variable) {
+                    // $url/$basename expand to the sibling download's basename;
+                    // without that URL in scope the template cannot be expanded
+                    "\$url", "\$basename" -> {
+                        if (mainUrlBasename == null) return null
+                        sb.append(Regex.escape(mainUrlBasename))
+                    }
+                    "\$basenameNoExt" -> {
+                        if (mainUrlBasename == null) return null
+                        sb.append(Regex.escape(mainUrlBasename.substringBeforeLast('.')))
+                    }
+                    in SCOOP_FULL_URL_VARIABLES -> return null
+                    else -> sb.append(".+")
+                }
+                i += variable.length
+            }
+            template[i] == '$' -> {
+                // ${...} expression or an unknown variable: unexpandable, skip
+                if (template.startsWith("\$" + "{", i)) return null
+                if (template.getOrNull(i + 1)?.isLetter() == true) return null
+                sb.append(Regex.escape("$"))
+                i++
+            }
+            else -> {
+                sb.append(Regex.escape(template[i].toString()))
+                i++
+            }
+        }
+    }
+    return Regex(sb.toString(), RegexOption.IGNORE_CASE)
+}
+
+/**
+ * Checksum-file suffixes whose sibling hallucination the guard checks. A
+ * `hash.url` ending in one of these must resolve to a real release asset.
+ */
+private val CHECKSUM_SUFFIXES = listOf(".sha256", ".sha512", ".md5")
+
+/**
+ * Deterministic guard against hallucinated checksum companion URLs.
+ *
+ * GitHub releases rarely publish a `<file>.sha256` sibling; models nonetheless
+ * invent one, and the resulting autoupdate 404s on every update. When an
+ * `autoupdate.hash.url` ends in a checksum suffix (.sha256/.sha512/.md5), its
+ * full basename must match a real release asset name in [releaseAssetNames]:
+ * `$url` expands to the sibling download URL's basename, version and basename
+ * variables match any text (the asset list carries concrete versions). A
+ * template that cannot be reliably expanded skips the check (prefer missed
+ * findings over false positives): full-URL variables (`$baseurl`/`$urlNoExt`,
+ * which can never match a basename-only asset list), unknown `$xxx` variables,
+ * or `$url` without a main URL in scope. Empty [releaseAssetNames]
+ * (non-GitHub source, rate limit) skips the check.
+ */
+internal fun checkAutoupdateSha256Template(
+    manifestJson: String,
+    releaseAssetNames: List<String>,
+): String? {
+    if (releaseAssetNames.isEmpty()) return null
+    val json = try {
+        Json.parseToJsonElement(manifestJson) as? JsonObject ?: return null
+    } catch (_: Exception) {
+        return null
+    }
+    val autoupdate = json["autoupdate"] as? JsonObject ?: return null
+    for ((hashUrl, mainUrl) in collectAutoupdateHashUrls(autoupdate)) {
+        // lowercase once: common stdlib has no ignoreCase overloads here, and
+        // the comparison below is case-insensitive anyway
+        val lower = hashUrl.substringBefore('#').lowercase()
+        val basename = lower.substringAfterLast('/')
+        // The full basename (including the checksum suffix) is the template:
+        // it must match a real asset name verbatim, not just the payload file
+        if (CHECKSUM_SUFFIXES.none(basename::endsWith)) continue
+        val mainBasename = mainUrl?.substringBefore('#')?.substringAfterLast('/')
+        val templateRegex = templateToRegex(basename, mainBasename)
+        val matches = templateRegex != null && releaseAssetNames.any { asset ->
+            templateRegex.matches(asset)
+        }
+        if (!matches) {
+            return "autoupdate.hash.url points to a guessed checksum companion file that is " +
+                "not in the release assets: $hashUrl. GitHub releases rarely ship per-file checksum " +
+                "siblings (.sha256/.sha512/.md5). Remove the hash block, or point it at a " +
+                "checksums file that really exists in the release assets."
+        }
+    }
+    return null
 }
 
 // ---------------------------------------------------------------------------
@@ -463,6 +610,8 @@ internal fun checkAppNameConflict(appName: String?, usedNames: Set<String>): Str
 data class RawAssetInfo(
     val url: String,
     val filename: String,
+    /** GitHub API digest (e.g. "sha256:<64 hex>"), empty when absent */
+    val digest: String = "",
 )
 
 // ---------------------------------------------------------------------------
@@ -544,9 +693,24 @@ fun filterWindowsAssets(assets: List<RawAssetInfo>): List<WindowsAsset> {
             architecture = detectArchitecture(asset.filename),
             asset_type = extension.removePrefix("."),
             source = "release_api",
+            hash = extractSha256(asset.digest),
         )
     }
 }
+
+/**
+ * Extracts the hex part from a GitHub digest ("sha256:<hex>").
+ * Returns empty string when the digest is absent, has a non-sha256 prefix, or
+ * the hex part does not look like a real SHA-256 (64 hex chars, case ignored).
+ * Shared by core ([filterWindowsAssets]) and tools ([JdkHttpGitHubApi]).
+ */
+fun extractSha256(digest: String): String {
+    if (!digest.startsWith("sha256:", ignoreCase = true)) return ""
+    val hex = digest.substringAfter(':').trim()
+    return if (SHA256_HEX_REGEX.matches(hex)) hex else ""
+}
+
+private val SHA256_HEX_REGEX = Regex("[a-f0-9]{64}", RegexOption.IGNORE_CASE)
 
 // ---------------------------------------------------------------------------
 // Asset prioritization

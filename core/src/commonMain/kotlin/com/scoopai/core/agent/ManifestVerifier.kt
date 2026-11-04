@@ -3,6 +3,7 @@ package com.scoopai.core.agent
 import ai.koog.agents.core.agent.entity.AIAgentStorageAPI
 import ai.koog.agents.core.agent.entity.AIAgentStorageKey
 import com.scoopai.core.AssistContext
+import com.scoopai.core.agent.nodes.checkAutoupdateSha256Template
 import com.scoopai.core.agent.nodes.checkAutoupdateVersionPlaceholder
 import com.scoopai.core.agent.nodes.checkAppNameConflict
 import com.scoopai.core.agent.nodes.validatePersistPaths
@@ -18,8 +19,9 @@ private val logger = KotlinLogging.logger {}
 
 /**
  * Deterministic verify pipeline extracted from the strategy graph: structural
- * validation, deterministic backstops (autoupdate placeholder, persist paths),
- * app name conflict notice, semantic review, and the hash autofix pre-pass.
+ * validation, deterministic backstops (autoupdate placeholder, persist paths,
+ * .sha256 companion URLs), app name conflict notice, semantic review, and the
+ * hash autofix pre-pass.
  *
  * The strategy graph owns when verify runs and what the outcome drives (repair
  * loop or finish); this class owns how a single pass produces that outcome.
@@ -38,7 +40,8 @@ internal class ManifestVerifier(
 ) {
     /**
      * Per-pass context: storage access, the storage keys verify reads and
-     * writes, authoritative hashes for the autofix pre-pass, and the sink the
+     * writes, authoritative hashes for the autofix pre-pass, the release asset
+     * names for the `.sha256` companion-URL guard, and the sink the
      * examined manifest is written to before validation.
      */
     internal data class VerifyContext(
@@ -48,6 +51,7 @@ internal class ManifestVerifier(
         val appNameConflictKey: AIAgentStorageKey<String>? = null,
         val assistBaseNameKey: AIAgentStorageKey<String>? = null,
         val expectedHashes: Map<String, String> = emptyMap(),
+        val releaseAssetNames: List<String> = emptyList(),
         val finalManifestSetter: suspend (String) -> Unit,
     )
 
@@ -83,7 +87,7 @@ internal class ManifestVerifier(
         context.finalManifestSetter(manifest)
         val errors = mutableListOf<String>()
 
-        // Step 1: Structural validation
+        // Structural validation
         if (manifestIo != null) {
             try {
                 val validateJson = manifestIo.validate(manifest)
@@ -102,21 +106,26 @@ internal class ManifestVerifier(
             logger.info { "[verify] No manifestIo, skipping structural validation" }
         }
 
-        // Step 1.5: Deterministic autoupdate placeholder backstop
+        // Deterministic autoupdate placeholder backstop
         // (runs even when structural validation is skipped: it only needs the manifest JSON)
         checkAutoupdateVersionPlaceholder(manifest)?.let { msg ->
             errors.add(msg)
             logger.info { "[verify] Autoupdate placeholder check: hard-coded autoupdate.url found" }
         }
 
-        // Step 1.6: Deterministic persist path validation
-        // (runs even when structural validation is skipped: it only needs the manifest JSON)
+        // Deterministic persist path validation
         validatePersistPaths(manifest)?.let { msg ->
             errors.add(msg)
             logger.info { "[verify] Persist path check: invalid persist entry found" }
         }
 
-        // Step 1.7: App name conflict check
+        // Deterministic checksum companion-URL guard (.sha256/.sha512/.md5)
+        checkAutoupdateSha256Template(manifest, context.releaseAssetNames)?.let { msg ->
+            errors.add(msg)
+            logger.info { "[verify] Autoupdate .sha256 guard: hallucinated companion URL found" }
+        }
+
+        // App name conflict check
         // (reads suggestedAppName from storage, checks against local bucket names)
         // NOTE: Name conflict is a non-blocking Notice; it must NOT trigger an assist/repair
         // loop because the LLM cannot change local bucket contents. It is recorded to be surfaced in ManifestResult.issues.
@@ -144,7 +153,7 @@ internal class ManifestVerifier(
             }
         }
 
-        // Step 2: Semantic review (only when validate passes)
+        // Semantic review (only when validate passes)
         if (errors.isEmpty() && reviewExecutor != null) {
             logger.info { "[verify] Starting semantic review" }
             try {

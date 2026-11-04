@@ -116,12 +116,16 @@ internal fun assistModelWithVision(agentModel: LLModel?, images: List<BinaryImag
  * @param llmParams LLM parameters (thinking mode, etc.).
  * @param researchPromptBuilder Builds the research prompt from [PrefetchResult].
  * @param analyzePromptBuilder Builds the analyze prompt from [ResearchOutput].
- * @param generatePromptBuilder Builds the generate prompt from (skeleton, analyze, research).
+ * @param generatePromptBuilder Builds the generate prompt from (skeleton, analyze, research,
+ *   effective release asset names).
  * @param assistPromptBuilder Builds the assist/repair prompt from [AssistContext].
  * @param manifestIo Structural validate backend handed to the [ManifestVerifier].
  * @param reviewExecutor Semantic review executor (independent LLM agent) handed to the [ManifestVerifier].
  * @param gitHubApi GitHub API for prefetching project data before LLM phases.
  * @param archiveInspector Archive inspector for prefetching persist/search data before LLM phases.
+ * @param releaseAssetNamesProvider Supplies the effective release's asset names to the
+ *   generate prompt. Null (the default) reads the prefetch storage key at prompt-build
+ *   time, so a resumed run still sees the list when the prefetch node was restored.
  */
 @OptIn(ai.koog.agents.core.annotation.InternalAgentsApi::class)
 fun scoopManifestStrategy(
@@ -130,12 +134,13 @@ fun scoopManifestStrategy(
     llmParams: LLMParams? = null,
     researchPromptBuilder: (suspend (PrefetchResult) -> String)? = null,
     analyzePromptBuilder: (suspend (ResearchOutput) -> String)? = null,
-    generatePromptBuilder: (suspend (String, AnalyzeOutput, ResearchOutput?) -> String)? = null,
+    generatePromptBuilder: (suspend (String, AnalyzeOutput, ResearchOutput?, List<String>) -> String)? = null,
     assistPromptBuilder: (suspend (AssistContext) -> String)? = null,
     manifestIo: ManifestIo? = null,
     reviewExecutor: (suspend (String) -> String)? = null,
     gitHubApi: GitHubApi? = null,
     archiveInspector: ArchiveInspector? = null,
+    releaseAssetNamesProvider: (() -> List<String>)? = null,
     /** Engine event callbacks (phase start, phase output, tool activity). */
     callbacks: SessionCallbacks = SessionCallbacks.empty,
     /** Phase start/duration store; pairs with the observer's enter/exit calls. */
@@ -181,6 +186,9 @@ fun scoopManifestStrategy(
     val finalManifestKey = createStorageKey<String>("final_manifest")
     val explanationKey = createStorageKey<String>("final_explanation")
     val generateExplanationKey = createStorageKey<String>("generate_explanation")
+    // Effective release's asset names, captured by the prefetch node for the
+    // verify-side .sha256 companion-URL guard (empty when not available).
+    val releaseAssetNamesKey = createStorageKey<List<String>>("release_asset_names")
 
     // The verify pipeline (structure + review + conflict + autofix), extracted from
     // this graph so it can be driven and tested independently of the graph engine.
@@ -226,7 +234,10 @@ fun scoopManifestStrategy(
     // ── Prefetch node (deterministic: pre-collect project data before LLM phases) ──
     val prefetch by node<SessionRequest, PrefetchResult>("prefetch") { request ->
         val gen = request as SessionRequest.Generate
-        executePrefetch(gen.url, gitHubApi, archiveInspector)
+        val result = executePrefetch(gen.url, gitHubApi, archiveInspector)
+        val assetNames = result.latestRelease?.assets?.map { it.name } ?: emptyList()
+        storage.set(releaseAssetNamesKey, assetNames)
+        result
     }
 
     // ── Prepare Assist context directly from request ──
@@ -305,6 +316,9 @@ fun scoopManifestStrategy(
     // The subgraph output is a FinalizePayload: manifest plus an optional explanation.
     // Note: subgraphWithTask's Output type parameter is the finish tool's args type
     // (FinalizePayload), not the raw String the model passes in `result`.
+    // Cross-check happens in ScoopManifestGenerator: the default builder receives
+    // a checksumsFilename already validated against the actual release assets, or
+    // null when the model hallucinated the filename (note dropped there).
     val generate by subgraphWithTask<String, FinalizePayload, FinalizePayload>(
         tools = emptyList<ToolBase<*, *>>(),
         finishTool = KoogCompat.finishTool,
@@ -315,7 +329,8 @@ fun scoopManifestStrategy(
         logger.info { PhaseProgressLogger.starting("generate") }
         telemetry.enter("generate")
         storage.set(retryCountKey, 0)
-        generatePromptBuilder?.invoke(skeleton, storage.get(analyzeDataKey)!!, storage.get(researchDataKey)) ?: skeleton
+        val assetNames = releaseAssetNamesProvider?.invoke() ?: storage.get(releaseAssetNamesKey) ?: emptyList()
+        generatePromptBuilder?.invoke(skeleton, storage.get(analyzeDataKey)!!, storage.get(researchDataKey), assetNames) ?: skeleton
     }
 
     // ── Assist subgraph (LLM, optional tools, lightweight fix loop) ──
@@ -386,6 +401,7 @@ fun scoopManifestStrategy(
             appNameConflictKey = appNameConflictKey,
             assistBaseNameKey = assistBaseNameKey,
             expectedHashes = expectedHashesFromOutputs(storage.get(analyzeDataKey), storage.get(researchDataKey)),
+            releaseAssetNames = storage.get(releaseAssetNamesKey) ?: emptyList(),
             finalManifestSetter = { storage.set(finalManifestKey, it) },
         )
         try {

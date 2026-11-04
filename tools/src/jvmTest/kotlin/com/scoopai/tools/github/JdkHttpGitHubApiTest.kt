@@ -3,6 +3,7 @@ package com.scoopai.tools.github
 import com.scoopai.tools.http.RetryingHttpClient
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Test
@@ -177,6 +178,100 @@ class JdkHttpGitHubApiTest {
         val json = Json.parseToJsonElement(result).jsonObject
 
         assertEquals("MIT", json["license"]?.jsonPrimitive?.content)
+    }
+
+    // ---------------------------------------------------------------
+    // `assetToJson exposes GitHub digest as hash`
+    // ---------------------------------------------------------------
+    @Test
+    fun `assetToJson exposes sha256 digest as hex hash`() = runBlocking {
+        val httpSpy = object : RetryingHttpClient() {
+            override fun get(url: String, headers: Map<String, String>): HttpResponse<String> {
+                val digest = "sha256:" + "a".repeat(64)
+                return StubHttpResponse(
+                    body = """{"tag_name":"v1.0.0","assets":[{"name":"app.zip","browser_download_url":"https://x/app.zip","size":10,"digest":"$digest"}]}""",
+                )
+            }
+        }
+        val api = JdkHttpGitHubApi(httpClient = httpSpy)
+
+        val result = api.fetchLatestRelease(owner = "o", repo = "r")
+        val asset = Json.parseToJsonElement(result).jsonObject["assets"]!!.jsonArray[0].jsonObject
+
+        assertEquals("a".repeat(64), asset["hash"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `assetToJson strips uppercase SHA256 prefix and keeps valid hex`() = runBlocking {
+        // uppercase prefix previously leaked through removePrefix("sha256:")
+        val httpSpy = object : RetryingHttpClient() {
+            override fun get(url: String, headers: Map<String, String>): HttpResponse<String> {
+                val digest = "SHA256:" + "AB".repeat(32)
+                return StubHttpResponse(
+                    body = """{"tag_name":"v1.0.0","assets":[{"name":"app.zip","browser_download_url":"https://x/app.zip","size":10,"digest":"$digest"}]}""",
+                )
+            }
+        }
+        val api = JdkHttpGitHubApi(httpClient = httpSpy)
+
+        val result = api.fetchLatestRelease(owner = "o", repo = "r")
+        val asset = Json.parseToJsonElement(result).jsonObject["assets"]!!.jsonArray[0].jsonObject
+
+        assertEquals("AB".repeat(32), asset["hash"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `assetToJson omits hash for malformed sha256 payload`() = runBlocking {
+        // short hex (not 64 chars) must not surface as a hash
+        val httpSpy = object : RetryingHttpClient() {
+            override fun get(url: String, headers: Map<String, String>): HttpResponse<String> {
+                val digest = "sha256:abc"
+                return StubHttpResponse(
+                    body = """{"tag_name":"v1.0.0","assets":[{"name":"app.zip","browser_download_url":"https://x/app.zip","size":10,"digest":"$digest"}]}""",
+                )
+            }
+        }
+        val api = JdkHttpGitHubApi(httpClient = httpSpy)
+
+        val result = api.fetchLatestRelease(owner = "o", repo = "r")
+        val asset = Json.parseToJsonElement(result).jsonObject["assets"]!!.jsonArray[0].jsonObject
+
+        assertTrue(!asset.containsKey("hash"), "hash must be absent for malformed sha256 payload")
+    }
+
+    @Test
+    fun `assetToJson omits hash when digest is missing`() = runBlocking {
+        val httpSpy = object : RetryingHttpClient() {
+            override fun get(url: String, headers: Map<String, String>): HttpResponse<String> {
+                return StubHttpResponse(
+                    body = """{"tag_name":"v1.0.0","assets":[{"name":"app.zip","browser_download_url":"https://x/app.zip","size":10}]}""",
+                )
+            }
+        }
+        val api = JdkHttpGitHubApi(httpClient = httpSpy)
+
+        val result = api.fetchLatestRelease(owner = "o", repo = "r")
+        val asset = Json.parseToJsonElement(result).jsonObject["assets"]!!.jsonArray[0].jsonObject
+
+        assertTrue(!asset.containsKey("hash"), "hash must be absent when digest is missing")
+    }
+
+    @Test
+    fun `assetToJson omits hash for non-sha256 digest prefixes`() = runBlocking {
+        val httpSpy = object : RetryingHttpClient() {
+            override fun get(url: String, headers: Map<String, String>): HttpResponse<String> {
+                val digest = "sha512:" + "b".repeat(128)
+                return StubHttpResponse(
+                    body = """{"tag_name":"v1.0.0","assets":[{"name":"app.zip","browser_download_url":"https://x/app.zip","digest":"$digest"}]}""",
+                )
+            }
+        }
+        val api = JdkHttpGitHubApi(httpClient = httpSpy)
+
+        val result = api.fetchLatestRelease(owner = "o", repo = "r")
+        val asset = Json.parseToJsonElement(result).jsonObject["assets"]!!.jsonArray[0].jsonObject
+
+        assertTrue(!asset.containsKey("hash"), "hash must be absent for non-sha256 digest")
     }
 
     // ---------------------------------------------------------------

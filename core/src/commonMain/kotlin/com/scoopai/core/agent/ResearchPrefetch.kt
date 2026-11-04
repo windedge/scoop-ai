@@ -192,6 +192,7 @@ private data class GitHubAssetResponse(
     val name: String = "",
     val browser_download_url: String = "",
     val size: Long? = null,
+    val digest: String? = null,
 )
 
 @Serializable
@@ -227,7 +228,7 @@ private fun parseRelease(jsonStr: String): ReleaseSnapshot {
         name = resp.name,
         prerelease = resp.prerelease,
         body = resp.body?.take(2000),
-        assets = resp.assets.map { AssetSnapshot(it.name, it.browser_download_url, it.size) },
+        assets = resp.assets.map { AssetSnapshot(it.name, it.browser_download_url, it.size, it.digest) },
     )
 }
 
@@ -239,7 +240,7 @@ private fun parseReleasesList(jsonStr: String): List<ReleaseSnapshot> {
             name = r.name,
             prerelease = r.prerelease,
             body = r.body?.take(500),
-            assets = r.assets.map { AssetSnapshot(it.name, it.browser_download_url, it.size) },
+            assets = r.assets.map { AssetSnapshot(it.name, it.browser_download_url, it.size, it.digest) },
         )
     }
 }
@@ -316,7 +317,7 @@ suspend fun prefetchResearchData(
     val persistSearch = persistSearchDeferred?.await()
 
     // 6. 确定性后处理
-    val rawAssets = effectiveRelease?.assets?.map { RawAssetInfo(it.downloadUrl, it.name) } ?: emptyList()
+    val rawAssets = effectiveRelease?.assets?.map { RawAssetInfo(it.downloadUrl, it.name, it.digest ?: "") } ?: emptyList()
     val windowsAssets = filterWindowsAssets(rawAssets).map { wa ->
         PrefetchedAsset(
             url = wa.url,
@@ -324,6 +325,7 @@ suspend fun prefetchResearchData(
             architecture = wa.architecture,
             assetType = wa.asset_type,
             size = null, // WindowsAsset 不携带 size 信息，由后续查找填充
+            hash = wa.hash,
         )
     }
 

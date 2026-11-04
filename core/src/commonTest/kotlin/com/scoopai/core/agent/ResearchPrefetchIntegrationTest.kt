@@ -123,4 +123,31 @@ class ResearchPrefetchIntegrationTest {
 
         assertEquals("https://github.com/owner/repo", result.homepageCleaned)
     }
+
+    // ---------------------------------------------------------------
+    // digest -> hash propagation
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `asset digest sha256 propagates to windowsAssets hash`() = runBlocking {
+        val hex = "a".repeat(64)
+        val api = mockGitHubApi(
+            releaseJson = """{"tag_name":"v1.0.0","prerelease":false,"assets":[{"name":"app-1.0.zip","browser_download_url":"https://example.com/app-1.0.zip","digest":"sha256:$hex"}]}"""
+        )
+
+        val result = prefetchResearchData("https://github.com/owner/repo", api)
+
+        assertEquals(hex, result.windowsAssets.single().hash)
+    }
+
+    @Test
+    fun `asset without digest keeps empty windowsAssets hash`() = runBlocking {
+        val api = mockGitHubApi(
+            releaseJson = """{"tag_name":"v1.0.0","prerelease":false,"assets":[{"name":"app-1.0.zip","browser_download_url":"https://example.com/app-1.0.zip"}]}"""
+        )
+
+        val result = prefetchResearchData("https://github.com/owner/repo", api)
+
+        assertEquals("", result.windowsAssets.single().hash)
+    }
 }

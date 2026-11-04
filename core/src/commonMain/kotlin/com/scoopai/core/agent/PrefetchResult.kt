@@ -49,6 +49,8 @@ data class AssetSnapshot(
     val name: String,
     val downloadUrl: String,
     val size: Long? = null,
+    /** GitHub API digest (e.g. "sha256:<64 hex>"), null when absent */
+    val digest: String? = null,
 )
 
 @Serializable
@@ -58,6 +60,8 @@ data class PrefetchedAsset(
     val architecture: String,
     val assetType: String,
     val size: Long? = null,
+    /** SHA-256 hex from GitHub API digest ("sha256:<hex>"), empty when absent */
+    val hash: String = "",
 )
 
 @Serializable

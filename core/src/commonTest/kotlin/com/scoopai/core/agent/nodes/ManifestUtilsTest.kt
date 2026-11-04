@@ -142,6 +142,37 @@ class ManifestUtilsTest {
         assertEquals("app-windows-amd64.zip", result[0].filename)
     }
 
+    // ---------------------------------------------------------------
+    // extractSha256 (shared digest helper: prefix casing + 64-hex format)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `extractSha256 strips lowercase prefix and keeps hex`() {
+        val hex = "a".repeat(64)
+        assertEquals(hex, extractSha256("sha256:$hex"))
+    }
+
+    @Test
+    fun `extractSha256 strips uppercase prefix symmetrically`() {
+        // SHA256: prefix previously leaked through removePrefix("sha256:")
+        val hex = "ABCDEF0123456789" + "a".repeat(48)
+        assertEquals(hex, extractSha256("SHA256:$hex"))
+    }
+
+    @Test
+    fun `extractSha256 returns null-equivalent empty for short hex`() {
+        assertEquals("", extractSha256("sha256:abc"))
+        assertEquals("", extractSha256("sha256:" + "a".repeat(63)))
+    }
+
+    @Test
+    fun `extractSha256 rejects non-hex and empty payloads`() {
+        assertEquals("", extractSha256("sha256:"))
+        assertEquals("", extractSha256("sha256:zzzz" + "a".repeat(60)))
+        assertEquals("", extractSha256("md5:" + "a".repeat(64)))
+        assertEquals("", extractSha256(""))
+    }
+
     @Test
     fun `filterWindowsAssets excludes mac osx and non-windows zip archives`() {
         val assets = listOf(
@@ -1914,9 +1945,153 @@ class ManifestUtilsTest {
     }
 
     // ---------------------------------------------------------------
-    // validatePersistPaths
+    // checkAutoupdateSha256Template
     // ---------------------------------------------------------------
 
+    @Test
+    fun `checkAutoupdateSha256Template flags guessed companion url for hallucinated sha256`() {
+        val manifest = """{"version":"1.8","autoupdate":{"architecture":{"64bit":{"url":"https://github.com/o/r/releases/download/v${'$'}version/app-${'$'}version.zip"},"hash":{"url":"https://github.com/o/r/releases/download/v${'$'}version/app-${'$'}version.zip.sha256"}}}}"""
+        val err = checkAutoupdateSha256Template(manifest, listOf("app-1.8.zip"))
+        assertNotNull(err)
+        assertTrue(err!!.contains(".sha256"), err)
+    }
+
+    @Test
+    fun `checkAutoupdateSha256Template passes when sha256 file is a real asset`() {
+        // starship-style: the .sha256 companion really exists in the release assets
+        val manifest = """{"version":"1.23.0","autoupdate":{"architecture":{"64bit":{"url":"https://github.com/o/r/releases/download/v${'$'}version/app-x86_64.zip"},"hash":{"url":"${'$'}url.sha256"}}}}"""
+        assertNull(checkAutoupdateSha256Template(manifest, listOf("app-x86_64.zip", "app-x86_64.zip.sha256")))
+    }
+
+    @Test
+    fun `checkAutoupdateSha256Template strips version placeholder when matching assets`() {
+        val manifest = """{"version":"1.0","autoupdate":{"hash":{"url":"https://example.com/app-${'$'}version.zip.sha256"}}}"""
+        assertNull(checkAutoupdateSha256Template(manifest, listOf("app-1.0.zip", "app-1.0.zip.sha256")))
+    }
+
+    @Test
+    fun `checkAutoupdateSha256Template checks per-architecture hash urls`() {
+        val manifest = """{"version":"1.0","autoupdate":{"architecture":{"64bit":{"url":"https://example.com/app64-${'$'}version.zip","hash":{"url":"https://example.com/app64-${'$'}version.zip.sha256"}},"32bit":{"url":"https://example.com/app32-${'$'}version.zip"}}}}"""
+        val err = checkAutoupdateSha256Template(manifest, listOf("app64-1.0.zip", "app32-1.0.zip"))
+        assertNotNull(err)
+    }
+
+    @Test
+    fun `checkAutoupdateSha256Template skips non-sha256 hash urls`() {
+        val manifest = """{"version":"1.0","autoupdate":{"hash":{"url":"https://example.com/SHA256SUMS"}}}"""
+        assertNull(checkAutoupdateSha256Template(manifest, listOf("app-1.0.zip")))
+    }
+
+    @Test
+    fun `checkAutoupdateSha256Template skips check without asset names`() {
+        val manifest = """{"version":"1.0","autoupdate":{"hash":{"url":"https://example.com/app-${'$'}version.zip.sha256"}}}"""
+        assertNull(checkAutoupdateSha256Template(manifest, emptyList()))
+    }
+
+    @Test
+    fun `checkAutoupdateSha256Template passes for non-github manifest without autoupdate hash`() {
+        val manifest = """{"version":"1.0","autoupdate":{"url":"https://example.com/app-${'$'}version.zip"}}"""
+        assertNull(checkAutoupdateSha256Template(manifest, listOf("app-1.0.zip")))
+    }
+
+    @Test
+    fun `checkAutoupdateSha256Template returns null for unparseable manifest`() {
+        assertNull(checkAutoupdateSha256Template("not json", listOf("app.zip")))
+        assertNull(checkAutoupdateSha256Template("[]", listOf("app.zip")))
+    }
+
+    @Test
+    fun `checkAutoupdateSha256Template expands basename against real companion asset`() {
+        // "$basename.sha256" deterministically expands from the main url: a real
+        // companion asset matches, a missing one is a genuine hallucination
+        val manifest = """{"version":"1.0","autoupdate":{"url":"https://github.com/o/r/releases/download/v${'$'}version/app.zip","hash":{"url":"https://github.com/o/r/releases/download/v${'$'}version/${'$'}basename.sha256"}}}"""
+        assertNull(checkAutoupdateSha256Template(manifest, listOf("app-1.0.zip", "app.zip.sha256")))
+        assertNotNull(checkAutoupdateSha256Template(manifest, listOf("app-1.0.zip")))
+    }
+
+    @Test
+    fun `checkAutoupdateSha256Template still flags literal hallucinated templates`() {
+        // sanity: the skip must not swallow the concrete-version hallucination case
+        val manifest = """{"version":"1.0","autoupdate":{"url":"https://github.com/o/r/releases/download/v${'$'}version/app.zip","hash":{"url":"https://github.com/o/r/releases/download/v${'$'}version/app-${'$'}version.zip.sha256"}}}"""
+        assertNotNull(checkAutoupdateSha256Template(manifest, listOf("app-1.0.zip")))
+    }
+
+    @Test
+    fun `checkAutoupdateSha256Template flags guessed sha512 companion`() {
+        val manifest = """{"version":"1.0","autoupdate":{"url":"https://example.com/app-${'$'}version.zip","hash":{"url":"https://example.com/app-${'$'}version.zip.sha512"}}}"""
+        val err = checkAutoupdateSha256Template(manifest, listOf("app-1.0.zip"))
+        assertNotNull(err)
+    }
+
+    @Test
+    fun `checkAutoupdateSha256Template passes real sha512 companion`() {
+        val manifest = """{"version":"1.0","autoupdate":{"url":"https://example.com/app-${'$'}version.zip","hash":{"url":"https://example.com/app-${'$'}version.zip.sha512"}}}"""
+        assertNull(checkAutoupdateSha256Template(manifest, listOf("app-1.0.zip", "app-1.0.zip.sha512")))
+    }
+
+    @Test
+    fun `checkAutoupdateSha256Template flags guessed md5 companion`() {
+        val manifest = """{"version":"1.0","autoupdate":{"url":"https://example.com/app-${'$'}version.zip","hash":{"url":"https://example.com/app-${'$'}version.zip.md5"}}}"""
+        val err = checkAutoupdateSha256Template(manifest, listOf("app-1.0.zip"))
+        assertNotNull(err)
+    }
+
+    @Test
+    fun `checkAutoupdateSha256Template passes real md5 companion`() {
+        val manifest = """{"version":"1.0","autoupdate":{"url":"https://example.com/app-${'$'}version.zip","hash":{"url":"https://example.com/app-${'$'}version.zip.md5"}}}"""
+        assertNull(checkAutoupdateSha256Template(manifest, listOf("app-1.0.zip", "app-1.0.zip.md5")))
+    }
+
+    // ---------------------------------------------------------------
+    // templateToRegex (direct unit coverage of template expansion)
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `templateToRegex expands version variables to wildcard`() {
+        val regex = templateToRegex("app-${'$'}version.zip", null)!!
+        assertTrue(regex.matches("app-1.2.3.zip"))
+        assertFalse(regex.matches("app.zip"))
+    }
+
+    @Test
+    fun `templateToRegex expands basename from the main url basename`() {
+        val regex = templateToRegex("${'$'}basename.sha256", "app-1.0.zip")!!
+        assertTrue(regex.matches("app-1.0.zip.sha256"))
+        assertFalse(regex.matches("other.zip.sha256"))
+    }
+
+    @Test
+    fun `templateToRegex returns null for baseurl without a full url in scope`() {
+        // $baseurl expands to a full URL and can never match a basename-only asset list
+        assertNull(templateToRegex("${'$'}baseurl/checksums.txt", null))
+        assertNull(templateToRegex("${'$'}baseurl/checksums.txt", "app-1.0.zip"))
+    }
+
+    @Test
+    fun `templateToRegex returns null for unrecognized variables`() {
+        assertNull(templateToRegex("${'$'}foobar.zip", null))
+    }
+
+    @Test
+    fun `templateToRegex returns null for unmatched brace expressions`() {
+        assertNull(templateToRegex("app-${'$'}{version}.zip", null))
+    }
+
+    @Test
+    fun `templateToRegex returns null for url variable without main url`() {
+        assertNull(templateToRegex("${'$'}url.sha256", null))
+    }
+
+    @Test
+    fun `templateToRegex expands url variable to escaped main basename`() {
+        val regex = templateToRegex("${'$'}url.sha256", "app-1.0.zip")!!
+        assertTrue(regex.matches("app-1.0.zip.sha256"))
+        assertFalse(regex.matches("other-1.0.zip.sha256"))
+    }
+
+    // ---------------------------------------------------------------
+    // validatePersistPaths
+    // ---------------------------------------------------------------
     @Test
     fun `validatePersistPaths flags tilde path in persist`() {
         val manifest = """{"version":"1.0","url":"https://example.com/app.zip","hash":"abc","persist":["~/.cache/app"]}"""

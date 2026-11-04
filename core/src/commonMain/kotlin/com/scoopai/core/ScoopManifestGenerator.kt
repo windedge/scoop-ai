@@ -301,14 +301,17 @@ class ScoopManifestGenerator(
             { buildResearchPrompt(it, (request as? SessionRequest.Generate)?.outputPath, (request as? SessionRequest.Generate)?.userPrompt) }
         val analyzePrompt: suspend (ResearchOutput) -> String =
             { buildAnalyzePrompt(it, (request as? SessionRequest.Generate)?.userPrompt) }
-        val generatePrompt: suspend (String, AnalyzeOutput, ResearchOutput?) -> String =
-            { skeleton, analyze, research ->
+        // The checksums filename is cross-checked against the release assets inside
+        // buildGeneratePrompt (buildChecksumsNote), which owns the ignoreCase rule.
+        val generatePrompt: suspend (String, AnalyzeOutput, ResearchOutput?, List<String>) -> String =
+            { skeleton, analyze, research, releaseAssetNames ->
                 buildGeneratePrompt(
                     skeleton,
                     analyze,
                     (request as? SessionRequest.Generate)?.outputPath,
                     (request as? SessionRequest.Generate)?.userPrompt,
                     research,
+                    checksumsAssetNames = releaseAssetNames,
                 )
             }
 

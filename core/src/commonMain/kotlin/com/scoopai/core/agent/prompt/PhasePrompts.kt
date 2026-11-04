@@ -435,6 +435,42 @@ ${PhaseSchemas.ANALYZE_SCHEMA}"""
 }
 
 /**
+ * Drops analyze.notes lines that mention checksums files.
+ *
+ * The same hallucination channel as [buildChecksumsNote] guards: the notes free
+ * text may invent a companion/checksum filename and trick generate into a
+ * 404ing autoupdate.hash. The authoritative checksums channel is the research
+ * phase's checksums_filename (cross-checked against release assets upstream),
+ * so any checksums-bearing notes line is untrustworthy and dropped whole-line.
+ */
+internal fun filterChecksumsNotes(notes: String): String =
+    notes.lines().filterNot { line -> line.contains("checksums", ignoreCase = true) }.joinToString("\n").trim()
+
+/**
+ * Deterministic cross-check of the research phase's checksums_filename against
+ * the actual release asset names collected by prefetch.
+ *
+ * - filename matches an asset (ignoreCase): strong MUST instruction
+ * - no asset list available (empty names, e.g. non-GitHub or rate limited):
+ *   downgraded to advisory wording
+ * - filename absent from a non-empty asset list: empty string (note dropped)
+ */
+internal fun buildChecksumsNote(checksumsFilename: String, releaseAssetNames: List<String>): String {
+    val filename = checksumsFilename.trim()
+    if (filename.isEmpty()) return ""
+    if (releaseAssetNames.isEmpty()) {
+        return "\n\n## Checksums Available\n" +
+            "The research phase reports a checksums file: `$filename`.\n" +
+            "The release asset list was not available for verification. If the release really publishes this file, add an `autoupdate.hash` block pointing to it; otherwise omit the hash block.\n"
+    }
+    val matches = releaseAssetNames.any { it.equals(filename, ignoreCase = true) }
+    if (!matches) return ""
+    return "\n\n## Checksums Available\n" +
+        "The research phase found a checksums file in the release assets: `$filename`.\n" +
+        "You MUST add an `autoupdate.hash` block pointing to this file (see step 3 below).\n"
+}
+
+/**
  * Builds the prompt for the Generate phase.
  *
  * The skeleton already contains version, description, homepage, license,
@@ -451,8 +487,9 @@ ${PhaseSchemas.ANALYZE_SCHEMA}"""
  * @param outputPath Optional output file path for the manifest.
  * @param userPrompt Additional user requirements.
  * @param research The structured output from the Research phase (optional, used for checksums info).
+ * @param checksumsAssetNames Effective release asset names; empty downgrades the checksums note.
  */
-fun buildGeneratePrompt(skeleton: String, analyze: AnalyzeOutput, outputPath: String?, userPrompt: String? = null, research: ResearchOutput? = null): String {
+fun buildGeneratePrompt(skeleton: String, analyze: AnalyzeOutput, outputPath: String?, userPrompt: String? = null, research: ResearchOutput? = null, checksumsAssetNames: List<String> = emptyList()): String {
     val suggestedAppName = analyze.suggested_app_name?.takeIf { it.isNotBlank() }
     val nsisUnsupported = analyze.nsis_unsupported
     val installerTypeNote = when (analyze.installer_type?.lowercase()) {
@@ -470,11 +507,7 @@ fun buildGeneratePrompt(skeleton: String, analyze: AnalyzeOutput, outputPath: St
         "msi" -> "\n- MSI detected: set `extract_dir` (backslashes ONLY) alongside `url` and `bin`. Do NOT add `\"installer\"` block."
         else -> ""
     }
-    val checksumsNote = research?.checksums_filename?.takeIf { it.isNotBlank() }?.let { filename ->
-        "\n\n## Checksums Available\n" +
-        "The research phase found a checksums file in the release assets: `$filename`.\n" +
-        "You MUST add an `autoupdate.hash` block pointing to this file (see step 3 below).\n"
-    } ?: ""
+    val checksumsNote = buildChecksumsNote(research?.checksums_filename ?: "", checksumsAssetNames)
     val outputPart = if (outputPath != null) "\nOutput file: $outputPath" else ""
     val suggestedPart = if (suggestedAppName != null) {
         "\n\n## Suggested App Name\n\nThe analysis suggests app name: `$suggestedAppName`.\n" +
@@ -495,7 +528,7 @@ fun buildGeneratePrompt(skeleton: String, analyze: AnalyzeOutput, outputPath: St
         "1. Reflect the variant in the `description` field.\n" +
         "2. Ensure the chosen assets match the requested variant."
     } else ""
-    val notesSection = analyze.notes.takeIf { it.isNotBlank() }?.let {
+    val notesSection = filterChecksumsNotes(analyze.notes).takeIf { it.isNotBlank() }?.let {
         "\n\n## Analysis Notes\n$it\n"
     } ?: ""
     return """You are now in the GENERATE phase. Your task is to take the pre-assembled manifest skeleton below, apply installer-specific transformations, review the pre-generated checkver/autoupdate, add autoupdate.hash if possible, and finalize. Validation is automatic in a later phase — do not call validate here.
@@ -594,6 +627,11 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
    - GitHub release HTML page with hash: `{"url": "${'$'}baseurl", "regex": "${'$'}basename.*?([a-f0-9]{32,})"}`
    - RELEASES file for nupkg/Squirrel packages: `{"url": "${'$'}baseurl/RELEASES", "find": "${'$'}basename"}` (Squirrel RELEASES format: `<sha1-hash> <filename>` per line)
    - No checksums available: omit hash block entirely
+
+   ⚠️ GitHub hash reality check (common mistake):
+   - GitHub releases RARELY ship a `<file>.sha256` companion next to each asset. Do NOT construct a `${'$'}baseurl/app-${'$'}version.zip.sha256` style URL unless the research section confirms that exact checksums file is a release asset; a guessed companion URL makes every autoupdate fail with a 404.
+   - For GitHub releases, rely on the GitHub API `digest` (the research `windows_assets[].hash` / `fetchLatestRelease` `assets[].hash` field) for the current version's `hash`, and omit `autoupdate.hash` if no real checksums file exists in the release assets. A wrong hash is worse than no hash.
+
 4. **Finalize**: Call `finalize_task_result` with the required parameter result plus optional explanation. `result` must be a **STRING containing the manifest JSON text** (NOT a JSON object).
 
    The tool's `result` parameter has type `string`. Its content is the manifest serialized as JSON text. The inner quotes must be escaped as `\"`.
