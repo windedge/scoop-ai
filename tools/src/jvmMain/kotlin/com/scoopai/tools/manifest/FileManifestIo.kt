@@ -60,7 +60,7 @@ class FileManifestIo(
 
             // Check required field: license
             if (!obj.containsKey("license") || obj["license"]?.jsonPrimitive?.contentOrNull.isNullOrBlank()) {
-                errors.add("Missing required field: license (SPDX identifier like MIT, GPL-3.0-or-later, etc.) — do NOT omit or leave empty")
+                errors.add("Missing required field: license (SPDX identifier like MIT, GPL-3.0-or-later, etc.) - do NOT omit or leave empty")
             }
 
             // Check url or architecture

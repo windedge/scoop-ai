@@ -6,7 +6,7 @@ import java.io.PrintStream
  * CLI progress overlay that prints single-line phase indicators to stderr
  * using carriage-return overprinting.
  *
- * This is independent of [com.scoopai.core.agent.PhaseProgressLogger] — the
+ * This is independent of [com.scoopai.core.agent.PhaseProgressLogger]; the
  * logger writes permanent INFO lines to the logback appender, while this
  * class writes a transient overlay line (with \r) to stderr for TTY users.
  *
@@ -31,7 +31,7 @@ class ConsoleProgress(
 
     /**
      * Overwrite the current line with `[phase] <name>`.
-     * No newline is printed — the next [phase] or [done] call overwrites this line.
+     * No newline is printed; the next [phase] or [done] call overwrites this line.
      */
     fun phase(name: String) {
         if (enabled) {

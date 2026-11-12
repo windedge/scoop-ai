@@ -4,10 +4,10 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 // ---------------------------------------------------------------------------
-// Phase status enums — deterministic routing, no magic strings
+// Phase status enums: deterministic routing, no magic strings
 // ---------------------------------------------------------------------------
 
-/** Research phase status — determines graph routing after the LLM finishes. */
+/** Research phase status: determines graph routing after the LLM finishes. */
 @Serializable
 enum class ResearchStatus {
     @SerialName("ok") OK,
@@ -29,7 +29,7 @@ enum class AnalyzeStatus {
  */
 @Serializable
 data class ResearchOutput(
-    /** Routing status — determines downstream graph path. */
+    /** Routing status: determines downstream graph path. */
     val status: ResearchStatus = ResearchStatus.OK,
     /** "owner/repo" for GitHub projects, or project name */
     val project: String = "",

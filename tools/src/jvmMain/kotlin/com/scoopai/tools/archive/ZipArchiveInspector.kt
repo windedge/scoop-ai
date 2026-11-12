@@ -158,7 +158,7 @@ class ZipArchiveInspector(
                 else -> "unknown"
             }
 
-            // Deeper verification needs the full file — skip for very large files (>100MB)
+            // Deeper verification needs the full file; skip for very large files (>100MB)
             // where downloading the full file just for verification is wasteful.
             // peekHeader has already confirmed the installer type from the first 1MB.
             val installerType = when (suspectedType) {
@@ -562,7 +562,7 @@ class ZipArchiveInspector(
     }
 
     // -----------------------------------------------------------------------
-    // NSIS listing (via 7z — reads NSIS installer internals)
+    // NSIS listing (via 7z, reads NSIS installer internals)
     // -----------------------------------------------------------------------
 
     /**
@@ -962,7 +962,7 @@ class ZipArchiveInspector(
             if (parent.isNullOrBlank() || parent == id) ""
             else {
                 val parentPath = resolveDir(parent)
-                // Skip SourceDir — it's a virtual MSI root that doesn't exist on disk
+                // Skip SourceDir, it's a virtual MSI root that doesn't exist on disk
                 if (name == "SourceDir") parentPath
                 else if (parentPath.isEmpty()) name ?: ""
                 else "$parentPath/${name ?: ""}"

@@ -162,7 +162,7 @@ private fun tryRunScoop(command: List<String>): ScoopResult {
 
 /**
  * Checks whether an API key is configured via any supported env var.
- * Never leaks the actual key — only shows a masked prefix.
+ * Never leaks the actual key, only shows a masked prefix.
  *
  * @param envVars Environment variable map (default: [System.getenv]).
  */

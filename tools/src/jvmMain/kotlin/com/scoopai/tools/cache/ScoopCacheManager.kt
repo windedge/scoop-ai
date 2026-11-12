@@ -17,9 +17,9 @@ private val logger = KotlinLogging.logger {}
  * Manages downloads in the Scoop cache directory.
  *
  * Two-phase caching:
- * 1. **Download phase** — files are cached as `{sha256(url)[:7]}{ext}` (URL-based key).
+ * 1. **Download phase**: files are cached as `{sha256(url)[:7]}{ext}` (URL-based key).
  *    All tools share the same cached file, so a URL is downloaded only once.
- * 2. **Finalize phase** — after the agent finishes and the app name + version are known,
+ * 2. **Finalize phase**: after the agent finishes and the app name + version are known,
  *    call [finalizeCacheEntry] to rename/link to Scoop's standard format:
  *    `{app}#{version}#{sha256(url)[:7]}{ext}`.
  *
@@ -259,7 +259,7 @@ class ScoopCacheManager(
                 throw IllegalStateException("HTTP ${response.statusCode()} for $url")
             }
 
-            // F2: Stream with byte counting — interrupt if exceeding limit
+            // F2: Stream with byte counting; interrupt if exceeding limit
             response.body().use { input ->
                 Files.newOutputStream(tmpTarget).use { output ->
                     val buffer = ByteArray(8192)

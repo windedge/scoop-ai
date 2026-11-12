@@ -66,11 +66,12 @@ data class ManifestResult(
     /** Per-phase execution statistics (research/analyze/generate/assist|repair/verify). */
     val stages: List<StageInfo> = emptyList(),
     /**
-     * AI 针对用户指令/生成意图所作出的自然语言说明与会话回复。
-     * 来源: generate/assist/repair 子图 finalize_task_result 的可选 explanation 参数,
-     * 取"产出最终 manifest 的那一轮"; 中间修复轮次不产生。
-     * 为 null 时由应用层确定性合成。
-     * noAssets 分支由引擎从 ResearchOutput 确定性合成。
+     * Natural-language explanation of and reply to the user's instruction/generation
+     * intent. Source: the optional `explanation` parameter of `finalize_task_result` in
+     * the generate/assist/repair subgraphs, taken from the round that produced the final
+     * manifest; intermediate repair rounds do not produce one. When null the application
+     * layer synthesizes a deterministic reply. The noAssets branch is synthesized by the
+     * engine from [com.scoopai.core.agent.ResearchOutput].
      */
     val explanation: String? = null,
 )
@@ -96,7 +97,7 @@ data class AssistContext(
     val retryCount: Int = 1,
     val history: List<String> = emptyList(),
     val evidence: String? = null,
-    /** true = 用户指令发起的 assist (要求 explanation); false = 内部修复循环 (不要求)。 */
+    /** true = user-initiated assist (explanation requested); false = internal repair loop (not requested). */
     val explanatory: Boolean = false,
 )
 

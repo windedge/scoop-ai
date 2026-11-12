@@ -9,7 +9,7 @@ private val debugJson = Json { ignoreUnknownKeys = true; prettyPrint = false }
  * Logs the full request body of every POST/SSE call.
  * Controlled by `SCOOP_AI_DEBUG_HTTP` environment variable.
  *
- * Returns the input unchanged — this is a side-effect interceptor.
+ * Returns the input unchanged (this is a side-effect interceptor).
  */
 public fun logRequestBody(rawJson: String): String {
     val displayBody = try {

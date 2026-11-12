@@ -65,12 +65,12 @@ private val ENV_VAR_PATTERNS = listOf(
 /**
  * Infer persist hints from source code file paths and snippets.
  *
- * This is a pure function — no I/O, no network calls. It applies deterministic
+ * This is a pure function: no I/O, no network calls. It applies deterministic
  * rules based on:
  * 1. File paths in the source tree (e.g. config/, themes/, tauri.conf.json)
  * 2. Text snippets from key files (e.g. package.json, Cargo.toml, source files)
  *
- * The result is advisory — the analyze phase LLM makes the final call.
+ * The result is advisory; the analyze phase LLM makes the final call.
  */
 fun inferPersistHints(
     filePaths: List<String>,

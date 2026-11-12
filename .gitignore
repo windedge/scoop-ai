@@ -71,3 +71,6 @@ tests/main_bucket.txt
 .scoopai/
 cli/bucket/
 bucket/
+
+# Local scratch space
+.scratch/

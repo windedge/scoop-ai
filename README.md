@@ -67,7 +67,7 @@ Dependency direction: `cli -> core + tools`, `tools -> core`, `core -> Koog fram
 ./gradlew :cli:shadowJar
 
 # Run tests
-./gradlew :core:jvmTest
+./gradlew :scoop-ai-core:jvmTest
 ./gradlew :cli:test
 ```
 
@@ -309,11 +309,11 @@ Use `--cache discard` to discard downloaded files after generation.
 ```bash
 # Run all tests
 ./gradlew :cli:test
-./gradlew :core:jvmTest
+./gradlew :scoop-ai-core:jvmTest
 
 # Force re-run
 ./gradlew :cli:cleanTest :cli:test --rerun-tasks
-./gradlew :core:jvmTest --rerun-tasks
+./gradlew :scoop-ai-core:jvmTest --rerun-tasks
 ```
 
 ## Supported Providers
@@ -333,4 +333,4 @@ pitfalls.
 
 ## License
 
-Private project.
+MIT licensed. Copyright (c) 2026 windedge.

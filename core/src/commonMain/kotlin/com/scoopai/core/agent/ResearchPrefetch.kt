@@ -26,18 +26,18 @@ internal fun parseOwnerRepo(url: String): Pair<String, String>? {
 }
 
 /**
- * GitHub URL 解析正则 (kept for backward compatibility, use parseOwnerRepo for new code)
+ * Legacy GitHub URL regex (kept for backward compatibility, use parseOwnerRepo for new code)
  */
 private val GITHUB_URL_REGEX = Regex("""github\.com/([^/]+)/([^/\s?#]+)""")
 
 /**
- * 源码 zip URL 模板
+ * Source zip download URL template
  */
 private fun sourceArchiveUrl(owner: String, repo: String, tag: String): String =
     "https://github.com/$owner/$repo/archive/refs/tags/$tag.zip"
 
 /**
- * prefetch 搜索的所有配置模式（一次性搜索）
+ * All config patterns searched during prefetch (single pass)
  */
 internal val ALL_CONFIG_PATTERNS = listOf(
     "XDG_CONFIG_HOME", "APPDATA", "LOCALAPPDATA", "user.home", ".config",
@@ -138,12 +138,12 @@ internal fun selectStableRelease(releases: List<ReleaseSnapshot>): ReleaseSnapsh
 }
 
 // ---------------------------------------------------------------------------
-// executePrefetch — 节点内联逻辑抽取，策略图只做调用
+// executePrefetch: extracted from the prefetch node so the strategy graph just calls it
 // ---------------------------------------------------------------------------
 
 /**
- * 执行 prefetch 节点逻辑的独立函数。若 [gitHubApi] 为 null 或执行失败，
- * 返回 [PrefetchResult] 默认（isGitHub = false）。
+ * Standalone prefetch node logic. On null [gitHubApi] or failure returns the
+ * [PrefetchResult] default (isGitHub = false).
  */
 internal suspend fun executePrefetch(
     url: String,
@@ -160,7 +160,7 @@ internal suspend fun executePrefetch(
 }
 
 // ---------------------------------------------------------------------------
-// JSON 解析辅助（GitHub API 响应 → 快照数据类）
+// JSON parsing helpers: GitHub API responses to snapshot data classes
 // ---------------------------------------------------------------------------
 
 private val json = Json { ignoreUnknownKeys = true }
@@ -254,11 +254,11 @@ private fun parsePersistSearch(jsonStr: String): PersistSearchSnapshot {
 }
 
 // ---------------------------------------------------------------------------
-// prefetchResearchData 核心函数
+// prefetchResearchData core
 // ---------------------------------------------------------------------------
 
 /**
- * 在 LLM research 阶段之前，由确定性代码一次性并行收集所有可预取的数据。
+ * Collected deterministically in one parallel pass before the LLM research phase.
  */
 suspend fun prefetchResearchData(
     url: String,
@@ -266,7 +266,7 @@ suspend fun prefetchResearchData(
     webFetcher: WebFetcher? = null,
     archiveInspector: ArchiveInspector? = null,
 ): PrefetchResult = coroutineScope {
-    // 1. 解析 GitHub URL
+    // 1. Parse the GitHub URL
     val parsed = parseOwnerRepo(url)
     if (parsed == null) {
         return@coroutineScope PrefetchResult(
@@ -279,14 +279,14 @@ suspend fun prefetchResearchData(
 
     val errors = mutableListOf<String>()
 
-    // 2. 并行 API 调用
+    // 2. Parallel API calls
     val repoInfoDeferred = async { runCatching { parseRepoInfo(gitHubApi.fetchRepoInfo(owner, repo)) }.getOrNull() }
     val releaseDeferred = async { runCatching { parseRelease(gitHubApi.fetchLatestRelease(owner, repo)) }.getOrNull() }
 
     val repoInfo = repoInfoDeferred.await()
     val latestRelease = releaseDeferred.await()
 
-    // 3. 条件调用：如果 latest 是 prerelease，获取所有 release 找 stable
+    // 3. Latest is a prerelease: fetch all releases to find a stable one
     val stableRelease = if (latestRelease?.prerelease == true) {
         runCatching {
             val allReleasesJson = gitHubApi.fetchAllReleases(owner, repo, 10)
@@ -296,11 +296,11 @@ suspend fun prefetchResearchData(
         }.getOrNull()
     } else null
 
-    // 4. 获取 effective release 和 source archive URL
+    // 4. Effective release and source archive URL
     val effectiveRelease = stableRelease ?: latestRelease
     val tagName = effectiveRelease?.tagName ?: ""
 
-    // 5. 并行：searchTextInArchive（如果 archiveInspector 可用）
+    // 5. Parallel searchTextInArchive (when archiveInspector is available)
     val persistSearchDeferred = if (archiveInspector != null && tagName.isNotBlank()) {
         async {
             runCatching {
@@ -316,7 +316,7 @@ suspend fun prefetchResearchData(
 
     val persistSearch = persistSearchDeferred?.await()
 
-    // 6. 确定性后处理
+    // 6. Deterministic post-processing
     val rawAssets = effectiveRelease?.assets?.map { RawAssetInfo(it.downloadUrl, it.name, it.digest ?: "") } ?: emptyList()
     val windowsAssets = filterWindowsAssets(rawAssets).map { wa ->
         PrefetchedAsset(
@@ -324,7 +324,7 @@ suspend fun prefetchResearchData(
             filename = wa.filename,
             architecture = wa.architecture,
             assetType = wa.asset_type,
-            size = null, // WindowsAsset 不携带 size 信息，由后续查找填充
+            size = null, // WindowsAsset carries no size; filled in by later lookup
             hash = wa.hash,
         )
     }

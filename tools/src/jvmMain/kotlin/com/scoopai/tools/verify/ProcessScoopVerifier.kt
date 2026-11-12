@@ -22,17 +22,18 @@ import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import kotlinx.coroutines.runBlocking
 
-/** runScoop 超时标记，fake commandRunner 测试缝复用同一异常 */
+/** Marks a runScoop timeout; reused by fake commandRunner test seams. */
 class ScoopProcessTimeoutException(message: String) : Exception(message)
 
-/** scoop 命令执行结果 */
+/** Result of one scoop command execution */
 data class ScoopProcessResult(val exitCode: Int, val output: String)
 
 /**
- * 通过真实 scoop 命令验证 manifest 可安装的服务。
+ * Verifies that a manifest is installable by running the real scoop command.
  *
- * 不再是 ToolSet：由上层以受控方式调用，appName 走白名单校验，
- * 清理在 finally 中确定性执行，防止残留安装造成假阳性。
+ * No longer a ToolSet: callers invoke it in a controlled way with an app-name
+ * allowlist, and cleanup runs deterministically in finally to avoid false
+ * positives from leftover installs.
  */
 class ProcessScoopVerifier private constructor(
     private val commandRunner: suspend (List<String>) -> ScoopProcessResult,
@@ -53,9 +54,10 @@ class ProcessScoopVerifier private constructor(
             System.getProperty("os.name").lowercase().contains("windows")
 
         /**
-         * 解析实际可执行的 scoop 命令。Windows 上 scoop 是 shims 里的 .cmd/
-         * .ps1（非 .exe），ProcessBuilder 直跑会 IOException，故用 cmd /c 包装。
-         * 解析结果一次性缓存，探测与后续命令共用。
+         * Resolve the actually executable scoop command. On Windows scoop is a
+         * .cmd/.ps1 shim (not an .exe), which ProcessBuilder cannot run directly,
+         * hence the cmd /c wrapper. Resolved once and shared by probe and later
+         * commands.
          */
         internal fun resolveScoopCommand(
             home: Path,
@@ -71,13 +73,14 @@ class ProcessScoopVerifier private constructor(
             else listOf("cmd", "/c", "scoop")
         }
 
-        /** scoop --version 探测成功才创建；scoop 不可用时返回 null 并输出原因到 stderr */
+        /** Only created after a successful `scoop --version` probe; returns null and logs the reason to stderr when scoop is unavailable */
         fun tryCreate(cache: ScoopCacheManager? = null, scoopRoot: Path? = null): ProcessScoopVerifier? =
             tryCreateDetailed(cache = cache, scoopRoot = scoopRoot).first
 
         /**
-         * tryCreate 的可诊断版本：额外返回 scoop 不可用的原因，assist prompt 需把
-         * 根因转述给用户。成功时 verifier 非 null 且 reason 为 null。probe 仅测试注入。
+         * Diagnostic variant of tryCreate: also returns why scoop is unavailable so the
+         * assist prompt can relay the root cause to the user. On success verifier is non-null
+         * and reason is null. `probe` is for test injection only.
          */
         internal fun tryCreateDetailed(
             cache: ScoopCacheManager? = null,
@@ -111,7 +114,7 @@ class ProcessScoopVerifier private constructor(
             ) to null
         }
 
-        /** 测试缝：注入 fake commandRunner 与 scoopRoot */
+        /** Test seam: inject a fake commandRunner and scoopRoot */
         internal fun createForTesting(
             commandRunner: suspend (List<String>) -> ScoopProcessResult,
             scoopRoot: Path?,
@@ -134,8 +137,9 @@ class ProcessScoopVerifier private constructor(
         }
 
         /**
-         * 启动进程后并发流式 drain 输出（256KB cap 防内存爆炸），
-         * 轮询 waitFor 同时检查协程取消；超时或结束时 destroyForcibly 兜底。
+         * Streams and drains output concurrently after process start (256KB cap to
+         * bound memory), polls waitFor while checking coroutine cancellation, and
+         * destroyForcibly is the timeout/end-of-process backstop.
          */
         internal suspend fun runProcess(command: List<String>, timeoutMs: Long): ScoopProcessResult {
             val proc = try {
@@ -149,7 +153,7 @@ class ProcessScoopVerifier private constructor(
                 )
             }
             val captured = StringBuilder()
-            // 阻塞读无法被协程取消，用后台线程 drain；进程被杀后流关闭线程自然退出
+            // blocking reads cannot be cancelled; drain on a daemon thread, which exits once the killed process closes the stream
             val drain = thread(isDaemon = true) {
                 try {
                     val reader = proc.inputStream.bufferedReader()
@@ -209,7 +213,7 @@ class ProcessScoopVerifier private constructor(
             val manifestFile = tempDir.resolve("$appName.json")
             try {
                 Files.writeString(manifestFile, manifestJson)
-                // install 前清理崩溃残留，避免 already installed 假阳性
+                // clean up crash leftovers before install to avoid a false "already installed" positive
                 safeCleanup { commandRunner(listOf("uninstall", appName)) }
 
                 val install = commandRunner(
@@ -256,7 +260,7 @@ class ProcessScoopVerifier private constructor(
             }
         }
 
-    /** 独立清理方法，不再作为对 LLM 的自由参数工具暴露 */
+    /** Standalone cleanup, no longer exposed to the LLM as a free-form parameter tool */
     suspend fun uninstall(appName: String): String = withContext(Dispatchers.IO) {
         if (!APP_NAME_PATTERN.matches(appName)) {
             return@withContext errorJson(appName, "Invalid app name '$appName': must match ${APP_NAME_PATTERN.pattern}")
@@ -270,8 +274,8 @@ class ProcessScoopVerifier private constructor(
     }
 
     /**
-     * 从 manifest 提取顶层或 architecture 形态的 url 与 version（version 数组取首元素）。
-     * 解析失败返回 (null, null)，调用方跳过 prewarm。
+     * Extracts url and version from the manifest (top-level or architecture form; version arrays use the first element).
+     * On parse failure returns (null, null) and the caller skips prewarm.
      */
     internal fun extractUrlAndVersion(json: String): Pair<String?, String?> = try {
         val obj = Json.parseToJsonElement(json).jsonObject
@@ -290,7 +294,7 @@ class ProcessScoopVerifier private constructor(
         null to null
     }
 
-    /** install 完成后按提取的 url/version finalize 缓存条目，使同 URL 重测免下载 */
+    /** Finalizes the cache entry by extracted url/version after install, so re-tests of the same URL skip the download */
     private fun prewarmCache(manifestJson: String, appName: String) {
         val cache = cache ?: return
         val (url, version) = extractUrlAndVersion(manifestJson)
@@ -301,7 +305,7 @@ class ProcessScoopVerifier private constructor(
         }
     }
 
-    /** persist 目录兜底删除（scoop uninstall -p 失败时仍能清掉崩溃残留） */
+    /** Persist-dir backstop deletion (clears crash leftovers even when scoop uninstall -p failed) */
     private fun deletePersistDir(appName: String) {
         val root = scoopRoot ?: return
         val persist = root.resolve("persist").resolve(appName)
@@ -309,7 +313,7 @@ class ProcessScoopVerifier private constructor(
         if (persistFile.exists()) {
             try {
                 persistFile.deleteRecursively()
-                // 空的 persist 父目录一并移除，保持 scoop 布局干净
+                // also remove an empty persist parent to keep the scoop layout clean
                 val parentFile = persistFile.parentFile
                 if (parentFile != null && parentFile.exists() && parentFile.listFiles()?.isEmpty() == true) {
                     parentFile.deleteRecursively()

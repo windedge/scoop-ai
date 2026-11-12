@@ -70,7 +70,7 @@ private fun hasToolCalls(message: JsonObject): Boolean {
  * This rewriter copies the non-blank reasoning text into `message.content`,
  * which Koog then decodes as `MessagePart.Text` so the strategy graph can
  * recover. It is deliberately conservative: any of the following leaves the
- * JSON untouched — non chat-completions shape, invalid JSON, a non-blank
+ * JSON untouched: non chat-completions shape, invalid JSON, a non-blank
  * `content` already present, a non-empty `tool_calls`, or an empty `choices`
  * array. Only the complete `message.content` layer is handled (SSE chunks are
  * rewritten individually by [com.scoopai.core.llm.InterceptingHttpClient.sse]).

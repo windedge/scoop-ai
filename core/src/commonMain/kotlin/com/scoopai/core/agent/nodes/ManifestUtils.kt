@@ -251,7 +251,7 @@ internal fun replaceVersionWithTemplate(text: String, version: String): String {
  * with `$version`.
  *
  * For **noarch** single-entry manifests (architecture is empty and URL has no
- * arch keywords), produces flat autoupdate (`{"url": "..."}`) — no architecture
+ * arch keywords), produces flat autoupdate (`{"url": "..."}`) with no architecture
  * wrapper. For arch-specific entries, produces the standard architecture wrapper.
  */
 internal fun generateAutoupdateArchitectureBlock(
@@ -306,7 +306,7 @@ internal fun generateAutoupdateArchitectureBlock(
  * or `null` for non-GitHub projects (LLM should determine appropriate checkver).
  */
 internal fun generateCheckver(homepage: String, project: String = ""): JsonObject? {
-    // Prefer project (owner/repo) to build the full github URL — this works
+    // Prefer project (owner/repo) to build the full github URL: this works
     // even when homepage is not a GitHub URL (e.g. laragon.org).
     if (project.contains("/")) {
         return buildJsonObject {
@@ -910,7 +910,7 @@ fun finalizeManifestSkeleton(skeletonJson: String, analyze: AnalyzeOutput): Stri
  * PowerShell variables inside Scoop installer scripts that need backtick escaping.
  *
  * In Scoop manifests, `$dir` and `$original_dir` are substituted by Scoop itself.
- * But `$PLUGINSDIR` and similar NSIS-internal variables are NOT Scoop variables —
+ * But `$PLUGINSDIR` and similar NSIS-internal variables are NOT Scoop variables;
  * they are literal directory names inside the extracted archive.
  * Without a backtick, PowerShell treats them as undefined variables and expands
  * them to empty strings, causing "file not found" errors.
@@ -1103,7 +1103,7 @@ internal fun isArchSpecificUrl(url: String): Boolean {
  * `architecture.64bit`. If `architecture` already exists, does nothing.
  *
  * For **noarch** manifests (URL contains no arch keywords like `x64`, `win64`),
- * keeps the flat format — this is the Scoop convention for arch-agnostic apps.
+ * keeps the flat format, which is the Scoop convention for arch-agnostic apps.
  *
  * Also handles `autoupdate`: if `autoupdate` has flat `url` but no `architecture`,
  * wraps it into `autoupdate.architecture.64bit.url`.
@@ -1115,14 +1115,14 @@ internal fun enforceArchitectureWrap(manifestJson: String): String {
         return manifestJson
     }
 
-    // Already has architecture block — nothing to do
+    // Already has architecture block, nothing to do
     if (json.containsKey("architecture")) return manifestJson
 
-    // No url at top level — nothing to do
+    // No url at top level, nothing to do
     if (!json.containsKey("url")) return manifestJson
 
     val urlElement = json["url"]
-    // Array url (multi-file noarch) — do NOT wrap in architecture
+    // Array url (multi-file noarch), do NOT wrap in architecture
     if (urlElement is JsonArray) return manifestJson
 
     val url = urlElement?.jsonPrimitive?.content ?: return manifestJson
@@ -1163,10 +1163,10 @@ internal fun enforceArchitectureWrap(manifestJson: String): String {
 private fun processAutoupdateArchitecture(manifest: JsonObject): JsonObject {
     val autoupdate = manifest["autoupdate"] as? JsonObject ?: return manifest
 
-    // Already has architecture block — nothing to do
+    // Already has architecture block, nothing to do
     if (autoupdate.containsKey("architecture")) return manifest
 
-    // No url in autoupdate — nothing to do
+    // No url in autoupdate, nothing to do
     if (!autoupdate.containsKey("url")) return manifest
 
     // Move autoupdate.url into autoupdate.architecture.64bit.url
@@ -1231,7 +1231,7 @@ private val INVALID_TOP_LEVEL_FIELDS = setOf("installer_type")
  * LLMs sometimes hallucinate `installer_type` which is an internal analyze-phase
  * field, not a valid Scoop manifest field. This function removes it.
  *
- * NOTE: `innosetup` is intentionally NOT in this set — it IS a valid Scoop
+ * NOTE: `innosetup` is intentionally NOT in this set because it IS a valid Scoop
  * manifest field (see extras bucket with 122+ usages). It tells Scoop to use
  * innounp to automatically extract InnoSetup installers.
  *

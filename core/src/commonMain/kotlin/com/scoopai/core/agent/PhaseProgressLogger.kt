@@ -4,7 +4,7 @@ package com.scoopai.core.agent
  * Pure utility for formatting phase progress log messages.
  *
  * This object can be tested directly (no mocks required) because it has no
- * side effects — it just generates formatted strings for [PhaseLogger] or
+ * side effects: it just generates formatted strings for [PhaseLogger] or
  * any logging frontend to emit.
  */
 object PhaseProgressLogger {
