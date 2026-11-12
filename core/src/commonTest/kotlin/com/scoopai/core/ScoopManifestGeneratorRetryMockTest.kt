@@ -26,14 +26,17 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * 方案二：验证 Koog subgraphWithTask 在模型缺少 ToolChoice 能力、且 LLM 返回纯 Text（无 tool call）
- * 时会追加 "DO NOT CHAT WITH ME DIRECTLY! CALL TOOLS, INSTEAD." 用户消息并重试。
+ * Plan 2: verifies that Koog's subgraphWithTask appends a
+ * "DO NOT CHAT WITH ME DIRECTLY! CALL TOOLS, INSTEAD." user message and retries when
+ * the model lacks the ToolChoice capability and the LLM returns pure Text (no tool call).
  *
- * 这模拟了 reasoningFallbackToContent 把 reasoning 文本写入 content 后的形状（parts 只有 Text）：
- * research 阶段第一次返回 Text-only，Koog 重试，第二次以 finalize tool call 收尾。
+ * This simulates the shape after reasoningFallbackToContent writes reasoning text into
+ * content (parts contain only Text): the first research response is Text-only, Koog retries,
+ * and the second one ends with a finalize tool call.
  *
- * 注意：ScoopManifestGenerator 内部使用 modelWithoutToolChoice（剥离 ToolChoice 能力），
- * 与 Koog 1.0.0 的 subgraphWithTask 重试路径一致，因此 mock 下可触发重试边。
+ * Note: ScoopManifestGenerator internally uses modelWithoutToolChoice (strips the ToolChoice
+ * capability), matching Koog 1.0.0's subgraphWithTask retry path, so the retry edge is
+ * reachable under the mock.
  */
 class ScoopManifestGeneratorRetryMockTest {
 
@@ -47,13 +50,14 @@ class ScoopManifestGeneratorRetryMockTest {
     private val generateFinishTool = FinishTool<String>(typeToken<String>())
 
     /**
-     * 包装一个 delegate [PromptExecutor]，记录每次 [execute] 请求中最后一条消息的文本内容，
-     * 以便断言 Koog 在重试时实际发送了 "DO NOT CHAT WITH ME DIRECTLY" 重新提示。
+     * Wraps a delegate [PromptExecutor] and records the text of the last message of each
+     * [execute] request, so tests can assert that Koog actually sent the
+     * "DO NOT CHAT WITH ME DIRECTLY" re-prompt when retrying.
      */
     private class CountingPromptExecutor(
         private val delegate: PromptExecutor,
     ) : PromptExecutor() {
-        /** 每次 execute 调用时，请求中最后一条消息的纯文本（拼接所有 Text part）。 */
+        /** Plain text of the last message in each execute request (concatenated Text parts). */
         val requestLastMessages = mutableListOf<String>()
 
         override suspend fun execute(
@@ -79,7 +83,7 @@ class ScoopManifestGeneratorRetryMockTest {
 
     @Test
     fun `research phase retries once on text-only response then finalizes`() = runBlocking {
-        // 模拟 reasoningFallbackToContent 改写后的形状：纯 Text（无 tool call）。
+        // Simulates the shape after reasoningFallbackToContent rewrites: pure Text (no tool call).
         val textOnlyReasoning = "Let me analyze the repository structure and identify the Windows assets to download."
 
         val researchResult = ResearchOutput(
@@ -111,10 +115,11 @@ class ScoopManifestGeneratorRetryMockTest {
         val manifestJson = """{"version":"10.2.0","architecture":{"64bit":{"url":"https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip","hash":"abc123","extract_dir":"fd-v10.2.0-x86_64-pc-windows-msvc"}},"bin":["fd.exe"]}"""
 
         val mockExecutor = getMockExecutor {
-            // 第 2 次 research 调用：请求含 Koog 重提示 "DO NOT CHAT WITH ME DIRECTLY" -> finalize tool
-            // 必须放在 RESEARCH phase 规则之前，因为第 2 次请求的会话中仍包含 "RESEARCH phase" 文本。
+            // 2nd research call: request contains the Koog re-prompt "DO NOT CHAT WITH ME DIRECTLY" -> finalize tool
+            // Must be registered before the RESEARCH phase rule because the 2nd request's session still
+            // contains the "RESEARCH phase" text.
             mockLLMToolCall(researchFinishTool, researchResult) onRequestContains "DO NOT CHAT WITH ME DIRECTLY"
-            // 第 1 次 research 调用：纯 Text（无 tool call）-> Koog 追加重提示并重试
+            // 1st research call: pure Text (no tool call) -> Koog appends the re-prompt and retries
             mockLLMAnswer(textOnlyReasoning) onRequestContains "RESEARCH phase"
             mockLLMToolCall(analyzeFinishTool, analyzeResult) onRequestContains "ANALYSIS phase"
             mockLLMToolCall(generateFinishTool, manifestJson) onRequestContains "GENERATE phase"
@@ -135,11 +140,11 @@ class ScoopManifestGeneratorRetryMockTest {
 
         val result = generator.generate("https://github.com/sharkdp/fd")
 
-        // 整体流程完成且产出 manifest
+        // Full flow completes and produces a manifest
         assertTrue(result.manifest.contains("10.2.0"), "Should produce manifest, got: ${result.manifest}")
         assertTrue(result.manifest.contains("fd.exe"), "Should contain bin entry, got: ${result.manifest}")
 
-        // research 阶段恰好 2 次 LLM 调用（第 1 次 Text-only，第 2 次 finalize tool）
+        // Exactly 2 research LLM calls (1st Text-only, 2nd finalize tool)
         val researchCalls = counting.requestLastMessages.filter {
             it.contains("RESEARCH phase") || it.contains("DO NOT CHAT WITH ME DIRECTLY")
         }
@@ -148,7 +153,7 @@ class ScoopManifestGeneratorRetryMockTest {
             researchCalls.size,
             "research phase should have exactly 2 LLM calls (text-only then retry), got: $researchCalls"
         )
-        // 第 2 次 research 请求携带 Koog 重提示，是 Koog retry 的铁证
+        // The 2nd research request carries the Koog re-prompt, hard proof of the Koog retry
         assertTrue(
             researchCalls[1].contains("DO NOT CHAT WITH ME DIRECTLY"),
             "2nd research request should contain Koog re-prompt, got: ${researchCalls[1]}"

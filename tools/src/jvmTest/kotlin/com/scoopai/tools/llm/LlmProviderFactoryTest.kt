@@ -93,8 +93,8 @@ class LlmProviderFactoryTest {
 
     @Test
     fun `openai-compatible with DeepSeek model uses uniform OpenAI capabilities with ToolChoice`() {
-        // B 批次：openai-compatible 不再对 DeepSeek 模型名特判。DeepSeek 模型
-        // 走与其它模型相同的统一能力集（含 ToolChoice、不含 Thinking）。
+        // Batch B: openai-compatible no longer special-cases DeepSeek model names. DeepSeek
+        // models use the same uniform capability set as other models (ToolChoice, no Thinking).
         val model = LlmProviderFactory.defaultModel("openai-compatible", "opencode/deepseek-v4-flash")
         assertEquals(LLMProvider.OpenAI, model.provider)
         assertEquals("opencode/deepseek-v4-flash", model.id)

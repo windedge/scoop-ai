@@ -255,7 +255,7 @@ class AssistPromptTest {
     }
 
     // ---------------------------------------------------------------
-    // buildAssistPrompt: probe 失败根因自诊断 + 显式请求示例（装测不触发）
+    // buildAssistPrompt: self-diagnostics of probe failure root cause + explicit request example (not triggered by install tests)
     // ---------------------------------------------------------------
 
     @Test

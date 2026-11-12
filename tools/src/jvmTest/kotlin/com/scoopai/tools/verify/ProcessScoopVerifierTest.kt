@@ -27,7 +27,7 @@ class ProcessScoopVerifierTest {
     """.trimIndent()
 
     // -----------------------------------------------------------------------
-    // 测试缝：fake commandRunner 记录命令序列，返回可控结果
+    // Test seam: fake commandRunner records the command sequence, returns controllable results
     // -----------------------------------------------------------------------
 
     private class FakeRunner {
@@ -59,7 +59,7 @@ class ProcessScoopVerifierTest {
         Json.parseToJsonElement(json).jsonObject.containsKey(field)
 
     // -----------------------------------------------------------------------
-    // appName 白名单
+    // appName whitelist
     // -----------------------------------------------------------------------
 
     @Test
@@ -86,7 +86,7 @@ class ProcessScoopVerifierTest {
     }
 
     // -----------------------------------------------------------------------
-    // 命令顺序与清理
+    // Command order and cleanup
     // -----------------------------------------------------------------------
 
     @Test
@@ -159,7 +159,7 @@ class ProcessScoopVerifierTest {
     }
 
     // -----------------------------------------------------------------------
-    // 会话级 install 预算
+    // Session-level install budget
     // -----------------------------------------------------------------------
 
     @Test
@@ -178,7 +178,7 @@ class ProcessScoopVerifierTest {
     }
 
     // -----------------------------------------------------------------------
-    // S1 双实例：assist 与 review verifier 是不同实例，各有独立 install 预算
+    // S1 two instances: assist and review verifiers are distinct instances with independent install budgets
     // -----------------------------------------------------------------------
 
     @Test
@@ -207,7 +207,7 @@ class ProcessScoopVerifierTest {
     }
 
     // -----------------------------------------------------------------------
-    // prewarm：finalizeCacheEntry 用提取的 url/version/appName 调用
+    // prewarm: finalizeCacheEntry called with the extracted url/version/appName
     // -----------------------------------------------------------------------
 
     @Test
@@ -240,7 +240,7 @@ class ProcessScoopVerifierTest {
     }
 
     // -----------------------------------------------------------------------
-    // manifest url/version 提取
+    // manifest url/version extraction
     // -----------------------------------------------------------------------
 
     @Test
@@ -283,8 +283,8 @@ class ProcessScoopVerifierTest {
     }
 
     // -----------------------------------------------------------------------
-    // resolveScoopCommand：Windows 上 scoop 是 shims/scoop.cmd 而非 .exe，
-    // ProcessBuilder 直跑会 IOException，需 cmd /c 包装（TDD bug 修复回归）
+    // resolveScoopCommand: on Windows scoop is shims/scoop.cmd, not .exe; running it
+    // directly via ProcessBuilder throws IOException, needs a cmd /c wrapper (TDD bug-fix regression)
     // -----------------------------------------------------------------------
 
     @Test
@@ -352,7 +352,7 @@ class ProcessScoopVerifierTest {
     }
 
     // -----------------------------------------------------------------------
-    // tryCreateDetailed：探测失败时返回可诊断的 reason（assist prompt 根因）
+    // tryCreateDetailed: returns a diagnosable reason when the probe fails (assist prompt root cause)
     // -----------------------------------------------------------------------
 
     @Test
@@ -403,7 +403,7 @@ class ProcessScoopVerifierTest {
     }
 
     // -----------------------------------------------------------------------
-    // runProcess 进程级行为（真实进程，Windows CI 友好：ping 做长睡眠）
+    // runProcess process-level behavior (real processes, Windows CI friendly: ping as long sleeper)
     // -----------------------------------------------------------------------
 
     @Test
@@ -412,7 +412,7 @@ class ProcessScoopVerifierTest {
         val start = System.currentTimeMillis()
         val error = assertFailsWith<ScoopProcessTimeoutException> {
             runBlocking {
-                // ping -n 30 约 29 秒，timeout 1s 必须先返回
+                // ping -n 30 sleeps ~29s; the 1s timeout must return first
                 ProcessScoopVerifier.runProcess(
                     listOf("cmd", "/c", "ping", "-n", "30", "127.0.0.1"),
                     timeoutMs = 1_000,
@@ -428,7 +428,8 @@ class ProcessScoopVerifierTest {
     @Tag("process")
     fun `runProcess destroys process and rethrows on coroutine cancellation`() = runBlocking {
         withTimeout(10_000) {
-            // job body 会阻塞线程，必须跑在独立多线程池，否则 runBlocking event loop 卡死
+            // The job body blocks its thread; run it on a separate multi-thread pool or the
+            // runBlocking event loop deadlocks
             val job = launch(Dispatchers.Default) {
                 ProcessScoopVerifier.runProcess(
                     listOf("cmd", "/c", "ping", "-n", "30", "127.0.0.1"),

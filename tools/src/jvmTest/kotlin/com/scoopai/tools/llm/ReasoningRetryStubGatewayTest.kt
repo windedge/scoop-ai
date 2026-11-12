@@ -28,47 +28,48 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * 方案一：stub OpenAI 网关集成测试。
+ * Plan 1: stub OpenAI gateway integration test.
  *
- * 用 JDK 内置 [HttpServer] 在 127.0.0.1 随机端口起一个"脚本式"的 OpenAI
- * chat-completions 网关（零新依赖），让真实的
- * [LlmProviderFactory.create]("openai-compatible", ...) 走完整链路：
+ * Uses the JDK built-in [HttpServer] to run a "scripted" OpenAI chat-completions gateway
+ * on a random 127.0.0.1 port (zero new dependencies), so the real
+ * [LlmProviderFactory.create]("openai-compatible", ...) walks the full chain:
  *
  * ```
- * ScoopManifestGenerator (research → analyze → generate → verify/review)
- *   → OpenAILLMClient
- *     → InterceptingHttpClient
- *        请求侧: stripToolChoice（无条件剥离 tool_choice 字段）
- *        响应侧: reasoningFallbackToContent → normalizeMissingCreated   (A 层)
- *       → JavaKoogHttpClient → stub HTTP 网关
+ * ScoopManifestGenerator (research -> analyze -> generate -> verify/review)
+ *   -> OpenAILLMClient
+ *     -> InterceptingHttpClient
+ *        request side: stripToolChoice (unconditionally strips the tool_choice field)
+ *        response side: reasoningFallbackToContent -> normalizeMissingCreated   (Layer A)
+ *       -> JavaKoogHttpClient -> stub HTTP gateway
  * ```
  *
- * 确定性触发两层修复：
+ * Deterministically triggers two layers of fixes:
  *
- * - **A 层（reasoning 改写 + created 补齐）**：research 阶段第一个响应是
- *   "纯推理"响应（`content: null`、无 `tool_calls`、reasoning 文本放在
- *   `reasoning_content`，且**故意缺 `created` 字段**）。
- *   - 若没有 `normalizeMissingCreated`：Koog 解码 `OpenAIChatCompletionResponse`
- *     会因缺少非空字段 `created` 抛 `MissingFieldException`。
- *   - 若没有 `reasoningFallbackToContent`：Koog 只会产出
- *     `parts=[MessagePart.Reasoning]`，`subgraphWithTask` 的 `onToolCalls` /
- *     `onTextMessage` 边都不匹配，直接抛
- *     `"Unhandled response from LLM. Subgraph with task must always call tools"`。
- *   两者任一失效，本测试的第 1 条断言（成功返回 manifest）就会失败。
+ * - **Layer A (reasoning rewrite + created backfill)**: the first research response is a
+ *   "reasoning-only" response (`content: null`, no `tool_calls`, reasoning text in
+ *   `reasoning_content`, and **deliberately missing the `created` field**).
+ *   - Without `normalizeMissingCreated`: Koog's decoding of `OpenAIChatCompletionResponse`
+ *     throws `MissingFieldException` for the missing non-null `created` field.
+ *   - Without `reasoningFallbackToContent`: Koog only produces
+ *     `parts=[MessagePart.Reasoning]`; neither of `subgraphWithTask`'s `onToolCalls` /
+ *     `onTextMessage` edges matches and it throws
+ *     "Unhandled response from LLM. Subgraph with task must always call tools".
+ *   If either fix regresses, this test's first assertion (manifest produced) fails.
  *
- * - **B 层（Koog 内建 retry）**：A 层把 reasoning 写进 `content` 后，Koog 走
- *   `handleAssistantMessage`（模型缺 `ToolChoice` 能力，由
- *   `ScoopManifestGenerator.modelWithoutToolChoice` 保证），追加
- *   `"# DO NOT CHAT WITH ME DIRECTLY! CALL TOOLS, INSTEAD."` 用户消息后重试。
- *   第 2 个 research 请求携带该重提示且 messages 数量增加，即 B 层铁证。
+ * - **Layer B (Koog built-in retry)**: after Layer A writes reasoning into `content`, Koog
+ *   goes through `handleAssistantMessage` (the model lacks the `ToolChoice` capability,
+ *   guaranteed by `ScoopManifestGenerator.modelWithoutToolChoice`), appends the
+ *   "# DO NOT CHAT WITH ME DIRECTLY! CALL TOOLS, INSTEAD." user message and retries.
+ *   The 2nd research request carries that re-prompt and a larger message count, i.e. hard
+ *   proof of Layer B.
  *
- * 完全离线：不传 `gitHubApi` / `archiveInspector` / `manifestIo`，
- * `executePrefetch` 在 `gitHubApi == null` 时直接返回空 `PrefetchResult`。
+ * Fully offline: `gitHubApi` / `archiveInspector` / `manifestIo` are not passed,
+ * `executePrefetch` returns an empty `PrefetchResult` when `gitHubApi == null`.
  */
 class ReasoningRetryStubGatewayTest {
 
     private companion object {
-        /** openai-compatible 能力已统一：不再按模型名特判 DeepSeek；请求侧无条件 strip tool_choice。 */
+        /** openai-compatible capabilities are unified: no DeepSeek name special-case; requests unconditionally strip tool_choice. */
         const val MODEL_ID = "opencode/deepseek-v4-flash"
         const val KOOG_RETRY_PROMPT = "DO NOT CHAT WITH ME DIRECTLY"
         const val FINISH_TOOL = "finalize_task_result"
@@ -93,7 +94,7 @@ class ReasoningRetryStubGatewayTest {
             "hash":"abc123","extract_dir":"fd-v10.2.0-x86_64-pc-windows-msvc"}],"bin":["fd.exe"]}}
         """.trimIndent().replace("\n", "")
 
-        /** generate 阶段 FinishTool 的 Output 是 String → result 必须是"字符串化的 manifest"。 */
+        /** generate-phase FinishTool's Output is String, so result must be a "stringified manifest". */
         const val MANIFEST_JSON =
             """{"version":"10.2.0","architecture":{"64bit":{"url":"https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip","hash":"abc123","extract_dir":"fd-v10.2.0-x86_64-pc-windows-msvc"}},"bin":["fd.exe"]}"""
 
@@ -109,7 +110,7 @@ class ReasoningRetryStubGatewayTest {
     }
 
     // ---------------------------------------------------------------
-    // A 层（reasoning 改写 + created 补齐）+ B 层（Koog retry）全链路
+    // Layer A (reasoning rewrite + created backfill) + Layer B (Koog retry) full chain
     // ---------------------------------------------------------------
 
     @Test
@@ -135,7 +136,7 @@ class ReasoningRetryStubGatewayTest {
 
         val result = generator.generate("https://github.com/sharkdp/fd")
 
-        // -- 1. 全链路成功：A 层任一环节失效都会在 research 阶段抛异常 --------
+        // -- 1. Full chain succeeds: any Layer A regression throws during the research phase --------
         assertTrue(
             result.manifest.contains("10.2.0"),
             "manifest should contain the version. manifest=${result.manifest}${stub.dump()}",
@@ -146,20 +147,20 @@ class ReasoningRetryStubGatewayTest {
         )
         assertEquals("fd-stub", result.suggestedAppName, "suggestedAppName should come from the stub ResearchOutput")
 
-        // stub 真的发出了"纯推理 + 缺 created"响应（防止路径被静默跳过）
+        // The stub really served a "reasoning-only + missing created" response (prevents the path from being silently skipped)
         assertEquals(
             1,
             stub.reasoningOnlyServed.get(),
             "stub must have served exactly one reasoning-only response (no created field)${stub.dump()}",
         )
 
-        // -- 2. 请求数量：research×2 + analyze + generate + review -----------
+        // -- 2. Request counts: research x2 + analyze + generate + review -----------
         assertTrue(
             stub.requests.size >= 5,
             "expected at least 5 gateway requests (research x2, analyze, generate, review), got ${stub.requests.size}${stub.dump()}",
         )
 
-        // -- 3. B 层铁证：第 2 个请求携带 Koog 重提示且历史更长 ---------------
+        // -- 3. Layer B hard proof: the 2nd request carries the Koog re-prompt and a longer history ---------------
         assertFalse(
             KOOG_RETRY_PROMPT in stub.requests[0],
             "first request must not contain the Koog re-prompt${stub.dump()}",
@@ -173,7 +174,7 @@ class ReasoningRetryStubGatewayTest {
             "retry request should carry a longer history: ${stub.messageCounts[1]} vs ${stub.messageCounts[0]}${stub.dump()}",
         )
 
-        // -- 4. 第 2 个请求确实是 research 阶段的重试 ------------------------
+        // -- 4. The 2nd request really is the research-phase retry ------------------------
         assertTrue(
             RESEARCH_MARKER in stub.requests[1],
             "second request should still carry the RESEARCH phase context${stub.dump()}",
@@ -183,25 +184,26 @@ class ReasoningRetryStubGatewayTest {
             "the retry re-prompt must be the last message of the second request${stub.dump()}",
         )
 
-        // -- 5. 阶段顺序：research, research-retry, analyze, generate, review -
+        // -- 5. Phase order: research, research-retry, analyze, generate, review -
         assertEquals(
             listOf("research", "research-retry", "analyze", "generate", "review"),
             stub.servedRoutes.take(5),
             "unexpected phase routing${stub.dump()}",
         )
 
-        // -- 6. 请求侧拦截器链也生效：tool_choice 字段被整体剥离 ------------
-        // subgraphWithTask 调用 setToolChoiceRequired()，stripToolChoice（无条件
-        // 拦截）把请求体里的 tool_choice 字段整个删掉，避免网关报错。
+        // -- 6. The request-side interceptor chain works too: the tool_choice field is stripped entirely ------------
+        // subgraphWithTask calls setToolChoiceRequired(); stripToolChoice (unconditional
+        // interception) deletes the tool_choice field from the request body to keep the gateway from erroring.
         assertFalse(
             "\"tool_choice\"" in stub.requests[0],
             "stripToolChoice should have removed the tool_choice field entirely${stub.dump()}",
         )
 
-        // -- 7. 双重编码回归：Koog 1.1.1 (#2096) 修复了 tool call arguments 的
-        //        二次编码。删除 fixDoubleEncoding 拦截器后，网关收到的请求体应当
-        //        保持单编码。双重编码会在 arguments 字符串开头产生转义引号：
-        //        正确: "arguments":"{...}"    错误: "arguments":"\"{...}"
+        // -- 7. Double-encoding regression: Koog 1.1.1 (#2096) fixed the double
+        //        encoding of tool call arguments. With the fixDoubleEncoding interceptor removed,
+        //        the body the gateway receives must stay single-encoded. Double encoding produces
+        //        an escaped quote at the start of the arguments string:
+        //        correct: "arguments":"{...}"    wrong: "arguments":"\"{...}"
         val toolCallRequests = stub.requests.filter { "\"arguments\"" in it }
         assertTrue(
             toolCallRequests.isNotEmpty(),
@@ -217,8 +219,8 @@ class ReasoningRetryStubGatewayTest {
     }
 
     // ---------------------------------------------------------------
-    // malformed_function_call 恢复：malformedFunctionCallRetryHint 注入
-    // content → Koog 重试环激活 → 全链路成功
+    // malformed_function_call recovery: malformedFunctionCallRetryHint injects content
+    // -> Koog retry loop kicks in -> full chain succeeds
     // ---------------------------------------------------------------
 
     @Test
@@ -244,22 +246,22 @@ class ReasoningRetryStubGatewayTest {
 
         val result = generator.generate("https://github.com/sharkdp/fd")
 
-        // -- 1. 全链路成功：malformed rewrite 任一环节失效都会在 research 抛异常 --
+        // -- 1. Full chain succeeds: any malformed rewrite regression throws during research --
         assertTrue(
             result.manifest.contains("10.2.0"),
             "manifest should contain the version. manifest=${result.manifest}${stub.dump()}",
         )
         assertEquals("fd-stub", result.suggestedAppName, "suggestedAppName should come from the stub ResearchOutput")
 
-        // stub 真的发出了"malformed_function_call + 缺 created"响应（防止路径被静默跳过）
+        // The stub really served a "malformed_function_call + missing created" response (prevents the path from being silently skipped)
         assertEquals(
             1,
             stub.malformedServed.get(),
             "stub must have served exactly one malformed_function_call response${stub.dump()}",
         )
 
-        // -- 2. B 层铁证：第 2 个请求携带 Koog 重提示（malformed rewrite 把
-        //       content 注入为 Text 后，Koog 走 handleAssistantMessage 重试环）----
+        // -- 2. Layer B hard proof: the 2nd request carries the Koog re-prompt (after the
+        //       malformed rewrite injects content as Text, Koog goes through the handleAssistantMessage retry loop) ----
         assertTrue(
             KOOG_RETRY_PROMPT in stub.requests[1],
             "second request must contain the Koog re-prompt ($KOOG_RETRY_PROMPT)${stub.dump()}",
@@ -269,7 +271,7 @@ class ReasoningRetryStubGatewayTest {
             "first request must not contain the Koog re-prompt${stub.dump()}",
         )
 
-        // -- 3. 阶段顺序：research, research-retry, analyze, generate, review --
+        // -- 3. Phase order: research, research-retry, analyze, generate, review --
         assertEquals(
             listOf("research", "research-retry", "analyze", "generate", "review"),
             stub.servedRoutes.take(5),
@@ -278,17 +280,18 @@ class ReasoningRetryStubGatewayTest {
     }
 
     // ===============================================================
-    // Stub OpenAI chat-completions 网关
+    // Stub OpenAI chat-completions gateway
     // ===============================================================
 
-    /** 第一次 research 响应应模拟的"空助手响应"类型。 */
+    /** Which "empty assistant response" the first research response should simulate. */
     private enum class FirstResearch { Reasoning, Malformed }
 
     /**
-     * 脚本式 stub 网关：按每个请求的**最后一条消息**分发响应。
+     * Scripted stub gateway: dispatches responses by each request's **last message**.
      *
-     * 之所以看最后一条消息而不是整个 body：Koog 的 prompt 历史跨 subgraph 累积，
-     * analyze / generate 请求的 body 里仍然含有 "RESEARCH phase" 与重提示文本。
+     * Why the last message rather than the whole body: Koog's prompt history accumulates
+     * across subgraphs, so analyze / generate request bodies still contain the
+     * "RESEARCH phase" and re-prompt texts.
      */
     private class StubOpenAiGateway(
         private val firstResearch: FirstResearch = FirstResearch.Reasoning,
@@ -296,22 +299,22 @@ class ReasoningRetryStubGatewayTest {
 
         private val server: HttpServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
 
-        /** 每个请求的完整 body（按到达顺序）。 */
+        /** Full body of each request (in arrival order). */
         val requests: MutableList<String> = Collections.synchronizedList(mutableListOf())
 
-        /** 每个请求最后一条消息的 JSON 文本。 */
+        /** JSON text of each request's last message. */
         val lastMessages: MutableList<String> = Collections.synchronizedList(mutableListOf())
 
-        /** 每个请求的 messages 数组长度。 */
+        /** messages array length of each request. */
         val messageCounts: MutableList<Int> = Collections.synchronizedList(mutableListOf())
 
-        /** 每个请求命中的分支名。 */
+        /** Branch name hit by each request. */
         val servedRoutes: MutableList<String> = Collections.synchronizedList(mutableListOf())
 
-        /** 已发出的"纯推理 + 缺 created"响应数量。 */
+        /** Number of "reasoning-only + missing created" responses served. */
         val reasoningOnlyServed = AtomicInteger(0)
 
-        /** 已发出的"malformed_function_call + 缺 created"响应数量。 */
+        /** Number of "malformed_function_call + missing created" responses served. */
         val malformedServed = AtomicInteger(0)
 
         val baseUrl: String get() = "http://127.0.0.1:${server.address.port}"
@@ -323,7 +326,7 @@ class ReasoningRetryStubGatewayTest {
          */
         private var executor: ExecutorService? = null
 
-        /** 第一次 research 是否已服务（两种场景共用同一计数）。 */
+        /** Whether the first research has been served (both scenarios share this counter). */
         private val researchFirstServed = AtomicInteger(0)
 
         fun start() {
@@ -341,7 +344,7 @@ class ReasoningRetryStubGatewayTest {
             executor = null
         }
 
-        /** 失败时的诊断输出。 */
+        /** Diagnostic output on failure. */
         fun dump(): String = buildString {
             appendLine()
             appendLine("--- stub gateway requests (${requests.size}) ---")
@@ -363,12 +366,12 @@ class ReasoningRetryStubGatewayTest {
             lastMessages += lastMessage
 
             val response = when {
-                // research 重试（Koog 追加的重提示是最后一条消息）→ 正常 tool_calls
+                // research retry (Koog's appended re-prompt is the last message) -> normal tool_calls
                 KOOG_RETRY_PROMPT in lastMessage -> {
                     servedRoutes += "research-retry"
                     toolCallResponse("chatcmpl-research-retry", RESEARCH_RESULT_JSON)
                 }
-                // research 第一次 → 按场景返回"空助手响应"，且故意缺 created
+                // research first call -> serve the scenario's "empty assistant response", deliberately missing created
                 RESEARCH_MARKER in lastMessage && researchFirstServed.get() == 0 -> {
                     servedRoutes += "research"
                     researchFirstServed.incrementAndGet()
@@ -383,7 +386,7 @@ class ReasoningRetryStubGatewayTest {
                         }
                     }
                 }
-                // 兜底：research 再次被问到时直接 finalize，避免无限循环
+                // Fallback: when research is asked again, finalize directly to avoid an infinite loop
                 RESEARCH_MARKER in lastMessage -> {
                     servedRoutes += "research-extra"
                     toolCallResponse("chatcmpl-research-extra", RESEARCH_RESULT_JSON)
@@ -402,7 +405,7 @@ class ReasoningRetryStubGatewayTest {
                         ),
                     )
                 }
-                // review agent（无 tools，纯文本 JSON 即可）
+                // review agent (no tools, a plain-text JSON body suffices)
                 else -> {
                     servedRoutes += "review"
                     textResponse("chatcmpl-review", """{"approved":true}""")
@@ -415,12 +418,12 @@ class ReasoningRetryStubGatewayTest {
             exchange.responseBody.use { it.write(bytes) }
         }
 
-        // -- 响应构造（严格 OpenAI chat.completion 形状） ------------------
+        // -- Response construction (strict OpenAI chat.completion shape) ------------------
 
         /**
-         * 纯推理响应：`content: null`、无 `tool_calls`、reasoning 在
-         * `reasoning_content`，`finish_reason = "stop"`，**不带 created**
-         * （一次性命中 reasoningFallbackToContent + normalizeMissingCreated）。
+         * Reasoning-only response: `content: null`, no `tool_calls`, reasoning in
+         * `reasoning_content`, `finish_reason = "stop"`, **no created**
+         * (hits reasoningFallbackToContent + normalizeMissingCreated in one shot).
          */
         private fun reasoningOnlyResponse(): String = chatCompletion(
             id = "chatcmpl-research-reasoning",
@@ -433,9 +436,9 @@ class ReasoningRetryStubGatewayTest {
         }
 
         /**
-         * malformed_function_call 响应：`content: null`、无 `tool_calls`、无
-         * reasoning，`finish_reason = "malformed_function_call"`，**不带 created**
-         * （一次性命中 malformedFunctionCallRetryHint + normalizeMissingCreated）。
+         * malformed_function_call response: `content: null`, no `tool_calls`, no reasoning,
+         * `finish_reason = "malformed_function_call"`, **no created**
+         * (hits malformedFunctionCallRetryHint + normalizeMissingCreated in one shot).
          */
         private fun malformedFunctionCallResponse(): String = chatCompletion(
             id = "chatcmpl-research-malformed",
@@ -446,7 +449,7 @@ class ReasoningRetryStubGatewayTest {
             put("content", JsonNull)
         }
 
-        /** 正常 tool_calls 响应：arguments 是"字符串化的 arguments 对象"。 */
+        /** Normal tool_calls response: arguments is a "stringified arguments object". */
         private fun toolCallResponse(id: String, argumentsJson: String): String = chatCompletion(
             id = id,
             finishReason = "tool_calls",
@@ -466,7 +469,7 @@ class ReasoningRetryStubGatewayTest {
             }
         }
 
-        /** 纯文本响应（review agent）。 */
+        /** Plain text response (review agent). */
         private fun textResponse(id: String, content: String): String = chatCompletion(
             id = id,
             finishReason = "stop",
@@ -486,8 +489,8 @@ class ReasoningRetryStubGatewayTest {
                 put("id", id)
                 put("object", "chat.completion")
                 put("model", MODEL_ID)
-                // created 只在非 research-first 响应中给出；缺失时由
-                // normalizeMissingCreated 补 0，否则 Koog 解码直接抛 MissingFieldException。
+                // created is only provided in non-research-first responses; when missing,
+                // normalizeMissingCreated backfills 0, otherwise Koog decoding throws MissingFieldException directly.
                 if (includeCreated) put("created", 1_700_000_000L)
                 putJsonArray("choices") {
                     addJsonObject {
