@@ -27,3 +27,5 @@ clikt = { module = "com.github.ajalt.clikt:clikt", version.ref = "clikt" }
 
 [plugins]
 shadow = { id = "com.github.johnrengelman.shadow", version.ref = "shadow" }
+# Highest version supporting this repo's Gradle 8.12 / KGP 2.1.21 (0.35.0 needs Gradle 8.13+)
+vanniktech-maven-publish = { id = "com.vanniktech.maven.publish", version = "0.34.0" }

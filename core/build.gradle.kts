@@ -1,28 +1,83 @@
+import com.vanniktech.maven.publish.JavadocJar
+import com.vanniktech.maven.publish.KotlinMultiplatform
+
 plugins {
     kotlin("multiplatform")
     kotlin("plugin.serialization")
-    `maven-publish`
+    alias(libs.plugins.vanniktech.maven.publish)
 }
 
-group = "com.scoopai"
+group = "io.github.windedge"
 version = rootProject.version
+
+mavenPublishing {
+    // No automatic release: upload to Central Portal, publish manually from the web UI.
+    publishToMavenCentral()
+    signAllPublications()
+
+    coordinates(groupId = "io.github.windedge", artifactId = "scoop-ai-core", version = rootProject.version as String)
+
+    pom {
+        name = "scoop-ai-core"
+        description = "Scoop manifest generation engine for the scoop-ai agent"
+        url = "https://github.com/windedge/scoop-ai"
+        licenses {
+            license {
+                name = "MIT"
+                url = "https://opensource.org/licenses/MIT"
+            }
+        }
+        developers {
+            developer {
+                name = "windedge"
+            }
+        }
+        scm {
+            url = "https://github.com/windedge/scoop-ai"
+            connection = "scm:git:git://github.com/windedge/scoop-ai.git"
+            developerConnection = "scm:git:ssh://git@github.com/windedge/scoop-ai.git"
+        }
+    }
+}
+
+mavenPublishing {
+    configure(
+        KotlinMultiplatform(javadocJar = JavadocJar.Empty(), sourcesJar = true)
+    )
+}
 
 repositories {
     mavenCentral()
 }
 
-configurations.all {
+// Keep a single Koog HTTP client (Java): strip Koog's other HTTP/bundled clients and
+// the whole Ktor stack they would pull in, on every Koog dependency edge.
+val koogHttpExclusions: ExternalModuleDependency.() -> Unit = {
     exclude(group = "ai.koog", module = "prompt-executor-bedrock-client")
-    exclude(group = "ai.koog", module = "prompt-executor-bedrock-client-jvm")
     exclude(group = "ai.koog", module = "agents-features-opentelemetry")
-    exclude(group = "ai.koog", module = "agents-features-opentelemetry-jvm")
     exclude(group = "ai.koog", module = "serialization-jackson")
-    exclude(group = "ai.koog", module = "serialization-jackson-jvm")
     exclude(group = "ai.koog", module = "http-client-ktor")
-    exclude(group = "ai.koog", module = "http-client-ktor-jvm")
     exclude(group = "io.ktor", module = "ktor-client-apache5")
-    exclude(group = "io.ktor", module = "ktor-client-apache5-jvm")
-    exclude(group = "io.ktor")
+    exclude(group = "io.ktor", module = "ktor-client-cio")
+    exclude(group = "io.ktor", module = "ktor-client-content-negotiation")
+    exclude(group = "io.ktor", module = "ktor-client-core")
+    exclude(group = "io.ktor", module = "ktor-client-logging")
+    exclude(group = "io.ktor", module = "ktor-events")
+    exclude(group = "io.ktor", module = "ktor-http")
+    exclude(group = "io.ktor", module = "ktor-http-cio")
+    exclude(group = "io.ktor", module = "ktor-io")
+    exclude(group = "io.ktor", module = "ktor-network")
+    exclude(group = "io.ktor", module = "ktor-network-tls")
+    exclude(group = "io.ktor", module = "ktor-serialization")
+    exclude(group = "io.ktor", module = "ktor-serialization-kotlinx")
+    exclude(group = "io.ktor", module = "ktor-serialization-kotlinx-json")
+    exclude(group = "io.ktor", module = "ktor-server-cio")
+    exclude(group = "io.ktor", module = "ktor-server-core")
+    exclude(group = "io.ktor", module = "ktor-server-sse")
+    exclude(group = "io.ktor", module = "ktor-sse")
+    exclude(group = "io.ktor", module = "ktor-utils")
+    exclude(group = "io.ktor", module = "ktor-websocket-serialization")
+    exclude(group = "io.ktor", module = "ktor-websockets")
 }
 
 kotlin {
@@ -41,8 +96,9 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            implementation("ai.koog:koog-agents:${libs.versions.koog.get()}")
-            implementation(libs.koog.deepseek.client)
+            // api so library consumers see Koog types (KoogCompat surface) transitively
+            api("ai.koog:koog-agents:1.1.1", koogHttpExclusions)
+            api("ai.koog:prompt-executor-deepseek-client:1.1.1-beta", koogHttpExclusions)
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlin.logging)
@@ -51,16 +107,6 @@ kotlin {
         commonTest.dependencies {
             implementation(kotlin("test"))
             implementation(libs.koog.agents.test)
-        }
-    }
-}
-
-publishing {
-    publications {
-        withType<MavenPublication>().matching { it.name == "kotlinMultiplatform" }.configureEach {
-            groupId = project.group as String
-            version = project.version as String
-            artifactId = "scoop-ai-core"
         }
     }
 }

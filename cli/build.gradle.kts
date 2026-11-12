@@ -19,24 +19,40 @@ repositories {
     mavenCentral()
 }
 
-configurations.all {
+// Keep a single Koog HTTP client (Java): strip Koog's other HTTP/bundled clients and
+// the whole Ktor stack they would pull in, on every Koog dependency edge.
+val koogHttpExclusions: ExternalModuleDependency.() -> Unit = {
     exclude(group = "ai.koog", module = "prompt-executor-bedrock-client")
-    exclude(group = "ai.koog", module = "prompt-executor-bedrock-client-jvm")
     exclude(group = "ai.koog", module = "agents-features-opentelemetry")
-    exclude(group = "ai.koog", module = "agents-features-opentelemetry-jvm")
     exclude(group = "ai.koog", module = "serialization-jackson")
-    exclude(group = "ai.koog", module = "serialization-jackson-jvm")
     exclude(group = "ai.koog", module = "http-client-ktor")
-    exclude(group = "ai.koog", module = "http-client-ktor-jvm")
     exclude(group = "io.ktor", module = "ktor-client-apache5")
-    exclude(group = "io.ktor", module = "ktor-client-apache5-jvm")
-    exclude(group = "io.ktor")
+    exclude(group = "io.ktor", module = "ktor-client-cio")
+    exclude(group = "io.ktor", module = "ktor-client-content-negotiation")
+    exclude(group = "io.ktor", module = "ktor-client-core")
+    exclude(group = "io.ktor", module = "ktor-client-logging")
+    exclude(group = "io.ktor", module = "ktor-events")
+    exclude(group = "io.ktor", module = "ktor-http")
+    exclude(group = "io.ktor", module = "ktor-http-cio")
+    exclude(group = "io.ktor", module = "ktor-io")
+    exclude(group = "io.ktor", module = "ktor-network")
+    exclude(group = "io.ktor", module = "ktor-network-tls")
+    exclude(group = "io.ktor", module = "ktor-serialization")
+    exclude(group = "io.ktor", module = "ktor-serialization-kotlinx")
+    exclude(group = "io.ktor", module = "ktor-serialization-kotlinx-json")
+    exclude(group = "io.ktor", module = "ktor-server-cio")
+    exclude(group = "io.ktor", module = "ktor-server-core")
+    exclude(group = "io.ktor", module = "ktor-server-sse")
+    exclude(group = "io.ktor", module = "ktor-sse")
+    exclude(group = "io.ktor", module = "ktor-utils")
+    exclude(group = "io.ktor", module = "ktor-websocket-serialization")
+    exclude(group = "io.ktor", module = "ktor-websockets")
 }
 
 dependencies {
-    implementation(project(":core"))
-    implementation(project(":tools"))
-    implementation("ai.koog:koog-agents:${libs.versions.koog.get()}")
+    implementation(project(":scoop-ai-core"))
+    implementation(project(":scoop-ai-tools"))
+    implementation("ai.koog:koog-agents:1.1.1", koogHttpExclusions)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.logback.classic)
     implementation(libs.clikt)
@@ -100,7 +116,7 @@ tasks.named<Sync>("installDist") {
         from(tasks.shadowJar)
     }
     doLast {
-        // Remove individual dependency jars — only keep the shadow fat jar
+        // Remove individual dependency jars, only keep the shadow fat jar
         val libDir = destinationDir.resolve("lib")
         val shadowJarName = tasks.shadowJar.get().archiveFileName.get()
         libDir.listFiles()?.forEach { file ->
