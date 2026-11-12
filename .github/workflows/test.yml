@@ -23,4 +23,4 @@ jobs:
 
       - name: Run tests
         shell: pwsh
-        run: ./gradlew.bat :tools:jvmTest :core:jvmTest :cli:test --no-daemon
+        run: ./gradlew.bat :scoop-ai-tools:jvmTest :scoop-ai-core:jvmTest :cli:test --no-daemon
