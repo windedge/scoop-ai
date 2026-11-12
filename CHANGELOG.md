@@ -6,9 +6,218 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 > **NOTE**: 0.1.4 artifacts (Maven Local + shadow jar) are published locally
-> only; no GitHub Release exists yet. The [0.1.0], [0.2.0], and [0.3.0]
-> sections below document completed work that shipped as part of the 0.1.4
-> artifact.
+> only; no GitHub Release exists yet. The [0.1.0] section below documents
+> completed work that shipped as part of the 0.1.4 artifact. The former
+> 0.2.0 / 0.3.0 sections (CLI productization phase numbers, also shipped in
+> the 0.1.4 artifact) were folded into the [0.1.4] section, whose "Folded
+> phase logs" subsection preserves their entries verbatim.
+
+## [0.1.16] - Unreleased
+
+### Changed
+
+- BREAKING: Maven coordinates migrate from `com.scoopai` to `io.github.windedge`
+  and the Gradle projects are renamed `scoop-ai-core` / `scoop-ai-tools`
+  (directories unchanged); koog dependencies are now exposed as `api`. Kotlin
+  package names stay `com.scoopai.*`, so consumers only change dependency
+  coordinates.
+- MIT `LICENSE` added for the Maven Central publication.
+- Windows CI: the three module test suites run on push and pull request;
+  testing patterns moved to `docs/testing-guide.md`.
+
+### Removed
+
+- `thinkingCompatibleSingleRunStrategy` and the whole `ThinkingCompatibleStrategy`
+  (manual ReAct loop made redundant by the reasoning fallback rewriters plus
+  `KoogCompat.decorateModel`)
+- `ApiKeyResolver.resolve` / `ProviderConfigResolver.resolve` facade objects and
+  the `ScoopManifestConfig` data class: provider resolution now goes through the
+  single `resolveProviderConfig` entry point returning `ResolvedProviderConfig`
+- Test-only internal surfaces: `isToolCallJsonParseError`,
+  `parseResearchStatus`, and the `PhaseTelemetry` duration readers
+  (`durationOf` / `durations`)
+
+### Added
+
+- `ResolvedProviderConfig` / `resolveProviderConfig`: the single flag-to-env-to-
+  default provider resolution entry point, resolved once and handed to the factory
+- `SessionCallbacks`, `AssistHost` and `PhaseTelemetry`: session-scoped adapters
+  so the middle layers stop relaying parameters one by one
+- `KoogCompat`: the collected Koog workaround seam (HTTP chain decoration, model
+  decoration, lenient finish tool) with per-entry trigger/retirement docs
+- `ManifestVerifier`: the verify pipeline extracted out of the strategy file,
+  shrinking the strategy to the graph
+
+### Fixed
+
+- Autoupdate hash fabrication, fixed in four layers:
+  - L1 deterministic validation: guessed checksum companion URLs
+    (`<file>.sha256` / `.sha512` / `.md5`) that are absent from the actual
+    release assets are flagged as repair issues by a deterministic verifier;
+    templates with variables that cannot be resolved safely are skipped
+  - L2 checksums cross-check: the research phase's checksums file note is
+    validated against the real release asset names and the must-add hash
+    instruction is dropped on mismatch; checksums-bearing analysis notes are
+    filtered before they reach the generate prompt
+  - L3 digest passthrough: the GitHub release asset digest (SHA-256) is
+    surfaced as the manifest `hash` value so the model no longer has to
+    invent checksum file names
+  - L4 prompt counter-example: generate/repair prompts state that GitHub
+    releases rarely ship per-file checksum siblings and to omit the hash
+    block instead of guessing a URL
+
+## [0.1.15] - 2026-10-23
+
+### Added
+
+- `ProviderEndpoints`: the single source of truth for per-provider base URLs,
+  paths, auth headers and default models; deepseek, openai, anthropic, ollama
+  and openrouter now honor base URL overrides (openai-compatible flow unchanged)
+
+### Changed
+
+- Anthropic and ollama clients are wrapped in the shared intercepting HTTP
+  client so they get the same retry window as the other providers
+- The unsupported-provider error message is unified across the API key resolver
+  and the provider factory
+
+### Fixed
+
+- Assist saves that keep the referenced app's base name no longer trigger the
+  app name conflict notice; renames inside a session and plain generate runs
+  still report the conflict
+
+## [0.1.14] - 2026-10-20
+
+### Added
+
+- Assist sessions expose the nine read-only GitHub and web tools so chat
+  answers verify facts instead of guessing; prompts require citing sources
+  and forbid the heavy download tools
+
+### Changed
+
+- Assist prompt budget numbers aligned with the code constants; wrong retry
+  denominator dropped
+
+### Fixed
+
+- Shared HTTP retry window widened (five retries, thirty second backoff cap)
+  so transient gateway errors survive an outage; connect and request timeouts
+  added to the cache manager and the redirect resolver so a black-holed host
+  cannot hang a run
+
+## [0.1.13] - 2026-10-06
+
+### Changed
+
+- Tool activity events carry the model's self-declared intent sentence captured
+  before each tool call; research and analyze prompts ask for one short intent
+  sentence before tool use
+- Shared system prompt style rule bans em and en dashes in all model output
+
+## [0.1.10] - 2026-09-24
+
+### Added
+
+- `read_manifest_reference` host tool: resolves `@bucket/app` references to
+  local manifest content with metadata, returning structured errors instead of
+  throwing; registered for assist sessions via the host-provided handler and
+  documented in the assist and repair prompts
+
+## [0.1.9] - 2026-09-21
+
+### Added
+
+- Hash auto-fix: invalid SHA-256 hashes found during verify are corrected from
+  analyze/research data without consuming repair rounds
+- `install_app` accepts a nullable bucket for bucketless direct installs, with
+  prompt guidance
+
+### Changed
+
+- Repair retry limit raised from 3 to 5
+
+### Fixed
+
+- Text-only assist answers are recovered as explanations instead of the
+  failure fallback
+
+## [0.1.8] - 2026-09-07
+
+### Added
+
+- `verify_install` tool: assist-phase install tests backed by the refactored
+  `ProcessScoopVerifier` (app name whitelist, per-instance budget); injected
+  into the semantic review agent and the assist subgraph
+- Host-callback `install_app` and `save_to_bucket` tools for assist sessions,
+  registered only when the host provides the handlers so CLI builds stay
+  tool-free
+- Self-diagnosing install tests: the verifier captures why the scoop probe
+  failed and the reason flows into the assist prompt's no-install-test branch
+  so the model can report the root cause
+- Runtime-failure guidance: user reports of an installed app failing are
+  treated as manifest fix requests (fix, save to the same bucket with
+  overwrite, reinstall), bounded to two attempts
+
+### Changed
+
+- BREAKING: install verification is always available; `ScoopAiConfig.verify`
+  and the CLI `--verify` flag are removed. The verifier is created
+  opportunistically: when scoop cannot be resolved the tools stay absent and
+  the assist prompt reports it honestly
+
+### Fixed
+
+- Windows: scoop is resolved via the `scoop.cmd` shim (ProcessBuilder cannot
+  exec `.cmd` files directly) so `verify_install` is no longer silently
+  unavailable; the failure reason is logged instead of swallowed
+- Tool events carry raw, untruncated results and unwrap Koog `JSONLiteral`
+  strings so hosts can parse `verify_install` output
+- The generate summary survives repair rounds instead of being overwritten by
+  the repair explanation
+- Redundant `verify_install` re-runs are forbidden when failure details are
+  already embedded in the user message
+- Saves without an explicit bucket follow the needsBucket flow (single-choice
+  `__ask_user__` question); a review retest note makes the review agent re-run
+  `verify_install` after a fix instead of trusting the stale failed result
+
+## [0.1.7] - 2026-09-02
+
+### Changed
+
+- BREAKING: refine is renamed to assist/repair - `SessionRequest.Refine` becomes
+  `Assist`, `RefineContext` becomes `AssistContext`, `generator.refine()`
+  becomes `assist()`; user follow-ups emit the "assist" phase, the internal
+  loop emits "repair"
+- Prompts split into `buildAssistPrompt` / `buildRepairPrompt` with a question
+  escape hatch; `FinalizePayload.answered` and `ManifestResult.answered` guard
+  the answer path (the manifest must stay unchanged)
+
+## [0.1.6] - 2026-09-01
+
+### Added
+
+- Real-time `ToolActivity` listener for agent execution
+- AI explanation carried through finalize: dual-parameter `FinalizePayload`
+  protocol (result + optional explanation) with lenient decoding and legacy
+  compatibility; `ManifestResult.explanation`; verify phase events with review
+  instrumentation merged into verify stats
+- Multi-round refine history with normalized output; session evidence feeds
+  refine; `SafeAskUser` tool instance decoupled
+- Squirrel installer pattern and reference manifest for Electron apps
+
+### Changed
+
+- Prompts prioritize the official GitHub About description and enforce Scoop
+  description standards
+- HTTP exponential backoff retry with jitter
+
+### Fixed
+
+- Review and refine taught about NSIS `#/dl.7z` extraction (bin/shortcuts
+  targets exist after 7-Zip extraction; GUI-only apps may omit bin)
+- Dual bin conflicts resolved; prompts enforce exclusive bin placement
 
 ## [0.1.5] - 2026-08-27
 
@@ -29,70 +238,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   corrupt JSON, ignored extras), `phaseOutputListener` mock-executor flow, and
   `DefaultScoopAiFactory` `onPhaseOutput` construction.
 
-## [0.3.0] - 2026-06-18
-
-### Added
-
-- `scoop-ai doctor` subcommand: 7 health checks (JDK version, OS, Scoop install, API key, cache dir, write permission, version)
-- `scoop-ai config show` subcommand: display runtime configuration (API keys masked)
-- `scoop-ai completion bash|zsh|fish|powershell` subcommand: shell completion scripts
-- `scoop-ai version` subcommand: print version info
-- `--debug` flag: print stack traces on errors (credentials still masked)
-- `--no-progress` flag: disable TTY progress overlay
-- `CompositionRoot.kt`: lazy dependency injection root
-- `EnvArgs.kt`: pure CLI args parser
-- JSON output mode (`--output-format json`): structured output with ManifestResult (manifest, suggestedAppName, noAssets, tokenUsage, durationMs, stages)
-- `StageInfo` data class: per-phase execution statistics (phaseName, durationMs, inputTokens, outputTokens, toolCallCount)
-- `GenerationObserver`: records per-phase telemetry (enterPhase/exitPhase/recordLlmCall/recordToolCall)
-- `RunArtifacts`: writes phase JSON to `.scoopai/runs/<runId>/` for debugging (`--artifacts auto|always|never`, `--run-id override`)
-- `SensitiveArtifactWriter`: wraps RunArtifacts with SensitiveMasker for safe debug output
-- `--cache keep|discard` flag (`--no-cache` deprecated, prints warning)
-- Self-bootstrapping Scoop manifest (`bucket/scoop-ai.json`)
-- `docs/troubleshooting.md`: 16 FAQ covering exit codes and common issues
-- `docs/providers.md`: 6 providers with double-encoding workaround section
-- `docs/man/scoop-ai.1`: troff man page (installManPage Gradle task)
-- Comprehensive CLI test suite: GenerateCommandTest (42), DoctorCommandTest (13), ConfigShowCommandTest (13), CompletionCommandTest (19), VersionCommandTest (9), VersionOptionIntegrationTest (2)
-- `StageInfoTest`, `GenerationObserverTest`, `RunArtifactsTest`, `SensitiveArtifactWriterTest`
-
-### Changed
-
-- CLI refactored to clikt 4.4.0 with subcommand architecture (`ScoopAi.kt`)
-- `scoop-ai generate <url>` is now the canonical form; `scoop-ai <url>` still works via automatic routing
-- `--version` and `scoop-ai version` subcommand both print version info via clikt
-- Help output is now clikt-style (replaces hand-written `HELP_TEXT` and custom help printers)
-- `Main.kt` reduced to 7 lines (delegates to `CliRunner`)
-- Retained `CliRunner.kt` as clikt subcommand entry point (main entry delegates to CliRunner)
-- `ManifestResult` now has `stages` field (backward compatible, defaults to empty)
-- `TokenUsage` and `StageInfo` are `@Serializable`
-- README updated: WARNING block for sensitive env vars, links to docs, Installation section
-
-### Fixed
-
-- scoop-installed doctor check: Windows ProcessBuilder could not find `scoop.cmd` shim (now uses `cmd /c` + shim file fallback)
-- scoop-installed version extraction: outputs clean version (e.g. `0.5.3`) instead of `Current Scoop version:`
-
-### Notes
-
-- T-3.05b checkpoint spike concluded: RESUME_DEFERRED (deferred to v0.4.0+)
-  - Koog exposes a first-class checkpoint resume API (Persistence.runFromCheckpoint +
-    AdditionalInputs.Storage + strategy restoreStateIfNeeded), so this is not a framework blocker.
-  - scoopManifestStrategy is not resumable yet: phase data (researchData/analyzeData/
-    suggestedAppName) lives in local var captures set as side effects inside node bodies,
-    which a checkpoint restore skips, causing NPE in prepareManifest/generate.
-  - Shipping --from needs a capture->storage refactor (~40 lines) plus wiring + proof test
-    (~200 lines), above the spike's RESUME_SUPPORTED threshold, on the hottest code path.
-  - v0.4.0 plan: refactor captures to storage keys, add resume-after-subgraph proof test,
-    add CheckpointResume.kt, wire --from <analyze|generate>.
-  - v0.3.0 does NOT include `--from <stage>` (deferred to v0.4.0+).
-
-### Known Limitations
-
-- No persistent configuration file (`~/.scoopai/config.toml` planned for v0.4.0)
-- No keyring integration for API key storage (planned for v0.4.0)
-- No `--from <stage>` checkpoint resume (planned for v0.4.0+ per T-3.05b spike)
-- No internationalization (English only, no Chinese README)
-
 ## [0.1.4] - 2026-08-18
+
+> **Phase fold**: the former 0.2.0 and 0.3.0 sections documented internal
+> feature phase numbers (Phase 2-3 CLI productization) of the same code line
+> that shipped as the 0.1.4 artifact. Their entries are preserved verbatim in
+> the "Folded phase logs" subsection at the end of this section.
 
 ### Added
 
@@ -183,22 +334,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Falls back to full generation if artifacts are missing or corrupt
 - End-to-end resume verification with real LLM deferred to batch 4
 
-## [0.2.0] - 2026-06-17
+### Folded phase logs (former 0.2.0 / 0.3.0 sections)
 
-Unreleased alongside 0.3.0; documents the clikt subcommand architecture introduced in Phase 2.
+The entries below were previously separate 0.2.0 and 0.3.0 sections. They are
+preserved verbatim; the former 0.2.0 content (clikt subcommand architecture
+summary) is fully covered by these entries.
 
-### Added
+#### Added
 
-- clikt 4.4.0 subcommand architecture (generate/doctor/config/completion/version)
-- CompositionRoot.kt + EnvArgs.kt
-- DoctorCommand with 7 HealthCheck
-- ConfigShowCommand, CompletionCommand, VersionCommand
-- 5 subcommand test suites
+- `scoop-ai doctor` subcommand: 7 health checks (JDK version, OS, Scoop install, API key, cache dir, write permission, version)
+- `scoop-ai config show` subcommand: display runtime configuration (API keys masked)
+- `scoop-ai completion bash|zsh|fish|powershell` subcommand: shell completion scripts
+- `scoop-ai version` subcommand: print version info
+- `--debug` flag: print stack traces on errors (credentials still masked)
+- `--no-progress` flag: disable TTY progress overlay
+- `CompositionRoot.kt`: lazy dependency injection root
+- `EnvArgs.kt`: pure CLI args parser
+- JSON output mode (`--output-format json`): structured output with ManifestResult (manifest, suggestedAppName, noAssets, tokenUsage, durationMs, stages)
+- `StageInfo` data class: per-phase execution statistics (phaseName, durationMs, inputTokens, outputTokens, toolCallCount)
+- `GenerationObserver`: records per-phase telemetry (enterPhase/exitPhase/recordLlmCall/recordToolCall)
+- `RunArtifacts`: writes phase JSON to `.scoopai/runs/<runId>/` for debugging (`--artifacts auto|always|never`, `--run-id override`)
+- `SensitiveArtifactWriter`: wraps RunArtifacts with SensitiveMasker for safe debug output
+- `--cache keep|discard` flag (`--no-cache` deprecated, prints warning)
+- Self-bootstrapping Scoop manifest (`bucket/scoop-ai.json`)
+- `docs/troubleshooting.md`: 16 FAQ covering exit codes and common issues
+- `docs/providers.md`: 6 providers with double-encoding workaround section
+- `docs/man/scoop-ai.1`: troff man page (installManPage Gradle task)
+- Comprehensive CLI test suite: GenerateCommandTest (42), DoctorCommandTest (13), ConfigShowCommandTest (13), CompletionCommandTest (19), VersionCommandTest (9), VersionOptionIntegrationTest (2)
+- `StageInfoTest`, `GenerationObserverTest`, `RunArtifactsTest`, `SensitiveArtifactWriterTest`
 
-### Changed
+#### Changed
 
-- Main.kt trimmed from 300 to 10 lines (delegates to CliRunner)
-- Help output is clikt-style
+- CLI refactored to clikt 4.4.0 with subcommand architecture (`ScoopAi.kt`)
+- `scoop-ai generate <url>` is now the canonical form; `scoop-ai <url>` still works via automatic routing
+- `--version` and `scoop-ai version` subcommand both print version info via clikt
+- Help output is now clikt-style (replaces hand-written `HELP_TEXT` and custom help printers)
+- `Main.kt` reduced to 7 lines (delegates to `CliRunner`)
+- Retained `CliRunner.kt` as clikt subcommand entry point (main entry delegates to CliRunner)
+- `ManifestResult` now has `stages` field (backward compatible, defaults to empty)
+- `TokenUsage` and `StageInfo` are `@Serializable`
+- README updated: WARNING block for sensitive env vars, links to docs, Installation section
+
+#### Fixed
+
+- scoop-installed doctor check: Windows ProcessBuilder could not find `scoop.cmd` shim (now uses `cmd /c` + shim file fallback)
+- scoop-installed version extraction: outputs clean version (e.g. `0.5.3`) instead of `Current Scoop version:`
+
+#### Notes
+
+- T-3.05b checkpoint spike concluded: RESUME_DEFERRED (deferred to v0.4.0+)
+  - Koog exposes a first-class checkpoint resume API (Persistence.runFromCheckpoint +
+    AdditionalInputs.Storage + strategy restoreStateIfNeeded), so this is not a framework blocker.
+  - scoopManifestStrategy is not resumable yet: phase data (researchData/analyzeData/
+    suggestedAppName) lives in local var captures set as side effects inside node bodies,
+    which a checkpoint restore skips, causing NPE in prepareManifest/generate.
+  - Shipping --from needs a capture->storage refactor (~40 lines) plus wiring + proof test
+    (~200 lines), above the spike's RESUME_SUPPORTED threshold, on the hottest code path.
+  - v0.4.0 plan: refactor captures to storage keys, add resume-after-subgraph proof test,
+    add CheckpointResume.kt, wire --from <analyze|generate>.
+  - 0.3.0 does NOT include `--from <stage>` (superseded: the 0.1.4 artifact itself
+    ships `--from`, see the section above).
+
+#### Known Limitations
+
+- No persistent configuration file (`~/.scoopai/config.toml` planned for v0.4.0)
+- No keyring integration for API key storage (planned for v0.4.0)
+- No `--from <stage>` checkpoint resume (planned for v0.4.0+ per T-3.05b spike)
+- No internationalization (English only, no Chinese README)
 
 ## [0.1.0] - 2026-06-16
 
@@ -248,8 +450,15 @@ Unreleased alongside 0.3.0; documents the clikt subcommand architecture introduc
 - No internationalization (English only, no Chinese README).
 
 <!-- TODO: replace the placeholder repo URL below with the real repository once the first GitHub Release is cut -->
+[0.1.16]: https://github.com/placeholder/scoop-ai/releases/tag/v0.1.16
+[0.1.15]: https://github.com/placeholder/scoop-ai/releases/tag/v0.1.15
+[0.1.14]: https://github.com/placeholder/scoop-ai/releases/tag/v0.1.14
+[0.1.13]: https://github.com/placeholder/scoop-ai/releases/tag/v0.1.13
+[0.1.10]: https://github.com/placeholder/scoop-ai/releases/tag/v0.1.10
+[0.1.9]: https://github.com/placeholder/scoop-ai/releases/tag/v0.1.9
+[0.1.8]: https://github.com/placeholder/scoop-ai/releases/tag/v0.1.8
+[0.1.7]: https://github.com/placeholder/scoop-ai/releases/tag/v0.1.7
+[0.1.6]: https://github.com/placeholder/scoop-ai/releases/tag/v0.1.6
 [0.1.5]: https://github.com/placeholder/scoop-ai/releases/tag/v0.1.5
 [0.1.4]: https://github.com/placeholder/scoop-ai/releases/tag/v0.1.4
-[0.3.0]: https://github.com/placeholder/scoop-ai/releases/tag/v0.3.0
-[0.2.0]: https://github.com/placeholder/scoop-ai/releases/tag/v0.2.0
 [0.1.0]: https://github.com/placeholder/scoop-ai/releases/tag/v0.1.0

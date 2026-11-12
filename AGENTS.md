@@ -51,12 +51,12 @@ vendored 拷贝 `AssistSubgraphWithImages.kt` 留在 agent 包原地。每条的
 cd C:/Seafile/Works/kotlin/scoop-ai && cmd //c gradlew.bat :cli:shadowJar
 ```
 
-输出：`cli/build/libs/cli-0.1.3-all.jar`
+输出：`cli/build/libs/cli-0.1.16-all.jar`
 
 ## 运行命令模板
 
 ```bat
-cd C:/Seafile/Works/kotlin/scoop-ai && cmd //c "set SCOOP_AI_PROVIDER=openai-compatible&& set SCOOP_AI_API_KEY=sk-xxxx&& set SCOOP_AI_BASE_URL=http://192.168.40.130:8317&& set SCOOP_AI_MODEL=opencode/deepseek-v4-flash&& java -jar cli/build/libs/cli-0.1.3-all.jar <GitHub URL>"
+cd C:/Seafile/Works/kotlin/scoop-ai && cmd //c "set SCOOP_AI_PROVIDER=openai-compatible&& set SCOOP_AI_API_KEY=sk-xxxx&& set SCOOP_AI_BASE_URL=http://192.168.40.130:8317&& set SCOOP_AI_MODEL=opencode/deepseek-v4-flash&& java -jar cli/build/libs/cli-0.1.16-all.jar <GitHub URL>"
 ```
 
 ## 验证流程（每次改动后必须执行）
@@ -122,9 +122,9 @@ scoop uninstall <app>-ai-test
 
 ```
 1. 分析需求 → 拆分为小的可测试单元
-2. 写测试 → gradlew.bat :core:cleanJvmTest :core:jvmTest --rerun-tasks（预期失败）
+2. 写测试 → gradlew.bat :scoop-ai-core:cleanJvmTest :scoop-ai-core:jvmTest --rerun-tasks（预期失败）
 3. 写实现代码（刚好让测试通过）
-4. gradlew.bat :core:cleanJvmTest :core:jvmTest --rerun-tasks（预期全部通过）
+4. gradlew.bat :scoop-ai-core:cleanJvmTest :scoop-ai-core:jvmTest --rerun-tasks（预期全部通过）
 5. 如需重构 → 重构后再次跑测试确认不破坏
 6. 全部通过后提交
 ```
