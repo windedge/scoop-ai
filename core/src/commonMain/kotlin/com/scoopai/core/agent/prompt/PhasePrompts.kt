@@ -13,11 +13,27 @@ import kotlinx.serialization.json.Json
  * Shared system prompt injected once at the agent level. Koog keeps the agent
  * config prompt (including this system message) in every subgraph's LLM context,
  * so all phases (research/analyze/generate/assist/repair) inherit it.
+ *
+ * When [replyLanguage] is non-null a Reply language rules block is appended:
+ * input language first, fallback language second, closed English exemptions
+ * third. Null keeps the legacy single sentence byte-identical.
  */
-fun buildGeneratorSystemPrompt(): String =
-    "You are a Scoop manifest generator. You generate and assist Scoop bucket manifests for Windows software. " +
+fun buildGeneratorSystemPrompt(replyLanguage: String? = null): String {
+    val base = "You are a Scoop manifest generator. You generate and assist Scoop bucket manifests for Windows software. " +
         "Style: never use em dashes (" + EM_DASH + ") or en dashes (" + EN_DASH + "). " +
         "Use commas, colons, parentheses or plain hyphens (-) instead."
+    if (replyLanguage == null) return base
+    return base + "\n\n" +
+        "Reply language rules (apply to explanation, activities, user_explanation and direct answers):\n" +
+        "1. If the instruction in THIS request is written in a natural language, reply in that language. " +
+        "URLs, paths, manifest field names, code, @bucket/app references and quoted log text do not count. " +
+        "When several natural languages are mixed, anchor on the sentences the user wrote themselves; " +
+        "quoted or pasted passages do not decide.\n" +
+        "2. Otherwise reply in $replyLanguage.\n" +
+        "3. The following are ALWAYS English regardless of the rules above: manifest field values " +
+        "(description, notes, ...), all phase JSON data fields (notes, alternatives, persist_targets, ...), " +
+        "and review issue strings."
+}
 
 internal const val EM_DASH: String = "\u2014"
 internal const val EN_DASH: String = "\u2013"
@@ -636,7 +652,7 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
 
    The tool's `result` parameter has type `string`. Its content is the manifest serialized as JSON text. The inner quotes must be escaped as `\"`.
 
-   `explanation` is an independent short string parameter: at most 3 short sentences, about 60 words total, written in the same language as the user's input. Spend 1-2 sentences on the packaging strategy and at most 1 sentence on any non-obvious choice. Do NOT recap extract_dir / bin / shortcuts / persist field-by-field; the manifest is displayed in the UI, so the reader can see those fields directly. It must never be placed inside `result`.
+   `explanation` is an independent short string parameter: at most 3 short sentences, about 60 words total, written in the language defined by the Reply language rules in the system prompt. Spend 1-2 sentences on the packaging strategy and at most 1 sentence on any non-obvious choice. Do NOT recap extract_dir / bin / shortcuts / persist field-by-field; the manifest is displayed in the UI, so the reader can see those fields directly. It must never be placed inside `result`.
 
    `activities` is an optional list of strings: 3-6 short sentences, each naming one concrete transformation you applied to the manifest and why (e.g. "Appended #/dl.7z for the NSIS installer", "Added autoupdate.hash from checksums.txt"). Only list transformations you actually made, in order. It must never be placed inside `result`.
 
@@ -806,14 +822,14 @@ private fun buildAssistKernel(
     appendLine("- Do NOT reorganize or rewrite unrelated parts of the manifest.")
     appendLine("- After fixing/refining, call `finalize_task_result` with the corrected manifest.")
     if (ctx.explanatory) {
-        appendLine("- When calling `finalize_task_result`, also pass the optional `explanation` parameter: directly answer the user's specific request by stating which fields were added, removed, or modified and why, in the same language as the user's instruction.")
+        appendLine("- When calling `finalize_task_result`, also pass the optional `explanation` parameter: directly answer the user's specific request by stating which fields were added, removed, or modified and why, in the language defined by the Reply language rules in the system prompt.")
         appendLine("  Keep it at most 3 short sentences, about 60 words total; the manifest is displayed in the UI, so do not recap the changed fields one by one.")
     }
     appendLine("- When you modified the manifest, also pass the optional `activities` parameter: a list of 3-6 short sentences, each naming one concrete change you made and why (e.g. \"Removed the %APPDATA% persist path because Scoop forbids absolute user paths\", \"Added shortcuts because you asked for a Start Menu entry\"). Only list changes you actually made, in order; omit the parameter when the manifest is returned unchanged.")
     if (includingEscape) {
         appendLine()
         appendLine("## Question Escape Hatch")
-        appendLine("If the user's message is a pure question about the manifest (no change request), do NOT modify the manifest. Answer in at most 3 short sentences (~60 words) in the user's language via the existing `explanation` parameter, set the Boolean parameter `answered` to true, and return the manifest verbatim in `result`. If the message asks for any change (add/remove/modify/rename fields, switch version or asset, fix a problem), `answered` must be false or omitted.")
+        appendLine("If the user's message is a pure question about the manifest (no change request), do NOT modify the manifest. Answer in at most 3 short sentences (~60 words) in the language defined by the Reply language rules in the system prompt via the existing `explanation` parameter, set the Boolean parameter `answered` to true, and return the manifest verbatim in `result`. If the message asks for any change (add/remove/modify/rename fields, switch version or asset, fix a problem), `answered` must be false or omitted.")
     }
     if (ctx.explanatory) {
         appendLine()

@@ -162,6 +162,9 @@ Your job: analyze the manifest and identify issues. Return a JSON object.
 - If an issue is acceptable, a potential consideration, a styling suggestion, or not a critical breaking bug, assign `severity: "warning"`.
 - Never assign `severity: "error"` if the message describes the behavior as acceptable, harmless, or a warning.
 
+Return each issue string in English.
+Your output is machine-consumed JSON, not user-facing.
+
 ## Output Format
 
 Return ONLY a JSON object with no markdown formatting:

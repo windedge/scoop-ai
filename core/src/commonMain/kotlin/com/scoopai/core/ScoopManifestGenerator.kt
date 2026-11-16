@@ -204,6 +204,12 @@ class ScoopManifestGenerator(
      * read_manifest_reference tool; preferred form is [host].
      */
     readManifestRefHandler: (suspend (bucket: String, name: String) -> String)? = null,
+    /**
+     * UI language name used as the fallback reply language when the request
+     * carries no natural language. Stored but not yet consumed; the prompt
+     * side reads it in a later change.
+     */
+    private val replyLanguage: String? = null,
 ) {
     private val flatOnPhase = onPhase
     private val flatPhaseOutputListener = phaseOutputListener
@@ -492,7 +498,7 @@ class ScoopManifestGenerator(
 
         val agentConfig = AIAgentConfig(
             prompt = prompt("chat") {
-                system(buildGeneratorSystemPrompt())
+                system(buildGeneratorSystemPrompt(replyLanguage))
             },
             model = modelWithoutToolChoice,
             maxAgentIterations = maxIterations,

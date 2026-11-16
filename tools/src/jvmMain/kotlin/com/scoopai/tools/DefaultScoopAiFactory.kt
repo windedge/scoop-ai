@@ -151,6 +151,7 @@ object DefaultScoopAiFactory {
             saveHandler = saveToBucketHandler?.let(::saveHandlerAdapter),
             installHandler = installAppHandler,
             readManifestRefHandler = readManifestRefHandler,
+            replyLanguage = config.replyLanguage,
         )
     }
 

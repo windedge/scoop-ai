@@ -123,7 +123,7 @@ internal class LenientStringFinishTool : Tool<FinalizePayload, FinalizePayload>(
             ToolParameterDescriptor(
                 name = "explanation",
                 description = "Optional. A short natural-language explanation of what was generated/changed " +
-                    "and why, in the same language as the user's input.",
+                    "and why, in the language the user should see; follow the reply-language rules in the prompt.",
                 type = ToolParameterType.String,
             ),
             ToolParameterDescriptor(
