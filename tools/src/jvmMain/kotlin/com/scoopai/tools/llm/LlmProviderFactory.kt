@@ -51,7 +51,7 @@ object LlmProviderFactory {
      * headers, and we only decorate the client they would have created. This
      * keeps the engine free of any knowledge about the provider internals.
      */
-    private val retryingHttpClientFactory = object : KoogHttpClient.Factory {
+    private fun retryingHttpClientFactory(): KoogHttpClient.Factory = object : KoogHttpClient.Factory {
         override fun create(
             clientName: String,
             baseUrl: String,
@@ -71,7 +71,7 @@ object LlmProviderFactory {
                 connectTimeoutMillis = connectTimeoutMillis,
                 socketTimeoutMillis = socketTimeoutMillis,
                 json = json,
-            )
+            ),
         )
     }
 
@@ -102,13 +102,13 @@ object LlmProviderFactory {
                 AnthropicLLMClient(
                     apiKey = apiKey,
                     settings = settings,
-                    httpClientFactory = retryingHttpClientFactory,
+                    httpClientFactory = retryingHttpClientFactory(),
                 )
             )
         }
         "ollama" -> MultiLLMPromptExecutor(
             OllamaClient(
-                httpClientFactory = retryingHttpClientFactory,
+                httpClientFactory = retryingHttpClientFactory(),
                 baseUrl = resolveBaseUrl("ollama", baseUrl),
             )
         )

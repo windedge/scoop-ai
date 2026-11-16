@@ -107,6 +107,7 @@ kotlin {
         commonTest.dependencies {
             implementation(kotlin("test"))
             implementation(libs.koog.agents.test)
+            implementation(libs.kotlinx.coroutines.test)
         }
     }
 }
