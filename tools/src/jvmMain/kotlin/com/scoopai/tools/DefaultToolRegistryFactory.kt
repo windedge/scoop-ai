@@ -29,6 +29,24 @@ import com.scoopai.tools.web.JdkHttpWebFetcher
  */
 private val DYNAMIC_TOOL_NAMES: Set<String> = setOf(PhaseTools.REVIEW_MANIFEST)
 
+/**
+ * Resolves the download_confirm answer through three layers, first match wins:
+ * 1. `user selected: N` index mapped to options[N-1].value ("skip" = skip);
+ * 2. legacy keyword set (n/no/cancel/skip/abort/false/skip downloading);
+ * 3. default = download.
+ * The old keyword check ran on a lowercased trimmed response; keep that literal set.
+ */
+internal fun resolveDownloadConfirmAnswer(response: String, options: List<QuestionOption>): Boolean {
+    val selectedIndex = Regex("user selected:\\s*(\\d+)").find(response)?.groupValues?.get(1)?.toIntOrNull()
+    if (selectedIndex != null) {
+        // An in-range index is authoritative; an out-of-range one falls through.
+        if (selectedIndex in 1..options.size) return options[selectedIndex - 1].value == "skip"
+    }
+    val trimmed = response.trim().lowercase()
+    return trimmed == "n" || trimmed == "no" || trimmed == "cancel" || trimmed == "skip" ||
+        trimmed == "abort" || trimmed == "false" || trimmed.contains("skip downloading")
+}
+
 object DefaultToolRegistryFactory {
     private var cacheManager: ScoopCacheManager? = null
     private var toolBudget: ToolCallBudget? = null
@@ -76,14 +94,13 @@ object DefaultToolRegistryFactory {
                     label = "Download",
                     prompt = prompt,
                     options = listOf(
-                        QuestionOption(label = "Download and proceed", description = "Download $fileName into cache for SHA-256 and archive inspection"),
-                        QuestionOption(label = "Skip downloading", description = "Skip downloading; agent will proceed with alternative information"),
+                        QuestionOption(label = "Download and proceed", value = "download", description = "Download $fileName into cache for SHA-256 and archive inspection"),
+                        QuestionOption(label = "Skip downloading", value = "skip", description = "Skip downloading; agent will proceed with alternative information"),
                     ),
                     allowOther = true,
                 )
                 val response = questionnaireHandler.invoke(listOf(q))
-                val trimmed = response.trim().lowercase()
-                !(trimmed == "n" || trimmed == "no" || trimmed == "cancel" || trimmed == "skip" || trimmed == "abort" || trimmed == "false" || trimmed.contains("skip downloading"))
+                !resolveDownloadConfirmAnswer(response, q.options)
             }
         } else if (askUserHandler != null) {
             cache.downloadConfirmer = { url, sizeBytes ->
@@ -91,8 +108,7 @@ object DefaultToolRegistryFactory {
                 val sizeInfo = if (sizeBytes > 0) " (${formatFileSize(sizeBytes)})" else ""
                 val prompt = "Ready to download installer/archive '$fileName'$sizeInfo for analysis from:\n$url\nProceed with download?"
                 val response = askUserHandler.invoke(prompt)
-                val trimmed = response.trim().lowercase()
-                !(trimmed == "n" || trimmed == "no" || trimmed == "cancel" || trimmed == "skip" || trimmed == "abort" || trimmed == "false")
+                !resolveDownloadConfirmAnswer(response, emptyList())
             }
         } else if (isNonInteractive) {
             // Non-interactive mode (e.g. CLI -n): skip confirmation, download directly
@@ -108,14 +124,13 @@ object DefaultToolRegistryFactory {
                     label = "Download",
                     prompt = prompt,
                     options = listOf(
-                        QuestionOption(label = "Download and proceed", description = "Download $fileName into cache for inspection"),
-                        QuestionOption(label = "Skip downloading", description = "Skip downloading this archive"),
+                        QuestionOption(label = "Download and proceed", value = "download", description = "Download $fileName into cache for inspection"),
+                        QuestionOption(label = "Skip downloading", value = "skip", description = "Skip downloading this archive"),
                     ),
                     allowOther = true,
                 )
                 val response = askUserTool.execute(SafeAskUser.Args(questions = listOf(q)))
-                val trimmed = response.trim().lowercase()
-                !(trimmed == "n" || trimmed == "no" || trimmed == "cancel" || trimmed == "skip" || trimmed == "abort" || trimmed == "false" || trimmed.contains("skip downloading"))
+                !resolveDownloadConfirmAnswer(response, q.options)
             }
         }
         cacheManager = cache
