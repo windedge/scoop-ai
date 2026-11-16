@@ -12,6 +12,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > the 0.1.4 artifact) were folded into the [0.1.4] section, whose "Folded
 > phase logs" subsection preserves their entries verbatim.
 
+## [0.1.17] - Unreleased
+
+### Added
+
+- `ScoopAiConfig.replyLanguage`: hosts pass the UI language name as the fallback
+  reply language; the shared system prompt picks the user instruction language
+  first and falls back to the configured one (manifest data fields stay English)
+- `ResearchOutput.user_explanation`: the research phase writes a short
+  user-facing explanation for `no_windows_assets` runs, shown in the reply
+  language instead of the deterministic English join
+- `KoogCompat.decorateHttpClient(onRetryLog = ...)`: hosts plug their own retry
+  log sink; each scheduled retry attempt emits one line (attempt, delayMs, cause)
+
+### Changed
+
+- `download_confirm` options carry explicit `value`s (`download` / `skip`)
+
+### Fixed
+
+- SSE and lines responses from the LLM gateway share the post retry budget with
+  a whole-stream timeout, so a stalled gateway can no longer hang a run
+- `ask_user` download-confirm answers resolve by option index first, then
+  legacy keywords, then default to continue
+
 ## [0.1.16] - Unreleased
 
 ### Changed
