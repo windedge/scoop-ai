@@ -61,8 +61,22 @@ internal fun firstSentence(text: String, limit: Int = NO_ASSETS_DETAIL_LIMIT): S
  * project name, plus at most the first sentence of alternatives (preferred) or notes
  * (fallback). The remaining field content is not listed, and the total length is
  * capped at [NO_ASSETS_EXPLANATION_LIMIT] characters with an ellipsis on overflow.
+ *
+ * When the model provided [ResearchOutput.user_explanation], it takes precedence:
+ * the trimmed text replaces the whole synthesized join and is capped the same way;
+ * a blank value falls back to the deterministic English join unchanged.
  */
 internal fun buildNoAssetsExplanation(research: ResearchOutput): String? {
+    val userExplanation = research.user_explanation?.trim()
+    if (!userExplanation.isNullOrBlank()) {
+        // Same cap policy as the fallback join: head kept, trailing spaces
+        // trimmed before the ellipsis.
+        return if (userExplanation.length > NO_ASSETS_EXPLANATION_LIMIT) {
+            userExplanation.take(NO_ASSETS_EXPLANATION_LIMIT - NO_ASSETS_ELLIPSIS.length).trimEnd() + NO_ASSETS_ELLIPSIS
+        } else {
+            userExplanation
+        }
+    }
     val builder = StringBuilder("No Windows assets found for this project")
     if (research.project.isNotBlank()) {
         builder.append(" (").append(research.project.trim()).append(")")

@@ -52,6 +52,8 @@ data class ResearchOutput(
     val env_targets: Map<String, String> = emptyMap(),
     /** Checksums file discovered in release assets, e.g. "checksums.txt", "sha256sums.txt" */
     val checksums_filename: String = "",
+    /** Model-written user-facing explanation for no_windows_assets, in the reply language; may be blank */
+    val user_explanation: String? = null,
 )
 
 @Serializable
