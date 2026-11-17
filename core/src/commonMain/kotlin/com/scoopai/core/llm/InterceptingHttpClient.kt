@@ -33,20 +33,13 @@ public fun interface RetryLog {
     public operator fun invoke(message: String)
 }
 
-/** Default [RetryLog] sinks shared by tests and production wiring. */
-public object RetryLogs {
-    /** Emits each line through the module logger at warn level. */
-    public val default: RetryLog = RetryLog { message -> logger.warn { message } }
-}
+/** Default [RetryLog] sink: emits each line through the module logger at warn level. */
+public val DefaultRetryLog: RetryLog = RetryLog { message -> logger.warn { message } }
 
-/**
- * Build the retryable timeout failure for a request or SSE stream that exceeded
- * its ceiling. [what] names the aborted call ("post" / "sse"), [timeoutMillis]
- * the applied ceiling. The message contains "timed out" so
- * [isRetryableHttpException] treats it as retryable.
- */
-internal fun sseTimeoutException(what: String, timeoutMillis: Long): RequestTimeoutException =
-    RequestTimeoutException(what, timeoutMillis)
+/** Kept for source compatibility with callers that still reference `RetryLogs.default`. */
+public object RetryLogs {
+    public val default: RetryLog get() = DefaultRetryLog
+}
 
 /**
  * Configuration for HTTP request retries on transient errors (429, 5xx, timeouts).
@@ -92,8 +85,9 @@ internal fun isRetryableHttpException(e: Throwable): Boolean {
  * through the same retry loop as transient HTTP errors.
  *
  * Each scheduled retry emits one log line (attempt, delayMs, cause summary)
- * through [onRetryLog] when provided, and to the module logger. Without it,
- * retries happen silently and hosts show a misleading "no tool calls" state.
+ * through [onRetryLog], which defaults to the module logger at warn level.
+ * Custom sinks replace that default; without any sink hosts show a misleading
+ * "no tool calls" state.
  */
 public class InterceptingHttpClient(
     private val delegate: KoogHttpClient,
@@ -103,15 +97,11 @@ public class InterceptingHttpClient(
     public val retryConfig: HttpRetryConfig = HttpRetryConfig.DEFAULT,
     /** Total per-attempt ceiling for post calls and sse streams, in milliseconds. */
     public val requestTimeoutMillis: Long = DEFAULT_REQUEST_TIMEOUT_MILLIS,
-    /** Optional sink for retry log lines; null disables retry logging. */
-    private val onRetryLog: RetryLog? = RetryLogs.default,
+    /** Sink for retry log lines; the default writes to the module logger. */
+    private val onRetryLog: RetryLog = DefaultRetryLog,
 ) : KoogHttpClient by delegate {
 
     override val clientName: String = delegate.clientName
-
-    private fun logRetry(message: String) {
-        onRetryLog?.invoke(message)
-    }
 
     private suspend fun <R> executeWithRetry(block: suspend () -> R): R {
         var attempt = 0
@@ -126,7 +116,7 @@ public class InterceptingHttpClient(
                 }
                 val factor = retryConfig.backoffFactor.pow((attempt - 1).toDouble())
                 val delayMs = (retryConfig.initialDelayMs * factor).toLong().coerceIn(0L, retryConfig.maxDelayMs)
-                logRetry(
+                onRetryLog(
                     "LLM request retry attempt=$attempt delayMs=$delayMs " +
                         "client=$clientName cause=${e.javaClass.simpleName}: ${e.message?.take(200)}",
                 )
@@ -138,8 +128,8 @@ public class InterceptingHttpClient(
     private suspend fun <R> withRequestTimeout(block: suspend () -> R): R =
         try {
             withTimeout(requestTimeoutMillis.milliseconds) { block() }
-        } catch (e: TimeoutCancellationException) {
-            throw sseTimeoutException("post", requestTimeoutMillis)
+        } catch (_: TimeoutCancellationException) {
+            throw RequestTimeoutException("post", requestTimeoutMillis)
         }
 
     override suspend fun <T : Any, R : Any> post(
@@ -184,18 +174,20 @@ public class InterceptingHttpClient(
             onResponse?.invoke(rewritten)
             decodeStreamingResponse(rewritten)
         }
-        return flow {
-            // Retry the whole stream (connect + collect) on retryable failures;
-            // delegate.sse() builds a cold flow, so each attempt is a fresh HTTP call.
-            executeWithRetry {
-                sseTimeoutFlow {
-                    delegate.sse(
-                        path, fixedBody, requestBodyType,
-                        dataFilter, rewriteAndLogDecode, processStreamingChunk,
-                        parameters, headers,
-                    )
-                }.collect { emit(it) }
-            }
+        // Retry the whole stream (connect + collect) on retryable failures;
+        // delegate.sse() builds a cold flow, so each attempt is a fresh HTTP call.
+        return retryingGatedStream {
+            delegate.sse(
+                path, fixedBody, requestBodyType,
+                dataFilter, rewriteAndLogDecode, processStreamingChunk,
+                parameters, headers,
+            )
+        }
+    }
+
+    private fun <O : Any> retryingGatedStream(upstream: () -> Flow<O>): Flow<O> = flow {
+        executeWithRetry {
+            sseTimeoutFlow(upstream).collect { emit(it) }
         }
     }
 
@@ -204,15 +196,16 @@ public class InterceptingHttpClient(
      * [requestTimeoutMillis]. Collected inside the retry loop, so the timeout
      * failure goes through the same retryable path as transient HTTP errors.
      * The timeout covers the whole stream (headers plus body), which Java
-     * HttpClient's per-request timeout alone does not.
+     * HttpClient's per-request timeout alone does not. Timeouts from both
+     * sse() and lines() are reported as an "sse" call.
      */
     private fun <O : Any> sseTimeoutFlow(delegateFlow: () -> Flow<O>): Flow<O> = flow {
         try {
             withTimeout(requestTimeoutMillis.milliseconds) {
                 delegateFlow().collect { emit(it) }
             }
-        } catch (e: TimeoutCancellationException) {
-            throw sseTimeoutException("sse", requestTimeoutMillis)
+        } catch (_: TimeoutCancellationException) {
+            throw RequestTimeoutException("sse", requestTimeoutMillis)
         }
     }
 
@@ -224,14 +217,10 @@ public class InterceptingHttpClient(
         headers: Map<String, String>,
     ): Flow<String> {
         val fixedBody = applyInterceptors(requestBody, requestBodyType)
-        return flow {
-            // Ollama uses Koog's lines() flow, the same unbounded-body-stream
-            // shape as sse(): apply the identical timeout + retry envelope.
-            executeWithRetry {
-                sseTimeoutFlow {
-                    delegate.lines(path, fixedBody, requestBodyType, parameters, headers)
-                }.collect { emit(it) }
-            }
+        // Ollama uses Koog's lines() flow, the same unbounded-body-stream
+        // shape as sse(): apply the identical timeout + retry envelope.
+        return retryingGatedStream {
+            delegate.lines(path, fixedBody, requestBodyType, parameters, headers)
         }
     }
 

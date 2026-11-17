@@ -54,10 +54,6 @@ public object KoogCompat {
      * used for native provider clients (deepseek/openai/openrouter via
      * [compatHttpClient], anthropic/ollama via their factory).
      *
-     * [onRetryLog] receives one line per scheduled retry attempt; hosts plug
-     * their own logger here to surface retries in their UI. null (the
-     * default) keeps the module-logger sink [RetryLogs.default].
-     *
      * Note [compatHttpClient] keeps its generic [responseRewriter] parameter
      * for non-openai-compatible reuse; no live call path passes one today.
      */
@@ -68,7 +64,6 @@ public object KoogCompat {
         onResponse: ((String) -> Unit)? = null,
         retryConfig: HttpRetryConfig = HttpRetryConfig.DEFAULT,
         requestTimeoutMillis: Long = DEFAULT_REQUEST_TIMEOUT_MILLIS,
-        onRetryLog: RetryLog? = null,
     ): InterceptingHttpClient = compatHttpClient(
         delegate = delegate,
         retryConfig = retryConfig,
@@ -80,7 +75,6 @@ public object KoogCompat {
         },
         responseRewriter = if (openaiCompatibleOnly) builtInResponseRewriter() else null,
         onResponse = onResponse,
-        onRetryLog = onRetryLog ?: RetryLogs.default,
     )
 
     /**
@@ -149,7 +143,7 @@ public object KoogCompat {
         interceptors: List<(String) -> String>,
         responseRewriter: ((String) -> String)?,
         onResponse: ((String) -> Unit)?,
-        onRetryLog: RetryLog? = RetryLogs.default,
+        onRetryLog: RetryLog = DefaultRetryLog,
     ): InterceptingHttpClient = InterceptingHttpClient(
         delegate = delegate,
         interceptors = interceptors,
