@@ -126,3 +126,14 @@ tasks.named<Sync>("installDist") {
         }
     }
 }
+
+// Real-gateway smoke for the replyLanguage chain: run manually with SCOOP_AI_*
+// env vars set; the main() itself skips (exit 0) when they are missing.
+tasks.register<JavaExec>("runReplyLanguageSmoke") {
+    group = "verification"
+    description = "Runs ReplyLanguageSmoke.kt main() against the real gateway (SCOOP_AI_* env vars required)."
+    mainClass.set("com.scoopai.tools.ReplyLanguageSmokeKt")
+    classpath = sourceSets["main"].runtimeClasspath
+    jvmArgs("-Dfile.encoding=UTF-8")
+    environment(System.getenv())
+}
