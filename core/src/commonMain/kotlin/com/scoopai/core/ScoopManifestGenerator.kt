@@ -206,8 +206,9 @@ class ScoopManifestGenerator(
     readManifestRefHandler: (suspend (bucket: String, name: String) -> String)? = null,
     /**
      * UI language name used as the fallback reply language when the request
-     * carries no natural language. Stored but not yet consumed; the prompt
-     * side reads it in a later change.
+     * carries no natural language. Front-loads a MANDATORY block into the
+     * shared system prompt and anchors assist/repair user prompts directly;
+     * null keeps every prompt byte-identical.
      */
     private val replyLanguage: String? = null,
 ) {
@@ -353,6 +354,7 @@ class ScoopManifestGenerator(
                         installActive = installAppTool != null,
                         assistTestUnavailableReason = assistTestUnavailableReason,
                         readRefActive = readManifestRefTool != null,
+                        replyLanguage = replyLanguage,
                     )
                 } else {
                     buildRepairPrompt(
@@ -360,6 +362,7 @@ class ScoopManifestGenerator(
                         saveActive = saveToBucketTool != null,
                         installActive = installAppTool != null,
                         readRefActive = readManifestRefTool != null,
+                        replyLanguage = replyLanguage,
                     )
                 }
             }

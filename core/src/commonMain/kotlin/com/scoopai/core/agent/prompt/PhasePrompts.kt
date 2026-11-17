@@ -14,17 +14,20 @@ import kotlinx.serialization.json.Json
  * config prompt (including this system message) in every subgraph's LLM context,
  * so all phases (research/analyze/generate/assist/repair) inherit it.
  *
- * When [replyLanguage] is non-null a Reply language rules block is appended:
- * input language first, fallback language second, closed English exemptions
- * third. Null keeps the legacy single sentence byte-identical.
+ * When [replyLanguage] is non-null a MANDATORY Reply language rules block is
+ * placed at the very front of the prompt: input language first, fallback
+ * language second, closed English exemptions third. Front-loading keeps the
+ * block readable by models with short effective attention instead of letting
+ * thousands of later prompt tokens dilute it. Null keeps the legacy prompt
+ * byte-identical.
  */
 fun buildGeneratorSystemPrompt(replyLanguage: String? = null): String {
     val base = "You are a Scoop manifest generator. You generate and assist Scoop bucket manifests for Windows software. " +
         "Style: never use em dashes (" + EM_DASH + ") or en dashes (" + EN_DASH + "). " +
         "Use commas, colons, parentheses or plain hyphens (-) instead."
     if (replyLanguage == null) return base
-    return base + "\n\n" +
-        "Reply language rules (apply to explanation, activities, user_explanation and direct answers):\n" +
+    val rules =
+        "MANDATORY reply language rules (override defaults when conflicting):\n" +
         "1. If the instruction in THIS request is written in a natural language, reply in that language. " +
         "URLs, paths, manifest field names, code, @bucket/app references and quoted log text do not count. " +
         "When several natural languages are mixed, anchor on the sentences the user wrote themselves; " +
@@ -33,6 +36,7 @@ fun buildGeneratorSystemPrompt(replyLanguage: String? = null): String {
         "3. The following are ALWAYS English regardless of the rules above: manifest field values " +
         "(description, notes, ...), all phase JSON data fields (notes, alternatives, persist_targets, ...), " +
         "and review issue strings."
+    return rules + "\n\n" + base
 }
 
 internal const val EM_DASH: String = "\u2014"
@@ -726,6 +730,10 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
  * callback: call it when the user references an existing manifest via the
  * `@bucket/app` syntax (or explicitly asks to read one), and use the returned
  * content as a base for edits or as a style reference.
+ *
+ * When [replyLanguage] is non-null the Rules section gains a direct user-layer
+ * anchor so weak models obey it even when the shared system prompt sits far
+ * away in the context; null keeps the output byte-identical.
  */
 fun buildAssistPrompt(
     ctx: AssistContext,
@@ -734,6 +742,7 @@ fun buildAssistPrompt(
     installActive: Boolean = false,
     assistTestUnavailableReason: String? = null,
     readRefActive: Boolean = false,
+    replyLanguage: String? = null,
 ): String =
     buildAssistKernel(
         ctx,
@@ -744,6 +753,7 @@ fun buildAssistPrompt(
         installActive = installActive,
         assistTestUnavailableReason = assistTestUnavailableReason,
         readRefActive = readRefActive,
+        replyLanguage = replyLanguage,
  )
 
 /**
@@ -761,6 +771,7 @@ fun buildRepairPrompt(
     saveActive: Boolean = false,
     installActive: Boolean = false,
     readRefActive: Boolean = false,
+    replyLanguage: String? = null,
 ): String =
     buildAssistKernel(
         ctx,
@@ -769,6 +780,7 @@ fun buildRepairPrompt(
         saveActive = saveActive,
         installActive = installActive,
         readRefActive = readRefActive,
+        replyLanguage = replyLanguage,
     )
 
 /**
@@ -786,6 +798,7 @@ private fun buildAssistKernel(
     installActive: Boolean = false,
     assistTestUnavailableReason: String? = null,
     readRefActive: Boolean = false,
+    replyLanguage: String? = null,
 ): String = buildString {
     appendLine("⚠️ **CRITICAL: Do NOT change `version` or `url` to a different release.** The version was fixed during the analyze phase. If a listed issue cannot be fixed without changing version, LEAVE it unfixed — better to ship with a warning than to downgrade the version.")
     appendLine()
@@ -823,9 +836,17 @@ private fun buildAssistKernel(
     appendLine("- After fixing/refining, call `finalize_task_result` with the corrected manifest.")
     if (ctx.explanatory) {
         appendLine("- When calling `finalize_task_result`, also pass the optional `explanation` parameter: directly answer the user's specific request by stating which fields were added, removed, or modified and why, in the language defined by the Reply language rules in the system prompt.")
+        if (replyLanguage != null) {
+            appendLine("  The explanation and any direct answers MUST be written in $replyLanguage when the user's instruction does not specify another natural language.")
+        }
         appendLine("  Keep it at most 3 short sentences, about 60 words total; the manifest is displayed in the UI, so do not recap the changed fields one by one.")
     }
     appendLine("- When you modified the manifest, also pass the optional `activities` parameter: a list of 3-6 short sentences, each naming one concrete change you made and why (e.g. \"Removed the %APPDATA% persist path because Scoop forbids absolute user paths\", \"Added shortcuts because you asked for a Start Menu entry\"). Only list changes you actually made, in order; omit the parameter when the manifest is returned unchanged.")
+    if (!ctx.explanatory && replyLanguage != null) {
+        // Repair loop has no explanation section; anchor the reply language for
+        // its user-visible activities and replies instead.
+        appendLine("- The explanation and any direct answers MUST be written in $replyLanguage when the user's instruction does not specify another natural language.")
+    }
     if (includingEscape) {
         appendLine()
         appendLine("## Question Escape Hatch")

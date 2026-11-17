@@ -8,7 +8,9 @@ import kotlin.test.assertTrue
 /**
  * Reply-language rules in the shared system prompt:
  * - null: byte-identical to the legacy single-sentence prompt;
- * - non-null: language block appended, back-reference sentences in phase prompts.
+ * - non-null: MANDATORY language block at the very front (weakest models read
+ *   it before the long phase prompt dilutes it), back-reference sentences in
+ *   phase prompts, and a direct anchor in assist/repair user prompts.
  */
 class PromptLanguageTest {
 
@@ -43,11 +45,11 @@ class PromptLanguageTest {
     // ---------------------------------------------------------------
 
     @Test
-    fun `buildGeneratorSystemPrompt with a language appends the rules block`() {
+    fun `buildGeneratorSystemPrompt with a language carries the rules block`() {
         val prompt = buildGeneratorSystemPrompt("Chinese")
         assertTrue(
-            prompt.contains("Reply language rules"),
-            "non-null replyLanguage must append the Reply language rules block, got:\n$prompt",
+            prompt.contains("MANDATORY reply language rules"),
+            "non-null replyLanguage must include the Reply language rules block, got:\n$prompt",
         )
     }
 
@@ -104,17 +106,110 @@ class PromptLanguageTest {
     }
 
     @Test
-    fun `prompt with a language starts with the legacy sentence`() {
+    fun `mandatory language block sits at the very front of the system prompt`() {
+        val prompt = buildGeneratorSystemPrompt("Simplified Chinese")
+        assertTrue(
+            prompt.startsWith("MANDATORY reply language rules"),
+            "the language block must be the first paragraph so it is not diluted, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("override defaults when conflicting"),
+            "the block must declare it overrides default language behavior, got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `legacy identity line survives behind the mandatory block`() {
         val prompt = buildGeneratorSystemPrompt("Spanish")
         assertTrue(
-            prompt.startsWith("You are a Scoop manifest generator."),
-            "the legacy sentence must stay in front of the language block, got:\n$prompt",
+            prompt.contains("You are a Scoop manifest generator."),
+            "the legacy identity and style line must survive behind the block, got:\n$prompt",
         )
     }
 
     // ---------------------------------------------------------------
+    // User-layer anchor in assist/repair prompts (parameter threading)
+    // ---------------------------------------------------------------
+
+    private fun anchorFor(language: String) =
+        "The explanation and any direct answers MUST be written in $language " +
+            "when the user's instruction does not specify another natural language."
+
+    private fun countOccurrences(haystack: String, needle: String): Int =
+        haystack.split(needle).size - 1
+
+    @Test
+    fun `assist prompt with replyLanguage carries the user-layer anchor exactly once`() {
+        val prompt = buildAssistPrompt(assistContext(), replyLanguage = "Simplified Chinese")
+        val anchor = anchorFor("Simplified Chinese")
+        assertTrue(
+            prompt.contains(anchor),
+            "assist prompt must anchor the reply language directly, got:\n$prompt",
+        )
+        assertEquals(1, countOccurrences(prompt, anchor), "the anchor must appear exactly once")
+    }
+
+    @Test
+    fun `repair prompt with replyLanguage carries the user-layer anchor exactly once`() {
+        val repairCtx = com.scoopai.core.AssistContext(
+            manifest = """{"version":"1.0.0"}""",
+            feedback = "fix bin",
+            retryCount = 1,
+            explanatory = false,
+        )
+        val prompt = buildRepairPrompt(repairCtx, replyLanguage = "German")
+        val anchor = anchorFor("German")
+        assertTrue(
+            prompt.contains(anchor),
+            "repair prompt must anchor the reply language directly, got:\n$prompt",
+        )
+        assertEquals(1, countOccurrences(prompt, anchor), "the anchor must appear exactly once")
+    }
+
+    @Test
+    fun `assist and repair prompts without replyLanguage omit the anchor`() {
+        assertFalse(
+            buildAssistPrompt(assistContext()).contains("MUST be written in"),
+            "null replyLanguage must not add the anchor to the assist prompt",
+        )
+        assertFalse(
+            buildRepairPrompt(repairContextNoExplanatory()).contains("MUST be written in"),
+            "null replyLanguage must not add the anchor to the repair prompt",
+        )
+    }
+
+    @Test
+    fun `assist and repair default overloads equal the explicit-null overloads`() {
+        assertEquals(
+            buildAssistPrompt(assistContext(), replyLanguage = null),
+            buildAssistPrompt(assistContext()),
+        )
+        assertEquals(
+            buildRepairPrompt(repairContextNoExplanatory(), replyLanguage = null),
+            buildRepairPrompt(repairContextNoExplanatory()),
+        )
+    }
+
+    private fun repairContextNoExplanatory() = com.scoopai.core.AssistContext(
+        manifest = """{"version":"1.0.0"}""",
+        feedback = "fix bin",
+        retryCount = 1,
+        explanatory = false,
+    )
+
+    // ---------------------------------------------------------------
     // Back-reference sentences replace the loose wording
     // ---------------------------------------------------------------
+
+    @Test
+    fun `mandatory block keeps the three-part rule structure`() {
+        val prompt = buildGeneratorSystemPrompt("Italian")
+        val blockEnd = prompt.indexOf("You are a Scoop manifest generator.")
+        val block = prompt.substring(0, blockEnd)
+        assertTrue(block.contains("1. If the instruction in THIS request"), "rule 1 must anchor on the request language, got:\n$block")
+        assertTrue(block.contains("2. Otherwise reply in Italian."), "rule 2 must be the fallback language, got:\n$block")
+        assertTrue(block.contains("3. The following are ALWAYS English"), "rule 3 must list the English exemptions, got:\n$block")
+    }
 
     private val backReference = "in the language defined by the Reply language rules in the system prompt"
 
