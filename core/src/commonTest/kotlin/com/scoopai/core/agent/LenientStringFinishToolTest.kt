@@ -35,6 +35,15 @@ class LenientStringFinishToolTest {
     private val manifestJson =
         """{"version":"0.2.0","description":"PeekDown markdown viewer","url":"https://example.com/peekdown-setup.exe","innosetup":true}"""
 
+    @Test
+    fun `activities descriptor points at the reply-language rules`() {
+        val activities = tool.descriptor.optionalParameters.single { it.name == "activities" }
+        assertTrue(
+            activities.description.contains("Follow the reply language rules in the system prompt."),
+            "the activities descriptor must tell the model to localize user-visible sentences",
+        )
+    }
+
     // ---------------------------------------------------------------
     // Old format: result only (explanation absent)
     // ---------------------------------------------------------------

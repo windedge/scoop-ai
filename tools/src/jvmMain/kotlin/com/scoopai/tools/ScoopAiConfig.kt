@@ -24,8 +24,8 @@ data class ScoopAiConfig(
      * UI language name (e.g. "Chinese") used as the fallback reply language
      * when the request itself carries no natural language. Read at
      * construction time; hosts must rebuild the generator per run to pick up
-     * a locale switch. When null the prompt keeps the 0.1.16 single-sentence
-     * wording. Manifest data fields stay English regardless.
+     * a locale switch. When null the rules block keeps the model's default
+     * reply language. Manifest data fields stay English regardless.
      */
     val replyLanguage: String? = null,
 )

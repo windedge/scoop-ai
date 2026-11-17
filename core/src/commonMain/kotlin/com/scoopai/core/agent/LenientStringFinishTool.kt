@@ -123,7 +123,7 @@ internal class LenientStringFinishTool : Tool<FinalizePayload, FinalizePayload>(
             ToolParameterDescriptor(
                 name = "explanation",
                 description = "Optional. A short natural-language explanation of what was generated/changed " +
-                    "and why, in the language the user should see; follow the reply-language rules in the prompt.",
+                    "and why. Follow the reply language rules in the system prompt.",
                 type = ToolParameterType.String,
             ),
             ToolParameterDescriptor(
@@ -134,7 +134,8 @@ internal class LenientStringFinishTool : Tool<FinalizePayload, FinalizePayload>(
             ToolParameterDescriptor(
                 name = "activities",
                 description = "Optional. 3-6 short sentences, each naming one concrete transformation applied to the manifest " +
-                    "and why (e.g. Appended #/dl.7z for the NSIS installer, Added autoupdate.hash from checksums.txt).",
+                    "and why (e.g. Appended #/dl.7z for the NSIS installer). " +
+                    "Follow the reply language rules in the system prompt.",
                 type = ToolParameterType.List(ToolParameterType.String),
             )
         ),

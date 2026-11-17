@@ -34,7 +34,7 @@ When you have finished researching, call the `finalize_task_result` tool with yo
   ],
   "notes": "Any additional context for the analyze phase",
   "alternatives": "Only when status=no_windows_assets: suggested alternatives",
-  "user_explanation": "Only when status=no_windows_assets: a short user-facing explanation of why there are no Windows assets, written in the reply language (fill only when status = no_windows_assets)",
+  "user_explanation": "Only when status=no_windows_assets: a short user-facing explanation of why there are no Windows assets (fill only when status = no_windows_assets)",
   "suggested_app_name": "Kebab-case app name reflecting user-requested variant or edition, e.g. llama-cpp-sycl, app-desktop (omit if no variant requested)",
   "persist_targets": ["List of directories or files found through source code analysis that store user config/data. ONLY from source/manifest reading, NOT from archive listing.
     For CLI tools: look for ~/.config/<app>, %APPDATA%/<app>, XDG_CONFIG_HOME, custom config file paths (config.yaml, config.toml, settings.json).

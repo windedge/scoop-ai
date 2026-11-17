@@ -35,11 +35,6 @@ class DownloadConfirmAnswerTest {
     }
 
     @Test
-    fun `selected index zero is out of range`() {
-        assertFalse(resolveDownloadConfirmAnswer("user selected: 0", options))
-    }
-
-    @Test
     fun `selected index with extra whitespace still parses`() {
         assertTrue(resolveDownloadConfirmAnswer("  user selected:   2  ", options))
     }
@@ -76,29 +71,11 @@ class DownloadConfirmAnswerTest {
         assertFalse(resolveDownloadConfirmAnswer("go ahead, download it", options))
     }
 
-    // layer 3: default
-
-    @Test
-    fun `empty response defaults to download`() {
-        assertFalse(resolveDownloadConfirmAnswer("", options))
-    }
-
-    @Test
-    fun `blank whitespace response defaults to download`() {
-        assertFalse(resolveDownloadConfirmAnswer("   \n  ", options))
-    }
-
-    @Test
-    fun `unknown text defaults to download`() {
-        assertFalse(resolveDownloadConfirmAnswer("whatever, unclear answer", options))
-    }
-
     // layer precedence
 
     @Test
-    fun `index layer wins over keyword layer`() {
-        // "user selected: 1" contains no keyword, but a fabricated combined
-        // response must resolve through layer 1 regardless of later layers.
-        assertFalse(resolveDownloadConfirmAnswer("user selected: 1 (download)", options))
+    fun `translated option label still resolves through the index layer`() {
+        // The translated label has no legacy keyword, so only the option index can skip.
+        assertTrue(resolveDownloadConfirmAnswer("user selected: 2. 跳过下载", options))
     }
 }

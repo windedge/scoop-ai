@@ -94,16 +94,6 @@ class AssistPromptTest {
     }
 
     @Test
-    fun `buildAssistPrompt requires the explanation to follow the user language`() {
-        val prompt = buildAssistPrompt(assistContext())
-
-        assertTrue(
-            prompt.contains("language"),
-            "explanation guidance must require following the user's language",
-        )
-    }
-
-    @Test
     fun `buildAssistPrompt caps the explanation at 3 short sentences`() {
         val prompt = buildAssistPrompt(assistContext())
 
@@ -795,16 +785,12 @@ class AssistPromptTest {
     }
 
     @Test
-    fun `buildGeneratePrompt explains what the explanation should cover and its language`() {
+    fun `buildGeneratePrompt explains what the explanation should cover`() {
         val prompt = buildGeneratePrompt(skeleton = "{}", analyze = minimalAnalyze(), outputPath = null)
 
         assertTrue(
             prompt.contains("portable zip") || prompt.contains("shortcuts"),
             "explanation note should give packaging-decision examples",
-        )
-        assertTrue(
-            prompt.contains("language"),
-            "explanation note must require the user's language",
         )
     }
 

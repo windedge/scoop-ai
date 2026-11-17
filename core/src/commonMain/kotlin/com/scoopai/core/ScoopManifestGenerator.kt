@@ -208,7 +208,7 @@ class ScoopManifestGenerator(
      * UI language name used as the fallback reply language when the request
      * carries no natural language. Front-loads a MANDATORY block into the
      * shared system prompt and anchors assist/repair user prompts directly;
-     * null keeps every prompt byte-identical.
+     * null keeps the model's default reply language.
      */
     private val replyLanguage: String? = null,
 ) {

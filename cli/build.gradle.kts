@@ -129,11 +129,15 @@ tasks.named<Sync>("installDist") {
 
 // Real-gateway smoke for the replyLanguage chain: run manually with SCOOP_AI_*
 // env vars set; the main() itself skips (exit 0) when they are missing.
+// The runner lives in tools jvmTest so it stays out of the published jar.
 tasks.register<JavaExec>("runReplyLanguageSmoke") {
     group = "verification"
     description = "Runs ReplyLanguageSmoke.kt main() against the real gateway (SCOOP_AI_* env vars required)."
     mainClass.set("com.scoopai.tools.ReplyLanguageSmokeKt")
-    classpath = sourceSets["main"].runtimeClasspath
-    jvmArgs("-Dfile.encoding=UTF-8")
+    classpath = sourceSets["main"].runtimeClasspath +
+        project(":scoop-ai-tools").configurations.getByName("jvmTestRuntimeClasspath") +
+        files(project(":scoop-ai-tools").layout.buildDirectory.dir("classes/kotlin/jvm/test"))
+    dependsOn(":scoop-ai-tools:compileTestKotlinJvm")
+    jvmArgs("-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", "-Dsun.stdout.encoding=UTF-8")
     environment(System.getenv())
 }
