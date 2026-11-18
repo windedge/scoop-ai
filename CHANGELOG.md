@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > the 0.1.4 artifact) were folded into the [0.1.4] section, whose "Folded
 > phase logs" subsection preserves their entries verbatim.
 
+## [0.1.19] - Unreleased
+
+### Fixed
+
+- Tolerate string persist in normalizeEnvSet so assist runs no longer crash
+  with "JsonLiteral is not a JsonArray". A single-string persist is a valid
+  Scoop form; treat it as a one-element list.
+
 ## [0.1.18] - Unreleased
 
 ### Fixed
