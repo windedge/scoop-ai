@@ -12,6 +12,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > the 0.1.4 artifact) were folded into the [0.1.4] section, whose "Folded
 > phase logs" subsection preserves their entries verbatim.
 
+## [0.1.18] - Unreleased
+
+### Fixed
+
+- Reply-language rules were diluted in the long system prompt, so assistant
+  replies and intermediate activities stayed English. Move the rules block to
+  the head, add a MANDATORY header and a user-layer anchor, and cover activities
+  and tool-call intent lines. Verified against a real gateway with Simplified
+  Chinese.
+- A null `replyLanguage` left dangling back-references to a rules block that was
+  never emitted. Generate the block always, with a neutral fallback rule.
+
+### Changed
+
+- Simplify the language-rule expressions from seven to three.
+- Drop the unused retry-log seam and share the sse/lines retry-timeout wrapper.
+
 ## [0.1.17] - Unreleased
 
 ### Added
