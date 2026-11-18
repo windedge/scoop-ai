@@ -1042,7 +1042,11 @@ internal fun normalizeEnvSet(manifestJson: String): String {
 
     val newEnvSetEntries = buildMap<String, JsonElement> {
         envSet.forEach { (key, value) ->
-            val v = value.jsonPrimitive.content
+            // Non-primitive env_set values are not rewriteable; keep them untouched
+            val v = (value as? JsonPrimitive)?.content ?: run {
+                put(key, value)
+                return@forEach
+            }
             if (v.startsWith(dirPrefix)) {
                 val subdir = v.removePrefix(dirPrefix)
                 put(key, JsonPrimitive("\$persist_dir\\$subdir"))
@@ -1055,8 +1059,14 @@ internal fun normalizeEnvSet(manifestJson: String): String {
     }
     if (!anyReplaced) return manifestJson
 
-    // Merge new dirs into persist, avoiding duplicates
-    val existingPersist = json["persist"]?.jsonArray?.mapNotNull { it.jsonPrimitive.content } ?: emptyList()
+    // Merge new dirs into persist, avoiding duplicates.
+    // persist may be an array, a single string (legal Scoop form), or an
+    // unexpected shape; only the first two yield entries, others start empty.
+    val existingPersist = when (val p = json["persist"]) {
+        is JsonArray -> p.mapNotNull { (it as? JsonPrimitive)?.content }
+        is JsonPrimitive -> listOf(p.content)
+        else -> emptyList()
+    }
     val updatedPersist = buildList {
         addAll(existingPersist)
         for (d in newPersistDirs) {

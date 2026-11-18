@@ -1260,6 +1260,34 @@ class ManifestUtilsTest {
         assertTrue("config" in persist)
     }
 
+    @Test
+    fun `normalizeEnvSet tolerates string persist when env_set needs rewrite`() {
+        // String persist is a legal Scoop form; jsonArray on JsonLiteral used to crash
+        val input = """{"version":"1.0","env_set":{"APP_CONFIG":"${'$'}dir\\config"},"persist":"config"}"""
+        val result = normalizeEnvSet(input)
+        val json = Json.parseToJsonElement(result).jsonObject
+        assertEquals("${'$'}persist_dir\\config", json["env_set"]!!.jsonObject["APP_CONFIG"]!!.jsonPrimitive.content)
+        assertEquals(listOf("config"), json["persist"]!!.jsonArray.map { it.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `normalizeEnvSet tolerates string persist with additional dir`() {
+        // Existing string persist entry must be kept when merging new persist dirs
+        val input = """{"version":"1.0","env_set":{"APP_DATA":"${'$'}dir\\data"},"persist":"config"}"""
+        val result = normalizeEnvSet(input)
+        val json = Json.parseToJsonElement(result).jsonObject
+        val persist = json["persist"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertEquals(listOf("config", "data"), persist)
+    }
+
+    @Test
+    fun `normalizeEnvSet skips non-string env_set values instead of crashing`() {
+        // Non-primitive env_set value (e.g. nested object) is skipped, no rewrite happens
+        val input = """{"version":"1.0","env_set":{"MYAPP_OPTS":{"x":"${'$'}dir\\config"}},"persist":"config"}"""
+        val result = normalizeEnvSet(input)
+        assertEquals(input, result)
+    }
+
     // ---------------------------------------------------------------
     // autoupdate: always uses architecture wrapper
     // ---------------------------------------------------------------
