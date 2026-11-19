@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > the 0.1.4 artifact) were folded into the [0.1.4] section, whose "Folded
 > phase logs" subsection preserves their entries verbatim.
 
+## [0.1.23] - Unreleased
+
+### Fixed
+
+- tool-call intent lines now follow the reply language in assist and repair prompts
+
 ## [0.1.22] - Unreleased
 
 ### Fixed
