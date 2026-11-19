@@ -1,0 +1,5 @@
+# JitPack has no PGP private key, so skip signing on local/JitPack builds.
+jdk:
+  - openjdk17
+install:
+  - ./gradlew publishToMavenLocal -x test --no-daemon -PskipSigning

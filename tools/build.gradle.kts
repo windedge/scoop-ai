@@ -13,7 +13,10 @@ version = rootProject.version
 mavenPublishing {
     // No automatic release: upload to Central Portal, publish manually from the web UI.
     publishToMavenCentral()
-    signAllPublications()
+    // Local/JitPack builds have no PGP key, so signing can be skipped.
+    if (!project.hasProperty("skipSigning")) {
+        signAllPublications()
+    }
 
     coordinates(groupId = "io.github.windedge", artifactId = "scoop-ai-tools", version = rootProject.version as String)
 
