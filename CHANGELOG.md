@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- generate prompt now anchors explanation/activities to the reply language.
+  buildGeneratePrompt gains a replyLanguage parameter; when set, the finalize
+  instructions carry the same MUST line as the repair prompt and a note that
+  the finalize examples are English only, so weak models stop mimicking the
+  English-only examples.
 - Tolerate string persist in normalizeEnvSet so assist runs no longer crash
   with "JsonLiteral is not a JsonArray". A single-string persist is a valid
   Scoop form; treat it as a one-element list.

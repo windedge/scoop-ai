@@ -514,10 +514,13 @@ internal fun buildChecksumsNote(checksumsFilename: String, releaseAssetNames: Li
  * @param analyze The structured output from the Analysis phase (used for installer_type, entries, etc.).
  * @param outputPath Optional output file path for the manifest.
  * @param userPrompt Additional user requirements.
+ * @param replyLanguage Reply language from the session config; when non-null, the
+ * finalize instructions anchor explanation/activities to that language so weak
+ * models do not mimic the English-only examples.
  * @param research The structured output from the Research phase (optional, used for checksums info).
  * @param checksumsAssetNames Effective release asset names; empty downgrades the checksums note.
  */
-fun buildGeneratePrompt(skeleton: String, analyze: AnalyzeOutput, outputPath: String?, userPrompt: String? = null, research: ResearchOutput? = null, checksumsAssetNames: List<String> = emptyList()): String {
+fun buildGeneratePrompt(skeleton: String, analyze: AnalyzeOutput, outputPath: String?, userPrompt: String? = null, research: ResearchOutput? = null, checksumsAssetNames: List<String> = emptyList(), replyLanguage: String? = null): String {
     val suggestedAppName = analyze.suggested_app_name?.takeIf { it.isNotBlank() }
     val nsisUnsupported = analyze.nsis_unsupported
     val installerTypeNote = when (analyze.installer_type?.lowercase()) {
@@ -536,6 +539,10 @@ fun buildGeneratePrompt(skeleton: String, analyze: AnalyzeOutput, outputPath: St
         else -> ""
     }
     val checksumsNote = buildChecksumsNote(research?.checksums_filename ?: "", checksumsAssetNames)
+    val finalizeLanguageRule = if (replyLanguage != null) {
+        "\n\n   The explanation and the activities MUST be written in $replyLanguage; manifest field values stay in English.\n" +
+        "   The finalize examples above are in English only; write the actual explanation and activities values in $replyLanguage."
+    } else ""
     val outputPart = if (outputPath != null) "\nOutput file: $outputPath" else ""
     val suggestedPart = if (suggestedAppName != null) {
         "\n\n## Suggested App Name\n\nThe analysis suggests app name: `$suggestedAppName`.\n" +
@@ -666,7 +673,7 @@ Do NOT add `extract_dir` to autoupdate if the skeleton does not have it there.
 
    `explanation` is an independent short string parameter: at most 3 short sentences, about 60 words total. Spend 1-2 sentences on the packaging strategy and at most 1 sentence on any non-obvious choice. Do NOT recap extract_dir / bin / shortcuts / persist field-by-field; the manifest is displayed in the UI, so the reader can see those fields directly. It must never be placed inside `result`.
 
-   `activities` is an optional list of strings: 3-6 short sentences, each naming one concrete transformation you applied to the manifest and why (e.g. "Appended #/dl.7z for the NSIS installer", "Added autoupdate.hash from checksums.txt"). Only list transformations you actually made, in order. It must never be placed inside `result`.
+   `activities` is an optional list of strings: 3-6 short sentences, each naming one concrete transformation you applied to the manifest and why (e.g. "Appended #/dl.7z for the NSIS installer", "Added autoupdate.hash from checksums.txt"). Only list transformations you actually made, in order. It must never be placed inside `result`.$finalizeLanguageRule
 
    CORRECT (result is a string with escaped inner quotes, explanation and activities are separate parameters):
    ```

@@ -319,6 +319,7 @@ class ScoopManifestGenerator(
                     (request as? SessionRequest.Generate)?.userPrompt,
                     research,
                     checksumsAssetNames = releaseAssetNames,
+                    replyLanguage = replyLanguage,
                 )
             }
 

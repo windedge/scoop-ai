@@ -12,7 +12,9 @@ import kotlin.test.assertTrue
 
 /**
  * The mandatory rules block in the shared system prompt is the language
- * contract; phase prompts only keep the concrete fallback language anchor.
+ * contract; phase prompts keep the concrete fallback language anchor, and the
+ * generate prompt additionally anchors its finalize examples to the reply
+ * language so weak models do not mimic the English-only examples.
  */
 class PromptLanguageTest {
 
@@ -98,6 +100,48 @@ class PromptLanguageTest {
     fun `assist and repair prompts without replyLanguage omit the anchor`() {
         assertFalse(buildAssistPrompt(assistContext()).contains("MUST be written in"))
         assertFalse(buildRepairPrompt(repairContext()).contains("MUST be written in"))
+    }
+
+    // ---------------------------------------------------------------
+    // generate prompt: language anchor at the finalize instructions
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `generate prompt anchors explanation and activities to the reply language`() {
+        val prompt = buildGeneratePrompt(
+            skeleton = "{}",
+            analyze = minimalAnalyze(),
+            outputPath = null,
+            replyLanguage = "Simplified Chinese",
+        )
+        assertTrue(
+            prompt.contains(
+                "The explanation and the activities MUST be written in Simplified Chinese; " +
+                    "manifest field values stay in English."
+            ),
+            "got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `generate prompt notes the finalize examples are English only`() {
+        val prompt = buildGeneratePrompt(
+            skeleton = "{}",
+            analyze = minimalAnalyze(),
+            outputPath = null,
+            replyLanguage = "German",
+        )
+        assertTrue(
+            prompt.contains("The finalize examples above are in English only") &&
+                prompt.contains("write the actual explanation and activities values in German"),
+            "got:\n$prompt",
+        )
+    }
+
+    @Test
+    fun `generate prompt without replyLanguage omits the language anchor`() {
+        val prompt = buildGeneratePrompt(skeleton = "{}", analyze = minimalAnalyze(), outputPath = null)
+        assertFalse(prompt.contains("MUST be written in"))
     }
 
     // ---------------------------------------------------------------
