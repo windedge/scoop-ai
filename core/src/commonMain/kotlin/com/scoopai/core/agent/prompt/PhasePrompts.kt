@@ -858,7 +858,7 @@ private fun buildAssistKernel(
     appendLine("- Do NOT reorganize or rewrite unrelated parts of the manifest.")
     appendLine("- After fixing/refining, call `finalize_task_result` with the corrected manifest.")
     if (replyLanguage != null) {
-        appendLine("- The explanation, the activities and any direct answers MUST be written in $replyLanguage.")
+        appendLine("- The explanation, the activities, the one-line intent before each tool call and any direct answers MUST be written in $replyLanguage.")
     }
     if (ctx.explanatory) {
         appendLine("- When calling `finalize_task_result`, also pass the optional `explanation` parameter: directly answer the user's specific request by stating which fields were added, removed, or modified and why.")
@@ -981,6 +981,6 @@ private fun buildAssistKernel(
     appendLine("attempt ${ctx.retryCount}")
     if (replyLanguage != null) {
         appendLine()
-        append("Write the finalize explanation and activities in $replyLanguage.")
+        append("Write the finalize explanation, the activities and the one-line intent before each tool call in $replyLanguage.")
     }
 }

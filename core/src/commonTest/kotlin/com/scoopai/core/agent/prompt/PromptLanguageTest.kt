@@ -73,7 +73,12 @@ class PromptLanguageTest {
     // ---------------------------------------------------------------
 
     private fun anchorFor(language: String) =
-        "The explanation, the activities and any direct answers MUST be written in $language."
+        "The explanation, the activities, the one-line intent before each tool call " +
+            "and any direct answers MUST be written in $language."
+
+    private fun tailAnchorFor(language: String) =
+        "Write the finalize explanation, the activities and the one-line intent " +
+            "before each tool call in $language."
 
     private fun countOccurrences(haystack: String, needle: String): Int =
         haystack.split(needle).size - 1
@@ -97,6 +102,22 @@ class PromptLanguageTest {
     }
 
     @Test
+    fun `assist and repair user-layer anchors name the tool-call intent`() {
+        val language = "Simplified Chinese"
+        val prompts = mapOf(
+            "assist" to buildAssistPrompt(assistContext(), replyLanguage = language),
+            "repair" to buildRepairPrompt(repairContext(), replyLanguage = language),
+        )
+        prompts.forEach { (name, prompt) ->
+            val anchors = listOf(anchorFor(language), tailAnchorFor(language))
+            anchors.forEach { anchor ->
+                assertTrue(prompt.contains(anchor), "$name must contain the anchor: $anchor")
+                assertTrue(anchor.contains("intent"), "$name anchor must name intent: $anchor")
+            }
+        }
+    }
+
+    @Test
     fun `assist and repair activity bullets label their English examples`() {
         val language = "Simplified Chinese"
         val latin = "Write every activity sentence in $language; the examples in this bullet are English only."
@@ -109,7 +130,7 @@ class PromptLanguageTest {
     @Test
     fun `assist and repair prompts end with the reply-language tail anchor`() {
         val language = "German"
-        val tail = "Write the finalize explanation and activities in $language."
+        val tail = tailAnchorFor(language)
         val prompts = mapOf(
             "assist" to buildAssistPrompt(assistContext(), replyLanguage = language),
             "repair" to buildRepairPrompt(repairContext(), replyLanguage = language),
@@ -127,7 +148,7 @@ class PromptLanguageTest {
         assertFalse(assist.contains("MUST be written in"))
         assertFalse(repair.contains("MUST be written in"))
         assertFalse(assist.contains("Write every activity sentence in"))
-        assertFalse(repair.contains("Write the finalize explanation and activities in"))
+        assertFalse(repair.contains("Write the finalize explanation"))
     }
 
     // ---------------------------------------------------------------
