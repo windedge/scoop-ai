@@ -141,3 +141,18 @@ tasks.register<JavaExec>("runReplyLanguageSmoke") {
     jvmArgs("-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", "-Dsun.stdout.encoding=UTF-8")
     environment(System.getenv())
 }
+
+// Same runner pattern as runReplyLanguageSmoke, but the instruction forces the
+// verify failure path so the repair prompt's language anchors are exercised.
+// The runner stays in tools jvmTest and is never part of the published jar.
+tasks.register<JavaExec>("runReplyLanguageRepairSmoke") {
+    group = "verification"
+    description = "Runs ReplyLanguageRepairSmoke.kt main() against the real gateway (SCOOP_AI_* env vars required)."
+    mainClass.set("com.scoopai.tools.ReplyLanguageRepairSmokeKt")
+    classpath = sourceSets["main"].runtimeClasspath +
+        project(":scoop-ai-tools").configurations.getByName("jvmTestRuntimeClasspath") +
+        files(project(":scoop-ai-tools").layout.buildDirectory.dir("classes/kotlin/jvm/test"))
+    dependsOn(":scoop-ai-tools:compileTestKotlinJvm")
+    jvmArgs("-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", "-Dsun.stdout.encoding=UTF-8")
+    environment(System.getenv())
+}
