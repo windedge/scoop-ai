@@ -34,17 +34,16 @@ class PromptLanguageTest {
             "quoted or pasted passages do not decide."
 
     private val ruleThree =
-        "3. The following are ALWAYS English regardless of the rules above: manifest field values " +
-            "(description, notes, ...), all phase JSON data fields (notes, alternatives, persist_targets, ...), " +
-            "and review issue strings. This list is data, not user-visible prose: " +
-            "the finalize explanation/activities parameters and your tool-call intent lines are prose, " +
-            "and they follow rules 1 and 2."
+        "3. The finalize explanation and activities parameters, ask_user question text and your tool-call " +
+            "intent lines are user-visible PROSE and follow rules 1 and 2 even though activities is a JSON " +
+            "string array. The following are ALWAYS English: manifest field values (description, notes, ...), " +
+            "phase JSON data fields (notes, alternatives, persist_targets, ...), and review issue strings."
 
     private fun expectedSystemPrompt(ruleTwo: String): String =
         "MANDATORY reply language rules (override defaults when conflicting). " +
             "They apply to the prose the user sees: the finalize explanation and activities parameters, " +
             "the one-line intent before each tool call, ask_user question text, and direct answers:\n" +
-            ruleOne + "\n" + ruleTwo + "\n" + ruleThree + "\n\n" + base
+            ruleOne + "\n" + ruleTwo + "\n" + ruleThree + "\n\n" + base + "\n\n" + ASK_USER_PLAN_RULES
 
     @Test
     fun `null replyLanguage gets the rules block with a default-language fallback`() {
@@ -74,32 +73,61 @@ class PromptLanguageTest {
     // ---------------------------------------------------------------
 
     private fun anchorFor(language: String) =
-        "The explanation, the activities and any direct answers MUST be written in $language " +
-            "when the user's instruction does not specify another natural language."
+        "The explanation, the activities and any direct answers MUST be written in $language."
 
     private fun countOccurrences(haystack: String, needle: String): Int =
         haystack.split(needle).size - 1
 
     @Test
-    fun `assist prompt carries the user-layer anchor exactly once`() {
+    fun `assist prompt carries the unconditional user-layer anchor`() {
         val prompt = buildAssistPrompt(assistContext(), replyLanguage = "Simplified Chinese")
         val anchor = anchorFor("Simplified Chinese")
         assertTrue(prompt.contains(anchor), "got:\n$prompt")
-        assertEquals(1, countOccurrences(prompt, anchor))
+        assertTrue(countOccurrences(prompt, anchor) >= 1)
+        assertFalse(prompt.contains("when the user's instruction does not specify another natural language"))
     }
 
     @Test
-    fun `repair prompt carries the user-layer anchor exactly once`() {
+    fun `repair prompt carries the unconditional user-layer anchor`() {
         val prompt = buildRepairPrompt(repairContext(), replyLanguage = "German")
         val anchor = anchorFor("German")
         assertTrue(prompt.contains(anchor), "got:\n$prompt")
-        assertEquals(1, countOccurrences(prompt, anchor))
+        assertTrue(countOccurrences(prompt, anchor) >= 1)
+        assertFalse(prompt.contains("when the user's instruction does not specify another natural language"))
+    }
+
+    @Test
+    fun `assist and repair activity bullets label their English examples`() {
+        val language = "Simplified Chinese"
+        val latin = "Write every activity sentence in $language; the examples in this bullet are English only."
+        val assist = buildAssistPrompt(assistContext(), replyLanguage = language)
+        val repair = buildRepairPrompt(repairContext(), replyLanguage = language)
+        assertTrue(assist.contains(latin), "got:\n$assist")
+        assertTrue(repair.contains(latin), "got:\n$repair")
+    }
+
+    @Test
+    fun `assist and repair prompts end with the reply-language tail anchor`() {
+        val language = "German"
+        val tail = "Write the finalize explanation and activities in $language."
+        val prompts = mapOf(
+            "assist" to buildAssistPrompt(assistContext(), replyLanguage = language),
+            "repair" to buildRepairPrompt(repairContext(), replyLanguage = language),
+        )
+        prompts.forEach { (name, prompt) ->
+            assertTrue(prompt.indexOf("## Attempt") < prompt.indexOf(tail), "$name: tail anchor must follow Attempt")
+            assertTrue(prompt.trimEnd().endsWith(tail), "$name must end with the tail anchor, got:\n$prompt")
+        }
     }
 
     @Test
     fun `assist and repair prompts without replyLanguage omit the anchor`() {
-        assertFalse(buildAssistPrompt(assistContext()).contains("MUST be written in"))
-        assertFalse(buildRepairPrompt(repairContext()).contains("MUST be written in"))
+        val assist = buildAssistPrompt(assistContext())
+        val repair = buildRepairPrompt(repairContext())
+        assertFalse(assist.contains("MUST be written in"))
+        assertFalse(repair.contains("MUST be written in"))
+        assertFalse(assist.contains("Write every activity sentence in"))
+        assertFalse(repair.contains("Write the finalize explanation and activities in"))
     }
 
     // ---------------------------------------------------------------

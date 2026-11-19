@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > the 0.1.4 artifact) were folded into the [0.1.4] section, whose "Folded
 > phase logs" subsection preserves their entries verbatim.
 
+## [0.1.22] - Unreleased
+
+### Fixed
+
+- ask_user questions must restate the concrete plan instead of referring to earlier text.
+- assist and repair prompts now anchor activities to the reply language, and the finish tool no longer ships English-only activity examples unlabelled
+
 ## [0.1.20] - Unreleased
 
 ### Fixed

@@ -3,6 +3,7 @@ package com.scoopai.core.agent.prompt
 import com.scoopai.core.AssistContext
 import com.scoopai.core.agent.AnalyzeOutput
 import com.scoopai.core.agent.AnalyzeStatus
+import com.scoopai.core.agent.PrefetchResult
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -903,6 +904,60 @@ class AssistPromptTest {
         assertTrue(
             prompt.contains("Added autoupdate.hash from checksums.txt"),
             "CORRECT example must show the autoupdate.hash activity sentence, got:\n$prompt",
+        )
+    }
+
+    // ---------------------------------------------------------------
+    // ask_user: self-contained plan text shared by every phase
+    // ---------------------------------------------------------------
+
+    private val askUserSelfContainedRule =
+        "An ask_user question must be self-contained: state the concrete plan first " +
+            "(which field changes, from what to what, and what stays unchanged), then ask for confirmation."
+    private val askUserNoBackReferenceRule =
+        "Never refer to earlier text such as \"the above plan\", \"as shown above\", " +
+            "or their translations; the user may not see your earlier tool activity."
+    private val askUserOptionsRule =
+        "Option descriptions may only add detail or variants; they must not be the only place where the plan appears."
+    private val askUserCorrectExample =
+        "CORRECT: \"Change bin from ['app.exe', 'helper.exe'] to ['app.exe']; leave shortcuts and version unchanged. Confirm?\""
+    private val askUserWrongExample = "WRONG: \"Should I apply the above plan?\""
+
+    @Test
+    fun `shared system prompt requires self-contained ask_user plan text`() {
+        val prompt = buildGeneratorSystemPrompt()
+
+        assertTrue(prompt.contains(askUserSelfContainedRule), "got:\n$prompt")
+        assertTrue(prompt.contains(askUserNoBackReferenceRule), "got:\n$prompt")
+        assertTrue(prompt.contains(askUserOptionsRule), "got:\n$prompt")
+    }
+
+    @Test
+    fun `shared system prompt shows a CORRECT and WRONG ask_user example`() {
+        val prompt = buildGeneratorSystemPrompt()
+
+        assertTrue(prompt.contains(askUserCorrectExample), "got:\n$prompt")
+        assertTrue(prompt.contains(askUserWrongExample), "got:\n$prompt")
+    }
+
+    @Test
+    fun `research ask_user example states the plan while keeping the no-extra-fields rule`() {
+        val prompt = buildResearchPrompt(
+            PrefetchResult(
+                isGitHub = true,
+                owner = "sharkdp",
+                repo = "fd",
+                originalUrl = "https://github.com/sharkdp/fd",
+            ),
+        )
+
+        assertTrue(
+            prompt.contains("all other fields stay unchanged"),
+            "the __ask_user__ example must restate what changes and what stays, got:\n$prompt",
+        )
+        assertTrue(
+            prompt.contains("Do not invent extra fields"),
+            "the no-extra-fields rule must be preserved, got:\n$prompt",
         )
     }
 }

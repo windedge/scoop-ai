@@ -39,13 +39,21 @@ fun buildGeneratorSystemPrompt(replyLanguage: String? = null): String {
         "When several natural languages are mixed, anchor on the sentences the user wrote themselves; " +
         "quoted or pasted passages do not decide.\n" +
         "2. $fallback\n" +
-        "3. The following are ALWAYS English regardless of the rules above: manifest field values " +
-        "(description, notes, ...), all phase JSON data fields (notes, alternatives, persist_targets, ...), " +
-        "and review issue strings. This list is data, not user-visible prose: " +
-        "the finalize explanation/activities parameters and your tool-call intent lines are prose, " +
-        "and they follow rules 1 and 2."
-    return rules + "\n\n" + base
+        "3. The finalize explanation and activities parameters, ask_user question text and your tool-call " +
+        "intent lines are user-visible PROSE and follow rules 1 and 2 even though activities is a JSON " +
+        "string array. The following are ALWAYS English: manifest field values (description, notes, ...), " +
+        "phase JSON data fields (notes, alternatives, persist_targets, ...), and review issue strings."
+    return rules + "\n\n" + base + "\n\n" + ASK_USER_PLAN_RULES
 }
+
+internal const val ASK_USER_PLAN_RULES: String =
+    "ASK_USER QUESTIONS: An ask_user question must be self-contained: state the concrete plan first " +
+        "(which field changes, from what to what, and what stays unchanged), then ask for confirmation. " +
+        "Never refer to earlier text such as \"the above plan\", \"as shown above\", " +
+        "or their translations; the user may not see your earlier tool activity. " +
+        "Option descriptions may only add detail or variants; they must not be the only place where the plan appears.\n" +
+        "CORRECT: \"Change bin from ['app.exe', 'helper.exe'] to ['app.exe']; leave shortcuts and version unchanged. Confirm?\"\n" +
+        "WRONG: \"Should I apply the above plan?\""
 
 internal const val EM_DASH: String = "\u2014"
 internal const val EN_DASH: String = "\u2013"
@@ -178,7 +186,7 @@ $task
    - Exclude assets containing: `darwin`, `linux`, `macos`
    - Exclude extensions: `.sha256`, `.sig`, `.asc`, `.pem`
    - Exclude source archives containing `source` or `src` with `.tar.gz`
-   - If there are ambiguous candidates or multiple asset variants, use the `__ask_user__` questionnaire tool with a `questions` array, e.g. `{"questions": [{"prompt": "Which asset?", "options": [{"label": "app-x64.zip (Recommended)"}, {"label": "app-arm64.zip"}, {"label": "app-setup.exe"}]}]}` so the user can interactively select. Do not invent extra fields (e.g. `isMultiSelect` does not exist).
+   - If there are ambiguous candidates or multiple asset variants, use the `__ask_user__` questionnaire tool with a `questions` array, e.g. `{"questions": [{"prompt": "Choose the bin asset for app: app-x64.zip (Recommended), app-arm64.zip, or app-setup.exe; all other fields stay unchanged. Which one?", "options": [{"label": "app-x64.zip (Recommended)"}, {"label": "app-arm64.zip"}, {"label": "app-setup.exe"}]}]}` so the user can interactively select. State the whole plan in the prompt, never refer to earlier text. Do not invent extra fields (e.g. `isMultiSelect` does not exist).
 
 7. **Discover persist targets — prefer source archive search over file-by-file reading** — Unless the user requirements explicitly say to skip persist discovery:
 
@@ -850,13 +858,17 @@ private fun buildAssistKernel(
     appendLine("- Do NOT reorganize or rewrite unrelated parts of the manifest.")
     appendLine("- After fixing/refining, call `finalize_task_result` with the corrected manifest.")
     if (replyLanguage != null) {
-        appendLine("- The explanation, the activities and any direct answers MUST be written in $replyLanguage when the user's instruction does not specify another natural language.")
+        appendLine("- The explanation, the activities and any direct answers MUST be written in $replyLanguage.")
     }
     if (ctx.explanatory) {
         appendLine("- When calling `finalize_task_result`, also pass the optional `explanation` parameter: directly answer the user's specific request by stating which fields were added, removed, or modified and why.")
         appendLine("  Keep it at most 3 short sentences, about 60 words total; the manifest is displayed in the UI, so do not recap the changed fields one by one.")
     }
-    appendLine("- When you modified the manifest, also pass the optional `activities` parameter: a list of 3-6 short sentences, each naming one concrete change you made and why (e.g. \"Removed the %APPDATA% persist path because Scoop forbids absolute user paths\", \"Added shortcuts because you asked for a Start Menu entry\"). Only list changes you actually made, in order; omit the parameter when the manifest is returned unchanged.")
+    append("- When you modified the manifest, also pass the optional `activities` parameter: a list of 3-6 short sentences, each naming one concrete change you made and why (e.g. \"Removed the %APPDATA% persist path because Scoop forbids absolute user paths\", \"Added shortcuts because you asked for a Start Menu entry\"). Only list changes you actually made, in order; omit the parameter when the manifest is returned unchanged.")
+    if (replyLanguage != null) {
+        append(" Write every activity sentence in $replyLanguage; the examples in this bullet are English only.")
+    }
+    appendLine()
     if (includingEscape) {
         appendLine()
         appendLine("## Question Escape Hatch")
@@ -966,5 +978,9 @@ private fun buildAssistKernel(
     appendLine("- GUI-only apps may legitimately omit `bin` and keep only `shortcuts`; do not add a `bin` field just because a review issue mentions a missing bin.")
     appendLine()
     appendLine("## Attempt")
-    append("attempt ${ctx.retryCount}")
+    appendLine("attempt ${ctx.retryCount}")
+    if (replyLanguage != null) {
+        appendLine()
+        append("Write the finalize explanation and activities in $replyLanguage.")
+    }
 }

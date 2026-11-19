@@ -134,8 +134,8 @@ internal class LenientStringFinishTool : Tool<FinalizePayload, FinalizePayload>(
             ToolParameterDescriptor(
                 name = "activities",
                 description = "Optional. 3-6 short sentences, each naming one concrete transformation applied to the manifest " +
-                    "and why (e.g. Appended #/dl.7z for the NSIS installer). " +
-                    "Follow the reply language rules in the system prompt.",
+                    "and why (e.g. \"Appended #/dl.7z for the NSIS installer\" - that example is English only). " +
+                    "Write every sentence in the reply language required by the system prompt's reply language rules.",
                 type = ToolParameterType.List(ToolParameterType.String),
             )
         ),
