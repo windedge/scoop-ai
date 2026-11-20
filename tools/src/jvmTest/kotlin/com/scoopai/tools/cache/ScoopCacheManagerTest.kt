@@ -4,7 +4,10 @@ import com.sun.net.httpserver.HttpServer
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import java.net.InetSocketAddress
 import java.nio.file.Files
@@ -325,6 +328,172 @@ class ScoopCacheManagerTest {
         } finally {
             server.stop(0)
             tmpDir.toFile().deleteRecursively()
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // finalize: hard-link semantics
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `finalize keeps source and hard-links download-phase file`() {
+        val cacheDir = Files.createTempDirectory("scoop-cache-finalize-")
+        try {
+            val url = "https://example.com/finalize-app.zip"
+            val source = cacheDir.resolve(ScoopCacheManager.downloadCacheName(url))
+            Files.writeString(source, "payload")
+            val cache = ScoopCacheManager(customCacheDir = cacheDir)
+
+            val finalPath = cache.finalizeCacheEntry(url, "finalize-app", "1.0")
+
+            assertNotNull(finalPath)
+            assertEquals(
+                cacheDir.resolve(ScoopCacheManager.scoopCacheName("finalize-app", "1.0", url)),
+                finalPath,
+            )
+            assertTrue(Files.exists(source), "download-phase source must stay for other apps")
+            assertEquals("payload", Files.readString(finalPath))
+            assertTrue(Files.isSameFile(source, finalPath), "finalize should hard-link instead of moving")
+            assertEquals(2, Files.list(cacheDir).use { it.toList().size })
+        } finally {
+            cacheDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `finalize is idempotent and creates no extra files`() {
+        val cacheDir = Files.createTempDirectory("scoop-cache-finalize-")
+        try {
+            val url = "https://example.com/idempotent-app.zip"
+            val source = cacheDir.resolve(ScoopCacheManager.downloadCacheName(url))
+            Files.writeString(source, "payload")
+            val cache = ScoopCacheManager(customCacheDir = cacheDir)
+
+            val first = cache.finalizeCacheEntry(url, "idempotent-app", "1.0")
+            val second = cache.finalizeCacheEntry(url, "idempotent-app", "1.0")
+
+            assertNotNull(first)
+            assertEquals(first, second)
+            assertTrue(Files.exists(source))
+            assertEquals("payload", Files.readString(first))
+            assertEquals(2, Files.list(cacheDir).use { it.toList().size })
+        } finally {
+            cacheDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `finalize uses on-disk download file without memory record and keeps it`() {
+        val cacheDir = Files.createTempDirectory("scoop-cache-finalize-")
+        try {
+            val url = "https://example.com/disk-app.zip"
+            val source = cacheDir.resolve(ScoopCacheManager.downloadCacheName(url))
+            Files.writeString(source, "disk payload")
+            val cache = ScoopCacheManager(customCacheDir = cacheDir)
+
+            val finalPath = cache.finalizeCacheEntry(url, "disk-app", "1.0")
+
+            assertNotNull(finalPath)
+            assertEquals("disk payload", Files.readString(finalPath))
+            assertTrue(Files.exists(source), "disk scan source must stay for other apps")
+            assertTrue(Files.isSameFile(source, finalPath))
+            assertEquals(2, Files.list(cacheDir).use { it.toList().size })
+        } finally {
+            cacheDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `finalize disk scan skips aria2 control files empty files and directories`() {
+        val cacheDir = Files.createTempDirectory("scoop-cache-finalize-")
+        try {
+            val url = "https://example.com/scan-app.zip"
+            val hash = ScoopCacheManager.urlHash(url)
+            Files.writeString(cacheDir.resolve("${ScoopCacheManager.downloadCacheName(url)}.aria2"), "control")
+            Files.writeString(cacheDir.resolve("empty-$hash.zip"), "")
+            Files.createDirectory(cacheDir.resolve("dir-$hash.zip"))
+            val cache = ScoopCacheManager(customCacheDir = cacheDir)
+
+            val finalPath = cache.finalizeCacheEntry(url, "scan-app", "1.0")
+
+            assertNull(finalPath)
+            assertFalse(Files.exists(cacheDir.resolve(ScoopCacheManager.scoopCacheName("scan-app", "1.0", url))))
+        } finally {
+            cacheDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `finalize disk scan ignores aria2 file beside the real download`() {
+        val cacheDir = Files.createTempDirectory("scoop-cache-finalize-")
+        try {
+            val url = "https://example.com/aria2-app.zip"
+            val source = cacheDir.resolve(ScoopCacheManager.downloadCacheName(url))
+            Files.writeString(cacheDir.resolve("$source.aria2"), "control")
+            Files.writeString(source, "payload")
+            val cache = ScoopCacheManager(customCacheDir = cacheDir)
+
+            val finalPath = cache.finalizeCacheEntry(url, "aria2-app", "1.0")
+
+            assertNotNull(finalPath)
+            assertEquals("payload", Files.readString(finalPath))
+            assertTrue(Files.exists(source))
+            assertTrue(Files.isSameFile(source, finalPath))
+        } finally {
+            cacheDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `finalize with downloaded path equal to final path leaves file intact`() = kotlinx.coroutines.runBlocking {
+        val cacheDir = Files.createTempDirectory("scoop-cache-finalize-")
+        val server = HttpServer.create(InetSocketAddress(0), 0)
+        val url = "http://localhost:${server.address.port}/self-app.zip"
+        server.createContext("/self-app.zip") { exchange ->
+            exchange.sendResponseHeaders(200, -1)
+            exchange.responseBody.close()
+        }
+        server.executor = Executors.newSingleThreadExecutor()
+        server.start()
+        try {
+            val cache = ScoopCacheManager(customCacheDir = cacheDir)
+            val source = cache.getOrDownload(url)
+            assertEquals(0L, Files.size(source))
+            val finalPath = cacheDir.resolve(ScoopCacheManager.scoopCacheName("self-app", "1.0", url))
+            Files.createLink(finalPath, source)
+
+            val result = cache.finalizeCacheEntry(url, "self-app", "1.0")
+
+            assertEquals(finalPath, result)
+            assertEquals(0L, Files.size(source))
+            assertTrue(Files.exists(finalPath))
+            assertTrue(Files.isSameFile(source, finalPath))
+            assertEquals(2, Files.list(cacheDir).use { it.toList().size })
+        } finally {
+            server.stop(0)
+            cacheDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `finalize falls back to copy when hard link fails and still keeps source`() {
+        val cacheDir = Files.createTempDirectory("scoop-cache-finalize-")
+        try {
+            val url = "https://example.com/copy-fallback-app.zip"
+            val source = cacheDir.resolve(ScoopCacheManager.downloadCacheName(url))
+            Files.writeString(source, "payload")
+            val cache = ScoopCacheManager(customCacheDir = cacheDir)
+            cache.hardLink = { _, _ -> throw UnsupportedOperationException("cross-store link unavailable") }
+
+            val finalPath = cache.finalizeCacheEntry(url, "copy-fallback-app", "1.0")
+
+            assertNotNull(finalPath)
+            assertEquals("payload", Files.readString(finalPath))
+            assertTrue(Files.exists(source), "copy fallback must keep the download-phase file")
+            assertFalse(Files.isSameFile(source, finalPath))
+            assertEquals(2, Files.list(cacheDir).use { it.toList().size })
+        } finally {
+            cacheDir.toFile().deleteRecursively()
         }
     }
 

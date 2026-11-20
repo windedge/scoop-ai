@@ -20,10 +20,11 @@ private val logger = KotlinLogging.logger {}
  * 1. **Download phase**: files are cached as `{sha256(url)[:7]}{ext}` (URL-based key).
  *    All tools share the same cached file, so a URL is downloaded only once.
  * 2. **Finalize phase**: after the agent finishes and the app name + version are known,
- *    call [finalizeCacheEntry] to rename/link to Scoop's standard format:
- *    `{app}#{version}#{sha256(url)[:7]}{ext}`.
+ *    call [finalizeCacheEntry] to hard-link (or copy if linking fails) the download to
+ *    Scoop's standard format: `{app}#{version}#{sha256(url)[:7]}{ext}`.
  *
- * This lets `scoop install` reuse the downloaded file directly.
+ * The download-phase file is never removed, so other apps and repeat installs can
+ * reuse the same download. This lets `scoop install` reuse the downloaded file directly.
  */
 class ScoopCacheManager(
     private val keepCache: Boolean = true,
@@ -105,6 +106,12 @@ class ScoopCacheManager(
     /** Files to delete on cleanup (only when keepCache = false). */
     private val tempFiles = mutableListOf<Path>()
     private val cacheDir: Path = customCacheDir ?: scoopCacheDir()
+
+    /** Link strategy; replaceable in tests to exercise the copy fallback. */
+    internal var hardLink: (source: Path, target: Path) -> Boolean = { source, target ->
+        Files.createLink(target, source)
+        true
+    }
 
     /**
      * Optional confirmation callback invoked before initiating a network download.
@@ -287,8 +294,10 @@ class ScoopCacheManager(
     }
 
     /**
-     * After the agent finishes, rename the downloaded file to Scoop's standard cache format.
-     * If the target already exists, this is a no-op.
+     * After the agent finishes, hard-link the downloaded file to Scoop's standard cache
+     * format, falling back to a copy when linking is unavailable. The download-phase
+     * source is always kept so other apps can reuse it. If the target already exists,
+     * this is a no-op.
      *
      * @return the finalized cache path, or null if the URL was never downloaded
      */
@@ -301,6 +310,11 @@ class ScoopCacheManager(
             if (Files.exists(cacheDir)) {
                 val existing = Files.list(cacheDir).use { stream ->
                     stream.filter { it.fileName.toString().contains(hash) }
+                        .filter {
+                            Files.isRegularFile(it) &&
+                                !it.fileName.toString().endsWith(".aria2") &&
+                                Files.size(it) > 0
+                        }
                         .findFirst().orElse(null)
                 }
                 if (existing != null) {
@@ -324,22 +338,32 @@ class ScoopCacheManager(
 
         logger.info { "[cache] Finalize: ${downloaded.fileName} -> $finalName" }
 
-        if (Files.exists(finalPath) && Files.size(finalPath) > 0) {
+        val sameFile = downloaded.toAbsolutePath().normalize() == finalPath.toAbsolutePath().normalize() ||
+            (Files.exists(finalPath) && Files.isSameFile(downloaded, finalPath))
+        if (sameFile || (Files.exists(finalPath) && Files.size(finalPath) > 0)) {
             logger.info { "[cache] Already finalized: $finalName" }
             downloadCache[url] = finalPath
             return finalPath
         }
 
-        try {
-            Files.move(downloaded, finalPath, StandardCopyOption.ATOMIC_MOVE)
-        } catch (_: Exception) {
-            Files.copy(downloaded, finalPath, StandardCopyOption.REPLACE_EXISTING)
-            Files.deleteIfExists(downloaded)
-        }
+        linkOrCopy(downloaded, finalPath)
 
         downloadCache[url] = finalPath
         logger.info { "[cache] Finalized: ${finalPath.toAbsolutePath()}" }
         return finalPath
+    }
+
+    /** Hard-links [source] to [target], falling back to a copy. [source] is never removed. */
+    internal fun linkOrCopy(source: Path, target: Path) {
+        val linked = try {
+            hardLink(source, target)
+        } catch (e: Exception) {
+            logger.debug { "[cache] link failed, falling back to copy: ${e.message}" }
+            false
+        }
+        if (!linked) {
+            Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING)
+        }
     }
 
     /**
